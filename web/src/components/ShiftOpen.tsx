@@ -1,6 +1,6 @@
 // Окно «Открыть смену» (SPEC-05, SPEC-29 §15–16): кассир, PIN кассира или пароль владельца,
 // пересчёт по остатку кассы. Общее для экрана «Смена» и режима кассы. Кассир, вошедший своим
-// логином, открывает смену на себя без PIN (задача 005 Н1, ADR-{n1}).
+// логином, открывает смену на себя без PIN (задача 005 Н1, ADR-170).
 import { useState } from 'react'
 import { newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -62,7 +62,7 @@ export function ShiftOpenModal({
         cashier_employee_id: open.cashier,
         counted_tyiyn: counted,
         // Кассир подтверждает PIN; владелец может открыть своим паролем (ADR-081); на себя со
-        // своего входа — без PIN (ADR-{n1}).
+        // своего входа — без PIN (ADR-170).
         ...(open.byOwner ? { owner_password: open.password } : self ? {} : { cashier_pin: open.pin }),
       })
       toast('Смена открыта')

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.id, t.branch_id, u.branch_id as home, u.login, u.full_name, u.role, t.tg_user_id\n           from telegram_links t join users u on u.id = t.user_id\n           where t.chat_id = $1 and u.active",
+  "query": "select u.id, t.branch_id, u.branch_id as home, u.login, u.full_name, u.role, t.tg_user_id,\n                  u.employee_id, e.full_name as \"employee_name?\"\n           from telegram_links t join users u on u.id = t.user_id\n           left join employees e on e.id = u.employee_id\n           where t.chat_id = $1 and u.active",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,16 @@
         "ordinal": 6,
         "name": "tg_user_id",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "employee_name?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -51,8 +61,10 @@
       false,
       false,
       false,
-      true
+      true,
+      true,
+      false
     ]
   },
-  "hash": "81c7bc750ff2f1dea0700ca1b227ab4517615b94fd071897cd9508bfdf6bd4f3"
+  "hash": "f3b7d27138687ae6d87bae76e2701ed1bc80728172f554d71cd6559708c21bab"
 }

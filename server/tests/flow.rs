@@ -9520,7 +9520,7 @@ mod point_feedback_stock {
         assert_eq!(filter.stock_sale_tyiyn, -100_000);
 
         // Администратор: суммы строк по продаже те же; итога по продаже, закупки и стоимости
-        // остатка нет (ADR-008, ADR-{n2}).
+        // остатка нет (ADR-008, ADR-167).
         let admin = product_list(&mut conn, &w.admin.user, f(), "purchase", false, 0)
             .await
             .unwrap();

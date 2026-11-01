@@ -149,7 +149,7 @@ test('«Склад → Остатки»: ненулевые остатки по 
   await expect(t.getByTestId('stock-row')).toHaveCount(3)
   await expect(t).not.toContainText('Сумма (закупка)')
   await expect(t.getByTestId('stock-subtotal').nth(1)).not.toContainText(money('14 737,50 с'))
-  // Общая стоимость склада — только владельцу (ADR-{n2}): в подытогах и итоге — позиции и
+  // Общая стоимость склада — только владельцу (ADR-167): в подытогах и итоге — позиции и
   // количество без денег, сумма строки товара видна.
   await expect(t.getByTestId('stock-subtotal').nth(1)).toContainText('Итого: 2 поз.')
   await expect(t.getByTestId('stock-subtotal').nth(1)).toContainText('38,5 л · 9 кан. + 2,5 л')

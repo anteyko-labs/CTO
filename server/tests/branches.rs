@@ -688,7 +688,7 @@ async fn admin_of_branch_b_sees_and_changes_nothing_of_branch_a(pool: PgPool) {
     probe.dedup();
     let routes = routes();
     assert!(routes.len() > 150, "маршрутов мало: {}", routes.len());
-    // «Мой Телеграм» администратора и настройка владельца (ADR-{h18}) — в обходе.
+    // «Мой Телеграм» администратора и настройка владельца (ADR-172) — в обходе.
     for r in [
         "/me/telegram",
         "/me/telegram/code",

@@ -186,6 +186,33 @@ pub async fn by_phone(conn: &mut PgConnection, key: &str) -> AppResult<Vec<Emplo
     .collect())
 }
 
+/// Сотрудник личного входа (задача 005 Н1, ответ 8а; ADR-170): чат, привязанный ко входу с
+/// сотрудником, — ещё и его кабинет работника, даже без подключения по телефону. Только активный
+/// сотрудник того же филиала, что и вход.
+pub async fn of_login(
+    conn: &mut PgConnection,
+    user: &crate::auth::CurrentUser,
+) -> AppResult<Option<Employee>> {
+    let Some(id) = user.employee_id else {
+        return Ok(None);
+    };
+    let r = sqlx::query!(
+        "select id, branch_id, full_name, is_cashier, is_master from employees
+         where id = $1 and branch_id = $2 and active",
+        id,
+        user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(r.map(|r| Employee {
+        id: r.id,
+        branch_id: r.branch_id,
+        name: r.full_name,
+        is_cashier: r.is_cashier,
+        is_master: r.is_master,
+    }))
+}
+
 /// Привязать чат к сотруднику: у сотрудника один чат, у чата один сотрудник. Владельцу —
 /// уведомление `telegram.employee_link`, если чат подключился к нему впервые.
 pub async fn link(

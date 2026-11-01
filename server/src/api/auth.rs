@@ -257,7 +257,7 @@ pub(crate) async fn check_cashier_pin(
 /// (ADR-059). Он лишь сообщает владельцу о подборе, см. `note_failure`.
 /// Логин с этого адреса уже заблокирован — ответ сразу, счётчик адреса не растёт: кассир,
 /// который ошибся паролем и жмёт «Войти» дальше, не закрывает вход остальным кассирам того же
-/// моноблока. Адрес закрывается только неудачами по многим разным логинам (ADR-{n1}).
+/// моноблока. Адрес закрывается только неудачами по многим разным логинам (ADR-170).
 pub(crate) async fn reserve_login(
     state: &AppState,
     login: &str,
@@ -582,7 +582,7 @@ struct UserOut {
     /// Когда привязан чат в Телеграме (ADR-063, ADR-135); пусто — не привязан. Только в списке.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telegram_linked_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Сотрудник входа (задача 005 Н1, ADR-{n1}); пусто — вход без сотрудника.
+    /// Сотрудник входа (задача 005 Н1, ADR-170); пусто — вход без сотрудника.
     #[serde(default)]
     employee_id: Option<Uuid>,
     #[serde(default)]
@@ -622,7 +622,7 @@ struct CreateUserReq {
     full_name: String,
     #[serde(default = "admin_role")]
     role: String,
-    /// Вход из карточки сотрудника (задача 005 Н1, ADR-{n1}): сотрудник того же филиала.
+    /// Вход из карточки сотрудника (задача 005 Н1, ADR-170): сотрудник того же филиала.
     #[serde(default)]
     employee_id: Option<Uuid>,
 }
@@ -640,7 +640,7 @@ fn check_password(p: &str) -> AppResult<()> {
 }
 
 /// Сотрудник, к которому привязывают вход: тот же филиал, действующий, без другого входа
-/// (ADR-{n1}). Строка сотрудника блокируется до конца операции. Ответ — имя сотрудника.
+/// (ADR-170). Строка сотрудника блокируется до конца операции. Ответ — имя сотрудника.
 async fn employee_for_login(
     conn: &mut sqlx::PgConnection,
     employee_id: Uuid,
@@ -788,7 +788,7 @@ struct UpdateUserReq {
     login: Option<String>,
     /// Филиал администратора (задача 003 Н8, SPEC-33): права переходят вместе с ним.
     branch_id: Option<Uuid>,
-    /// Сотрудник входа (задача 005 Н1, ADR-{n1}): id — связать, `null` — отвязать, нет поля — как было.
+    /// Сотрудник входа (задача 005 Н1, ADR-170): id — связать, `null` — отвязать, нет поля — как было.
     #[serde(default, deserialize_with = "present")]
     employee_id: Option<Option<Uuid>>,
     // Права меняются отдельной операцией `PUT /users/{id}/permissions` (ADR-097): поле
@@ -838,7 +838,7 @@ async fn update_user(
     .await?
     .ok_or(AppError::NotFound)?;
     let before_role = before.role;
-    // Сотрудник после правки: прислан — новый (или никакого), нет поля — прежний (ADR-{n1}).
+    // Сотрудник после правки: прислан — новый (или никакого), нет поля — прежний (ADR-170).
     let employee_id = req.employee_id.unwrap_or(before.employee_id);
     let employee_changed = employee_id != before.employee_id;
     let new_role = role.map_or(before_role.clone(), |r| r.as_str().to_string());
@@ -854,7 +854,7 @@ async fn update_user(
         if !role.map_or(before_role == "admin", |r| r == Role::Admin) {
             return Err(invalid("филиал меняется только у администратора"));
         }
-        // Сотрудник — в своём филиале: вход сотрудника в другой филиал не переводится (ADR-{n1}).
+        // Сотрудник — в своём филиале: вход сотрудника в другой филиал не переводится (ADR-170).
         if employee_id.is_some() {
             return Err(invalid(
                 "вход сотрудника работает в филиале сотрудника: сначала отвяжите сотрудника",
@@ -976,7 +976,7 @@ async fn update_user(
         data["old_branch_id"] = json!(before.branch_id);
         data["branch_id"] = json!(row.branch_id);
     }
-    // Сотрудник входа — «было → стало» (ADR-{n1}).
+    // Сотрудник входа — «было → стало» (ADR-170).
     if employee_changed {
         data["old_employee_id"] = json!(before.employee_id);
         data["employee_id"] = json!(out.employee_id);
@@ -989,7 +989,7 @@ async fn update_user(
 }
 
 /// Отключили сотрудника — отключается и его вход: сессии сброшены, чат в Телеграме отвязан, в
-/// журнал — `user.update` с причиной (задача 005 Н1, ADR-{n1}). Включают вход снова отдельно.
+/// журнал — `user.update` с причиной (задача 005 Н1, ADR-170). Включают вход снова отдельно.
 pub(crate) async fn disable_employee_login(
     conn: &mut sqlx::PgConnection,
     ctx: &Ctx,
@@ -1039,7 +1039,7 @@ struct OwnPasswordOut {
     sessions_closed: u64,
 }
 
-/// «Сменить свой пароль» (задача 005 Н1, ADR-{n1}) — любому входу: прежний пароль, новый не
+/// «Сменить свой пароль» (задача 005 Н1, ADR-170) — любому входу: прежний пароль, новый не
 /// короче 8 символов, `op_id`; в журнал `user.password_self`; прочие сессии этого входа
 /// закрываются, эта остаётся. Неверный прежний пароль — пять за 15 минут, потом блокировка.
 async fn change_own_password(

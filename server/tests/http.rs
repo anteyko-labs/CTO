@@ -466,7 +466,7 @@ async fn every_product_has_a_barcode(pool: PgPool) {
 async fn till_links_unknown_code_once_and_by_its_own_right(pool: PgPool) {
     // Незнакомый код на кассе (задача 005 Н3): повтор `op_id` — прежний ответ без второй записи
     // журнала (I8); чужой код — 409 с названием товара; право «Привязывать коды на кассе»
-    // добавляет код без «Товаров и штрихкодов», но карточку не правит (ADR-{n3}); код литра из
+    // добавляет код без «Товаров и штрихкодов», но карточку не правит (ADR-168); код литра из
     // Умага — сначала предупреждение.
     let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
@@ -6353,7 +6353,7 @@ async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
     assert_eq!(list["items"][0]["stock_purchase_tyiyn"], 120_000);
     assert_eq!(list["totals"]["purchase_tyiyn"], 120_000);
     assert_eq!(list["totals"]["sale_tyiyn"], 200_000);
-    // Администратору — без закупки и без итога по продаже (ADR-{n2}); цена и сумма строки видны.
+    // Администратору — без закупки и без итога по продаже (ADR-167); цена и сумма строки видны.
     let (status, _, list) = call(&app, "GET", "/api/v1/products/list", Some(&admin), None).await;
     assert_eq!(status, StatusCode::OK);
     let row = &list["items"][0];
@@ -12712,7 +12712,7 @@ async fn bot_feed_settings_are_owner_only(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn my_telegram_is_admin_only_and_its_switch_owner_only(pool: PgPool) {
-    // «Мой Телеграм» (SPEC-40 §10, ADR-{h18}): свой код и отвязка — только администратору
+    // «Мой Телеграм» (SPEC-40 §10, ADR-172): свой код и отвязка — только администратору
     // (владельцу 403); настройка «Сотрудники привязывают Телеграм сами» — только владельцу;
     // без входа — 401; код администратора — только ему, даже если в запросе чужой id.
     let app = setup(pool.clone()).await;
@@ -13063,7 +13063,7 @@ async fn unit_change_rounds_disabled_gift_rule_and_marks_it(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn self_routes_need_no_permission_and_open_nothing_else(pool: PgPool) {
-    // Задача 005 Н1 (ADR-{n1}): «Сменить свой пароль» и «Мой заработок» — без права, только своё.
+    // Задача 005 Н1 (ADR-170): «Сменить свой пароль» и «Мой заработок» — без права, только своё.
     // Администратор без единого права меняет свой пароль; заработка у входа без сотрудника нет
     // (404); входы, сотрудники-входы и чужие пароли — по-прежнему только владельцу.
     let app = setup(pool.clone()).await;

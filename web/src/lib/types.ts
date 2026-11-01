@@ -65,7 +65,7 @@ export interface User {
   several_branches?: boolean
   /** Чат Телеграма привязан к этому пользователю (задача 003, Н6); у старого ответа сервера — нет. */
   telegram_linked?: boolean
-  /** Личный вход сотрудника (задача 005 Н1, ADR-{n1}): карточка сотрудника входа; у общего входа
+  /** Личный вход сотрудника (задача 005 Н1, ADR-170): карточка сотрудника входа; у общего входа
    *  кассы и владельца — пусто. */
   employee_id?: string | null
   employee_name?: string | null
@@ -80,7 +80,7 @@ export interface UserRow {
   permissions?: Permission[]
   /** Когда привязан чат в Телеграме (ADR-063, ADR-135); пусто — не привязан. */
   telegram_linked_at?: string | null
-  /** Сотрудник входа (задача 005 Н1, ADR-{n1}); пусто — вход без сотрудника. */
+  /** Сотрудник входа (задача 005 Н1, ADR-170); пусто — вход без сотрудника. */
   employee_id?: string | null
   employee_name?: string | null
 }
@@ -191,7 +191,7 @@ export interface Employee {
   phone?: string
   /** PIN кассира задан (ADR-081); сам PIN сервер не отдаёт. */
   has_pin?: boolean
-  /** Вход в программу сотрудника (задача 005 Н1, ADR-{n1}); сервер отдаёт его только владельцу. */
+  /** Вход в программу сотрудника (задача 005 Н1, ADR-170); сервер отдаёт его только владельцу. */
   login?: EmployeeLogin
 }
 
@@ -375,7 +375,7 @@ export interface ProductList {
   totals: {
     count: number
     purchase_tyiyn?: number
-    /** Итог по продаже — только владельцу (общая стоимость склада, ADR-{n2}). */
+    /** Итог по продаже — только владельцу (общая стоимость склада, ADR-167). */
     sale_tyiyn?: number
     /** Сколько товаров в каждом отборе по складу — при тех же поиске и категории. */
     counts?: Record<StockChip, number>
@@ -400,7 +400,7 @@ export interface CategoryTotal {
   container_ml: number | null
   /** Только владельцу. */
   purchase_tyiyn?: number
-  /** Только владельцу (ADR-{n2}). */
+  /** Только владельцу (ADR-167). */
   sale_tyiyn?: number
 }
 

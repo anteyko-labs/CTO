@@ -43,7 +43,7 @@ export interface AdminBotHelper {
 export interface AdminBot {
   linked: boolean
   linked_at: string | null
-  /** Телеграм-имя привязанного чата: @имя или имя в Телеграме (ADR-{h18}). */
+  /** Телеграм-имя привязанного чата: @имя или имя в Телеграме (ADR-172). */
   tg_name?: string | null
   items: AdminBotItem[]
   on: string[]

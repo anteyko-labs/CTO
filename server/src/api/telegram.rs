@@ -1193,10 +1193,20 @@ async fn message(
             return Ok(r);
         }
     }
-    // Сотрудник со входом и кабинетом работника по телефону в одном чате (задача 005, ответ 8а):
-    // и заработок, и кнопки по его правам; кнопки внизу — меню администратора с «💼 Мой заработок».
-    let staff_admin = if !owner && customer.is_none() && employee.is_some() {
-        crate::api::bot_admin::chat_user(conn, chat_id).await?
+    // Сотрудник со входом и кабинетом работника в одном чате (задача 005, ответ 8а; ADR-170): и
+    // заработок, и кнопки по его правам; кнопки внизу — меню администратора с «💼 Мой заработок».
+    // Кабинет — по телефону (SPEC-23) или по сотруднику личного входа (`users.employee_id`);
+    // подключён по телефону — заработок того, кто подключился.
+    let staff_admin = if !owner && customer.is_none() {
+        match crate::api::bot_admin::chat_user(conn, chat_id).await? {
+            Some((user, tg)) => {
+                if employee.is_none() {
+                    employee = bot_staff::of_login(conn, &user).await?;
+                }
+                employee.is_some().then_some((user, tg))
+            }
+            None => None,
+        }
     } else {
         None
     };
@@ -1246,6 +1256,15 @@ async fn message(
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
             owner_keys(conn, assistant, chat_id).await?
+        } else if let Some((user, _)) = crate::api::bot_admin::chat_user(conn, chat_id)
+            .await?
+            .filter(|_| staff_admin.is_some())
+        {
+            Keys::Admin(
+                crate::api::bot_admin::menu(conn, &user)
+                    .await?
+                    .with_earnings(),
+            )
         } else {
             other_keys(conn, chat_id, customer.is_some(), employee.is_some()).await?
         };
@@ -1428,14 +1447,35 @@ async fn callback(
     }
     // Кнопки кабинета работника: сотрудник из данных кнопки сверяется с привязкой чата.
     if data.starts_with("e:") {
-        let employee = bot_staff::employee_link(conn, chat_id).await?;
+        let mut employee = bot_staff::employee_link(conn, chat_id).await?;
         let customer = matches!(customer_link(conn, chat_id).await?, CustomerLink::Linked(_));
+        // Чат входа сотрудника (ответ 8а, ADR-170): разделы — кнопками под сообщением, внизу —
+        // меню администратора; кабинет — по телефону или по сотруднику входа.
+        let admin = if customer {
+            None
+        } else {
+            crate::api::bot_admin::chat_user(conn, chat_id).await?
+        };
+        if let (EmployeeLink::None, Some((user, _))) = (&employee, &admin)
+            && let Some(e) = bot_staff::of_login(conn, user).await?
+        {
+            employee = EmployeeLink::Linked(e);
+        }
         return match employee {
             EmployeeLink::Linked(e) => {
                 if bot_staff::too_often(conn, chat_id).await? {
                     return Ok(bot_staff::too_often_reply());
                 }
-                bot_staff::callback(conn, &e, data, customer).await
+                let mut r =
+                    bot_staff::callback(conn, &e, data, customer || admin.is_some()).await?;
+                if let Some((user, _)) = &admin {
+                    r.keys = Keys::Admin(
+                        crate::api::bot_admin::menu(conn, user)
+                            .await?
+                            .with_earnings(),
+                    );
+                }
+                Ok(r)
             }
             EmployeeLink::Dropped => Ok(Reply::new(
                 bot_staff::RESHARE,
@@ -2204,7 +2244,7 @@ async fn handle_text(
 }
 
 /// Ответ на неверный или устаревший код привязки: код администратору даёт владелец (ADR-135)
-/// или он берёт его сам в «Мой Телеграм» (ADR-{h18}).
+/// или он берёт его сам в «Мой Телеграм» (ADR-172).
 pub const WRONG_CODE: &str = "Код не подошёл или устарел. Возьмите новый: владелец — в «Настройки → Телеграм и баллы», администратор — в «Мой Телеграм» на сайте или у владельца («Пользователи → Телеграм»).";
 
 /// Привязка чата к владельцу по коду — одной транзакцией с журналом. Неверные коды
@@ -2233,7 +2273,7 @@ async fn link(
         );
     }
     // Код владельца или администратора: администратору код даёт владелец в «Пользователях»
-    // (ADR-135) или он сам в «Мой Телеграм» (`by_self`, ADR-{h18}); свой код не действует,
+    // (ADR-135) или он сам в «Мой Телеграм» (`by_self`, ADR-172); свой код не действует,
     // если владелец выключил «Сотрудники привязывают Телеграм сами».
     let owner = sqlx::query!(
         r#"select u.id, u.branch_id, u.full_name, u.login, u.role, c.by_self from telegram_codes c
@@ -2272,7 +2312,7 @@ async fn link(
     .fetch_all(&mut *tx)
     .await?;
     // Перепривязка: память разговора, режим вопросов, ввод меню и открытый черновик прежнего
-    // хозяина чата не достаются новому (ответы владельцу — с прибылью, I13; ADR-{h18}).
+    // хозяина чата не достаются новому (ответы владельцу — с прибылью, I13; ADR-172).
     gone.push(chat_id);
     gone.sort_unstable();
     gone.dedup();
@@ -2345,7 +2385,7 @@ async fn link(
 }
 
 /// Чат сменил хозяина (привязка заново): память разговора помощника, режим вопросов, ввод
-/// меню администратора и открытый черновик чата — прочь (ADR-{h18}).
+/// меню администратора и открытый черновик чата — прочь (ADR-172).
 async fn forget_chat(conn: &mut PgConnection, chat_id: i64) -> AppResult<()> {
     sqlx::query!("delete from bot_dialog where chat_id = $1", chat_id)
         .execute(&mut *conn)
@@ -2764,7 +2804,7 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     let watched = watched_actions();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.created_at, a.entity_id, a.branch_id,
-                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-{n1}).
+                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-170).
                   case when we.id is not null then w.login || ' (' || we.full_name || ')'
                        else w.full_name end as "who?", t.chat_id,
                   e.full_name as "employee?", b.name as branch_name,
@@ -3900,7 +3940,7 @@ struct From {
     last_name: Option<String>,
 }
 
-/// Телеграм-имя для показа «к кому привязан» (ADR-{h18}): @имя, без него — имя и фамилия в
+/// Телеграм-имя для показа «к кому привязан» (ADR-172): @имя, без него — имя и фамилия в
 /// Телеграме; не длиннее 64 знаков.
 fn tg_name(f: &From) -> Option<String> {
     let name = match f.username.as_deref().map(str::trim) {
@@ -4064,7 +4104,7 @@ async fn handle_incoming(
             let r =
                 handle_message_with(conn, assistant, chat_id, from_id, text.as_deref(), contact)
                     .await?;
-            // После ответа: `/start <код>` этим же сообщением привязал чат (ADR-{h18}).
+            // После ответа: `/start <код>` этим же сообщением привязал чат (ADR-172).
             remember_name(conn, chat_id, name.as_deref()).await?;
             Ok(r)
         }
@@ -5207,7 +5247,7 @@ mod tests {
 
     #[test]
     fn tg_name_is_username_or_full_name() {
-        // ADR-{h18}: «к какому Телеграм-имени» — @имя, без него — имя и фамилия.
+        // ADR-172: «к какому Телеграм-имени» — @имя, без него — имя и фамилия.
         let f = |u: Option<&str>, first: Option<&str>, last: Option<&str>| From {
             id: 1,
             username: u.map(str::to_string),

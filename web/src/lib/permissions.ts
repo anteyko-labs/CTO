@@ -145,7 +145,7 @@ export function rememberShiftCashier(
 
 /** Право снято у кассира открытой смены — его имя (для подписи «Нет права у кассира …»).
  *  Урезает только вход без сотрудника (общий вход кассы); личный вход сотрудника — по своим
- *  правам (задача 005 Н1, ADR-{n1}). */
+ *  правам (задача 005 Н1, ADR-170). */
 export function cashierDenied(
   user: Pick<User, 'role' | 'employee_id'>,
   permission: Permission,

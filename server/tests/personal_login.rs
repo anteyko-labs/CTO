@@ -1,4 +1,4 @@
-//! Задача 005 Н1: личный вход сотрудника (ADR-{n1}). Вход заводит владелец из карточки
+//! Задача 005 Н1: личный вход сотрудника (ADR-170). Вход заводит владелец из карточки
 //! сотрудника; права — свои (урезание ADR-152 только у общего входа); отключение сотрудника режет
 //! сессии; «Сменить свой пароль»; кассир открывает смену на себя без PIN и не пробивает онлайн-чек
 //! в чужой смене; «Мой заработок» — только своё; предел попыток входа с одного адреса.
@@ -895,4 +895,156 @@ async fn one_cashiers_typos_do_not_lock_others_on_same_till(pool: PgPool) {
     // Нурлан на том же моноблоке входит.
     login(&w.app, "nurlan", "nurlan-pass-1").await;
     login(&w.app, "kassa", "kassa-pass-1").await;
+}
+
+/// Ответ 8а (ADR-170): вход сотрудника, привязанный к боту, — один чат: кнопки по его правам и
+/// «💼 Мой заработок» (тот же расчёт, что кабинет работника), без подключения по телефону.
+/// Подключился тем же чатом и по телефону — ничего не ломается, заработок тот же.
+#[sqlx::test(migrations = "./migrations")]
+async fn personal_login_chat_has_rights_and_own_earnings(pool: PgPool) {
+    use avtodom_server::api::telegram::{Keys, handle_callback, handle_message, handle_update};
+    use avtodom_server::domain::money::format_som;
+    const CHAT: i64 = 740_001;
+    let w = W::new(pool).await;
+    let bakyt = w.employee("Бакыт", false, None).await;
+    let other = w.employee("Эрлан", false, None).await;
+    w.personal(&bakyt, "bakyt").await;
+    let me = login(&w.app, "bakyt", "bakyt-pass-1").await;
+    for (emp, amount) in [(&bakyt, 5_000), (&other, 7_000)] {
+        w.ok(
+            "POST",
+            &w.owner,
+            "/api/v1/payroll/accruals",
+            json!({ "op_id": Uuid::now_v7(), "employee_id": emp, "kind": "bonus",
+                    "amount_tyiyn": amount, "comment": "за план" }),
+        )
+        .await;
+    }
+    let code = w
+        .ok(
+            "POST",
+            &me,
+            "/api/v1/me/telegram/code",
+            json!({ "op_id": Uuid::now_v7() }),
+        )
+        .await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut conn = w.pool.acquire().await.unwrap();
+    let r = handle_update(
+        &mut conn,
+        None,
+        json!({
+            "update_id": 1,
+            "message": {
+                "chat": { "id": CHAT, "type": "private" },
+                "from": { "id": CHAT, "first_name": "Бакыт" },
+                "text": format!("/start {code}")
+            }
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(r.text.starts_with("Готово"), "{}", r.text);
+
+    for phone in ["без телефона", "с телефоном"] {
+        if phone == "с телефоном" {
+            // Тот же человек подключил тот же чат и по телефону (SPEC-23) — не мешает.
+            sqlx::query("update employees set phone = '+996700123456' where id = $1::uuid")
+                .bind(&bakyt)
+                .execute(&w.pool)
+                .await
+                .unwrap();
+            sqlx::query("insert into telegram_employees (chat_id, employee_id, branch_id, phone) select $1, id, branch_id, phone from employees where id = $2::uuid")
+                .bind(CHAT)
+                .bind(&bakyt)
+                .execute(&w.pool)
+                .await
+                .unwrap();
+        }
+        // Свободный текст — меню по правам, первым рядом «💼 Мой заработок».
+        let r = handle_message(&mut conn, CHAT, CHAT, Some("привет"), None)
+            .await
+            .unwrap();
+        let Keys::Admin(menu) = r.keys else {
+            panic!("{phone}: не кнопки администратора: {:?} {}", r.keys, r.text)
+        };
+        assert!(menu.has("shift"), "{phone}: {menu:?}");
+        assert_eq!(menu.rows()[0], vec!["💼 Мой заработок"], "{phone}");
+        assert!(r.text.contains("💼 Мой заработок"), "{phone}: {}", r.text);
+        // Заработок — свой, кнопки внизу — администратора, разделы — под сообщением.
+        let r = handle_message(&mut conn, CHAT, CHAT, Some("💼 Мой заработок"), None)
+            .await
+            .unwrap();
+        assert!(r.text.starts_with("💼 Сегодня"), "{phone}: {}", r.text);
+        assert!(r.text.contains("Бакыт"), "{phone}: {}", r.text);
+        assert!(r.text.contains(&format_som(5_000)), "{phone}: {}", r.text);
+        assert!(!r.text.contains(&format_som(7_000)), "{phone}: {}", r.text);
+        assert!(matches!(r.keys, Keys::Admin(_)), "{phone}: {:?}", r.keys);
+        assert!(!r.inline.is_empty(), "{phone}: разделы под сообщением");
+        // Месяц кнопкой под сообщением — своё, кнопки администратора.
+        let r = handle_callback(&mut conn, CHAT, &format!("e:m:{bakyt}"))
+            .await
+            .unwrap();
+        assert!(r.text.contains("Бакыт"), "{phone}: {}", r.text);
+        assert!(matches!(r.keys, Keys::Admin(_)), "{phone}: {:?}", r.keys);
+        // Чужой сотрудник в кнопке — ничего не показывается.
+        let r = handle_callback(&mut conn, CHAT, &format!("e:m:{other}"))
+            .await
+            .unwrap();
+        assert!(!r.text.contains("Эрлан"), "{phone}: {}", r.text);
+        // Кнопка меню по правам работает.
+        let r = handle_message(&mut conn, CHAT, CHAT, Some("🧾 Смена сейчас"), None)
+            .await
+            .unwrap();
+        assert!(r.text.starts_with("🧾 Смена"), "{phone}: {}", r.text);
+    }
+
+    // Общий вход кассы (без сотрудника) — без «Мой заработок».
+    let kassa_code = w
+        .ok(
+            "POST",
+            &w.kassa,
+            "/api/v1/me/telegram/code",
+            json!({ "op_id": Uuid::now_v7() }),
+        )
+        .await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = handle_update(
+        &mut conn,
+        None,
+        json!({
+            "update_id": 2,
+            "message": {
+                "chat": { "id": CHAT + 1, "type": "private" },
+                "from": { "id": CHAT + 1, "first_name": "Касса" },
+                "text": format!("/start {kassa_code}")
+            }
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(r.text.starts_with("Готово"), "{}", r.text);
+    let r = handle_message(&mut conn, CHAT + 1, CHAT + 1, Some("привет"), None)
+        .await
+        .unwrap();
+    let Keys::Admin(menu) = r.keys else {
+        panic!("не кнопки администратора: {:?}", r.keys)
+    };
+    assert!(!menu.earnings(), "{menu:?}");
+    let r = handle_message(
+        &mut conn,
+        CHAT + 1,
+        CHAT + 1,
+        Some("💼 Мой заработок"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!r.text.starts_with("💼 Сегодня"), "{}", r.text);
 }

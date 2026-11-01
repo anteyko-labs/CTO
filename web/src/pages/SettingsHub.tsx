@@ -10,9 +10,9 @@ import { useAction } from '../lib/hooks'
 import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
 const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean; adminOnly?: boolean; permission?: Permission }[] = [
-  // Любому входу (задача 005 Н1, ADR-{n1}).
+  // Любому входу (задача 005 Н1, ADR-170).
   { to: '/profile', title: 'Профиль', text: 'Сменить свой пароль; у входа сотрудника — «Мой заработок»', icon: 'employees' },
-  // Свой чат с ботом администратор привязывает сам (ADR-{h18}).
+  // Свой чат с ботом администратор привязывает сам (ADR-172).
   { to: '/my-telegram', title: 'Мой Телеграм', text: 'Бот на телефоне: накладные фото, должники, смена', icon: 'bell', adminOnly: true },
   { to: '/settings/cashier', title: 'Касса', text: 'Кнопки режима кассы и их место, скидка и её предел, прибыль в чеке смены, продажа только при смене', icon: 'cashier', ownerOnly: true },
   { to: '/settings/sales', title: 'Продажи', text: 'Кто задаёт цену новой услуги; уведомление об услуге от администратора', icon: 'cashier', ownerOnly: true },

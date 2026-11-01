@@ -1806,8 +1806,10 @@ pub(crate) async fn chat_sender(
     chat_id: i64,
 ) -> AppResult<Option<(CurrentUser, Option<i64>)>> {
     let Some(r) = sqlx::query!(
-        r#"select u.id, t.branch_id, u.branch_id as home, u.login, u.full_name, u.role, t.tg_user_id
+        r#"select u.id, t.branch_id, u.branch_id as home, u.login, u.full_name, u.role, t.tg_user_id,
+                  u.employee_id, e.full_name as "employee_name?"
            from telegram_links t join users u on u.id = t.user_id
+           left join employees e on e.id = u.employee_id
            where t.chat_id = $1 and u.active"#,
         chat_id
     )
@@ -1829,8 +1831,9 @@ pub(crate) async fn chat_sender(
             login: r.login,
             full_name: r.full_name,
             role,
-            employee_id: None,
-            employee_name: None,
+            // Личный вход сотрудника (ADR-170): в чате — те же права, что на сайте, и заработок.
+            employee_id: r.employee_id,
+            employee_name: r.employee_name,
         },
         r.tg_user_id,
     )))

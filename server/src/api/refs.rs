@@ -75,7 +75,7 @@ struct EmployeeOut {
     phone: Option<String>,
     /// PIN кассира задан (ADR-081); сам PIN не отдаётся никому.
     has_pin: bool,
-    /// Вход в программу этого сотрудника (задача 005 Н1, ADR-{n1}) — только владельцу: он заводит
+    /// Вход в программу этого сотрудника (задача 005 Н1, ADR-170) — только владельцу: он заводит
     /// и меняет вход.
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<EmployeeLogin>,
@@ -338,13 +338,13 @@ async fn update_employee(
     let new_key = crate::api::telegram::phone_key(&r.phone);
     if prev.active && !r.active {
         crate::api::bot_staff::drop_for_employee(&mut tx, &ctx, id, "сотрудник отключён").await?;
-        // Отключили сотрудника — его вход в программу тоже, сессии сброшены (ADR-{n1}).
+        // Отключили сотрудника — его вход в программу тоже, сессии сброшены (ADR-170).
         crate::api::auth::disable_employee_login(&mut tx, &ctx, id).await?;
     } else if new_key.is_none() || new_key != crate::api::telegram::phone_key(&prev.phone) {
         crate::api::bot_staff::drop_for_employee(&mut tx, &ctx, id, "телефон в карточке изменён")
             .await?;
     }
-    // Имя входа сотрудника — как в карточке: журнал и списки показывают одно имя (ADR-{n1}).
+    // Имя входа сотрудника — как в карточке: журнал и списки показывают одно имя (ADR-170).
     if r.full_name != prev.full_name {
         sqlx::query!(
             "update users set full_name = $2 where employee_id = $1",

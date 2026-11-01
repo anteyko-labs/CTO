@@ -77,7 +77,7 @@ describe('«Склад → Остатки» (SPEC-36 §14)', () => {
     const owner = stockSheetHtml({ at: '2026-10-27T08:00:00Z', groups, total: { count: 1, sale_tyiyn: -20_000, purchase_tyiyn: -15_000 } })
     expect(owner).toContain('Сумма (закупка)')
     expect(owner).toContain(formatSomExact(-20_000))
-    // Не владельцу сервер сумм по продаже в подытоге и итоге не отдаёт (ADR-{n2}): строка — с суммой.
+    // Не владельцу сервер сумм по продаже в подытоге и итоге не отдаёт (ADR-167): строка — с суммой.
     const bare = [{ total: total({ count: 1, pieces: -2, sale_tyiyn: undefined }), rows: groups[0].rows }]
     const admin = stockSheetHtml({ at: '2026-10-27T08:00:00Z', groups: bare, total: { count: 1 } })
     expect(admin).toContain('Лампа &lt;H4&gt; <b>(проверить)</b>')

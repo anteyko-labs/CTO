@@ -11,7 +11,7 @@
 //! владелец включает ему отдельные события из [`EVENTS`] — только без денег владельца, тексты —
 //! [`event_text`], свой филиал (I16).
 //!
-//! Помощник (SPEC-40 «Дополнено: помощник», ADR-{h17}): если владелец включил его
+//! Помощник (SPEC-40 «Дополнено: помощник», ADR-171): если владелец включил его
 //! администратору (и не выключил всем в «Настройки → Телеграм»), свободный текст уходит в сервис
 //! разбора вопросов (`assistant::answer_admin`). Модель видит только инструменты [`HELPER_TOOLS`]
 //! по правам этого администратора ([`helper_tools`]) и только его филиал; каждый вызов проверяет
@@ -169,6 +169,11 @@ impl Menu {
     pub fn with_earnings(self) -> Self {
         Self(self.0 | EARNINGS)
     }
+
+    /// В меню есть «💼 Мой заработок».
+    pub fn earnings(self) -> bool {
+        self.0 & EARNINGS != 0
+    }
 }
 
 /// Бит «чат ещё и кабинет работника» — вне битов пунктов [`ITEMS`].
@@ -206,7 +211,15 @@ pub async fn menu(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<Menu
             bits |= 1 << n;
         }
     }
-    Ok(Menu(bits))
+    let menu = Menu(bits);
+    // Личный вход сотрудника (ответ 8а, ADR-170): в том же чате — и «💼 Мой заработок».
+    Ok(
+        if crate::api::bot_staff::of_login(conn, user).await?.is_some() {
+            menu.with_earnings()
+        } else {
+            menu
+        },
+    )
 }
 
 /// Администратор, к которому привязан чат (только активный), и кто в Телеграме привязывал чат.
@@ -230,6 +243,12 @@ pub async fn keys(conn: &mut PgConnection, chat_id: i64) -> AppResult<Keys> {
 /// Подсказка администратору: что ему доступно.
 pub fn help(menu: Menu) -> String {
     let mut lines = vec!["Что можно в боте:".to_string()];
+    if menu.earnings() {
+        lines.push(format!(
+            "{} — сколько заработали, удержания и премии, ваши работы",
+            crate::api::bot_staff::BTN_EARNINGS
+        ));
+    }
     lines.extend(menu.items().map(|i| format!("{} — {}", i.button, i.what)));
     if menu.has("invoice") {
         lines.push("Фото накладной присылайте прямо в чат.".into());
@@ -1929,7 +1948,7 @@ pub async fn event_text(
 // ---------- Экран «Пользователи → Телеграм» ----------
 
 /// Пункт «Что видит в боте»: у владельца в «Пользователи → Телеграм» и у самого администратора
-/// в «Мой Телеграм» (ADR-{h18}).
+/// в «Мой Телеграм» (ADR-172).
 #[derive(Serialize)]
 pub(crate) struct ItemOut {
     key: &'static str,
@@ -1963,7 +1982,7 @@ struct GroupOut {
 struct BotOut {
     linked: bool,
     linked_at: Option<DateTime<Utc>>,
-    /// Телеграм-имя привязанного чата (@имя или имя в Телеграме), ADR-{h18}.
+    /// Телеграм-имя привязанного чата (@имя или имя в Телеграме), ADR-172.
     tg_name: Option<String>,
     /// Что видит администратор в боте: пункты меню по его правам.
     items: Vec<ItemOut>,

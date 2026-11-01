@@ -634,7 +634,7 @@ export default function Products() {
                       · по закупке <span className="tabular-nums">{formatSom(totals.purchase_tyiyn)}</span>
                     </span>
                   )}
-                  {/* Итог по продаже — только владельцу: сервер его не отдаёт остальным (ADR-{n2}). */}
+                  {/* Итог по продаже — только владельцу: сервер его не отдаёт остальным (ADR-167). */}
                   {totals.sale_tyiyn !== undefined && (
                     <span>
                       · по продаже <span className="tabular-nums">{formatSom(totals.sale_tyiyn)}</span>

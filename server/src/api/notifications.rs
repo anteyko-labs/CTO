@@ -105,7 +105,7 @@ pub(crate) const WATCHED: [&str; 81] = [
     "debt.old_supplier",
     // К товару привязан код — на кассе или в карточке (задача 005 Н3); в бот по умолчанию не идёт.
     "product.barcode",
-    // Администратор отвязал свой Телеграм сам (ADR-{h18}).
+    // Администратор отвязал свой Телеграм сам (ADR-172).
     "telegram.admin_unlink",
 ];
 
@@ -780,7 +780,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             )
         }
         // Кнопки бота — по его правам, без денег владельца (SPEC-40); код — от владельца или
-        // сам в «Мой Телеграм» (ADR-{h18}).
+        // сам в «Мой Телеграм» (ADR-172).
         "telegram.admin_link" => (
             format!("Телеграм привязан: администратор {}", text("full_name")),
             if text("via") == "self" {
@@ -1498,7 +1498,7 @@ async fn page(
     let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.entity_id, a.created_at,
-                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-{n1}).
+                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-170).
                   case when ue.id is not null then u.login || ' (' || ue.full_name || ')'
                        else u.full_name end as "user_name?"
            from audit_log a
@@ -1701,7 +1701,7 @@ mod tests {
 
     #[test]
     fn admin_telegram_link_and_unlink_say_who_did_it() {
-        // ADR-{h18}: привязка — по коду от владельца или сам; отвязка самим администратором.
+        // ADR-172: привязка — по коду от владельца или сам; отвязка самим администратором.
         let (title, text) = describe(
             "telegram.admin_link",
             &json!({ "full_name": "Эрбол", "via": "self" }),

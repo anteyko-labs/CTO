@@ -1169,7 +1169,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
   // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
   const discountLines = canDiscount ? [] : lines.filter((l) => isDiscount(parseSom(l.priceText), lineList(l), l.gift))
-  // Продажа только при открытой смене (задача 005 Н4, ADR-{n4}): при связи и без смены вместо
+  // Продажа только при открытой смене (задача 005 Н4, ADR-169): при связи и без смены вместо
   // «Провести чек» — «Открыть смену». Без связи касса продаёт, как прежде (I9): чек уйдёт позже,
   // владельцу придёт «чек без открытой смены». Проверяет и сервер (409), кнопка — удобство.
   const needShift = !fix && cs.sale_requires_shift && online && shiftKnown && shift.data === null

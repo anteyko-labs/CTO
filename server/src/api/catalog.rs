@@ -959,7 +959,7 @@ pub struct ProductListTotals {
     /// По закупке — только владельцу.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchase_tyiyn: Option<i64>,
-    /// По продаже — тоже только владельцу: общая стоимость склада (ADR-{n2}, I13).
+    /// По продаже — тоже только владельцу: общая стоимость склада (ADR-167, I13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sale_tyiyn: Option<i64>,
     /// Числа отборов по складу — при тех же поиске и категории (SPEC-30 §11).
@@ -992,7 +992,7 @@ pub struct CategoryTotal {
     /// По закупке — только владельцу (ADR-008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchase_tyiyn: Option<i64>,
-    /// По продаже — только владельцу (ADR-{n2}).
+    /// По продаже — только владельцу (ADR-167).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sale_tyiyn: Option<i64>,
 }
@@ -1037,7 +1037,7 @@ pub struct ProductList {
 /// Список товаров с суммами остатка и итогами по всему отбору. Итоги считает сервер: клиент
 /// дробей не складывает. Администратору закупка и стоимость остатка не отдаются, и сортировать
 /// по ним он не может (ADR-008); итог по продаже за отбор и в подытогах — тоже только владельцу
-/// (ADR-{n2}): цена и сумма строки товара видны всем.
+/// (ADR-167): цена и сумма строки товара видны всем.
 pub async fn product_list(
     conn: &mut PgConnection,
     user: &CurrentUser,
@@ -2185,7 +2185,7 @@ async fn umag_measure_code(
 }
 
 /// Привязать код к товару: право «Товары и штрихкоды» или «Привязывать коды на кассе»
-/// (задача 005 Н3, ADR-{n3}) — второе только добавляет код, карточку не правит.
+/// (задача 005 Н3, ADR-168) — второе только добавляет код, карточку не правит.
 async fn add_barcode(
     State(state): State<AppState>,
     ctx: Ctx,

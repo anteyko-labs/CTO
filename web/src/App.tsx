@@ -89,7 +89,7 @@ interface NavItem {
   adminOnly?: boolean
   /** Пункт для владельца и администратора с этим правом (ADR-082, ADR-097); список — с любым из прав. */
   permission?: Permission | Permission[]
-  /** Только у личного входа сотрудника (задача 005 Н1, ADR-{n1}). */
+  /** Только у личного входа сотрудника (задача 005 Н1, ADR-170). */
   employeeOnly?: boolean
 }
 
@@ -145,7 +145,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/gifts', label: 'Подарки', icon: 'gifts', ownerOnly: true },
       // Права администраторов — на виду (задача 003 Н8); экран тот же, что «Настройки → Пользователи».
       { to: '/users', label: 'Пользователи и права', icon: 'employees', ownerOnly: true },
-      // Свой чат с ботом администратор привязывает сам (ADR-{h18}).
+      // Свой чат с ботом администратор привязывает сам (ADR-172).
       { to: '/my-telegram', label: 'Мой Телеграм', icon: 'bell', adminOnly: true },
       { to: '/settings', label: 'Настройки', icon: 'settings' },
     ],
