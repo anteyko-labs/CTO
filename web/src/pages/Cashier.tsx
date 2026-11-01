@@ -1169,6 +1169,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
   // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
   const discountLines = canDiscount ? [] : lines.filter((l) => isDiscount(parseSom(l.priceText), lineList(l), l.gift))
+  // Продажа только при открытой смене (задача 005 Н4, ADR-{n4}): при связи и без смены вместо
+  // «Провести чек» — «Открыть смену». Без связи касса продаёт, как прежде (I9): чек уйдёт позже,
+  // владельцу придёт «чек без открытой смены». Проверяет и сервер (409), кнопка — удобство.
+  const needShift = !fix && cs.sale_requires_shift && online && shiftKnown && shift.data === null
   // Короткое название (четвёртое) — для строки «Не хватает: …» в режиме кассы.
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]', 'товары'],
@@ -1212,6 +1216,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn', 'ПИН / ИНН'],
     [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
     [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
+    // В режиме кассы плашки нет (строки не сдвигаются): «Не хватает: … открытая смена».
+    [!(touch && needShift), 'открытая смена — без неё чек не пробить', undefined, 'открытая смена'],
   )
 
   const submit = () =>
@@ -1400,10 +1406,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     focusField(focus)
   }
 
-  // Продажа только при открытой смене (задача 005 Н4, ADR-{n4}): при связи и без смены вместо
-  // «Провести чек» — «Открыть смену». Без связи касса продаёт, как прежде (I9): чек уйдёт позже,
-  // владельцу придёт «чек без открытой смены». Проверяет и сервер (409), кнопка — удобство.
-  const needShift = !fix && cs.sale_requires_shift && online && shiftKnown && shift.data === null
   // QR банка ждёт оплаты — чек ждёт его (панель QR сама говорит «Ждём оплату»); без связи с
   // сервером не ждёт: кассир отмечает оплату вручную (ADR-130).
   const canSubmit = !needShift && !busy && blockers.length === 0 && (bankQr.qr?.status !== 'waiting' || bankQr.lost)
@@ -2181,8 +2183,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <div className="lg:col-span-2">
           <CashierModeBar
             shift={shift.loading && !shiftKnown ? undefined : shift.data}
-            onOpenShift={startShift}
+            onOpenShift={openShiftForSale}
             onShiftChanged={shift.reload}
+            saleBlocked={needShift}
             buttons={at('bar')}
             exitGrey={cs.exit_grey}
           />
@@ -2249,18 +2252,21 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </div>
         )}
         {needShift ? (
-          // Продажа только при открытой смене (задача 005 Н4): и в режиме кассы.
-          <div
-            className={`flex items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-rose-900 ${touch ? 'py-1.5 text-base lg:shrink-0' : 'py-1 text-sm'}`}
-            role="status"
-            data-testid="shift-needed"
-          >
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Смена не открыта — пробить чек нельзя</span>
-            <button type="button" className="shrink-0 font-medium underline" onClick={openShiftForSale}>
-              Открыть смену
-            </button>
-          </div>
+          // Продажа только при открытой смене (задача 005 Н4). В режиме кассы то же пишет полоса
+          // сверху (`saleBlocked`): лишняя плашка сдвинула бы строки чека под пальцем.
+          !touch && (
+            <div
+              className="flex items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-sm text-rose-900"
+              role="status"
+              data-testid="shift-needed"
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">Смена не открыта — пробить чек нельзя</span>
+              <button type="button" className="shrink-0 font-medium underline" onClick={openShiftForSale}>
+                Открыть смену
+              </button>
+            </div>
+          )
         ) : (
           !fix &&
           !touch &&

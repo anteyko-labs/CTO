@@ -26,6 +26,7 @@ export function CashierModeBar({
   onShiftChanged,
   buttons = BAR_DEFAULT,
   exitGrey = false,
+  saleBlocked = false,
 }: {
   shift: Shift | null | undefined
   onOpenShift: () => void
@@ -36,6 +37,9 @@ export function CashierModeBar({
   buttons?: ButtonId[]
   /** «Выйти из режима кассы» — серой. */
   exitGrey?: boolean
+  /** Без смены чек не пробить (задача 005 Н4): надпись полосы — та самая плашка режима кассы (что
+   *  нельзя, говорит строка «Не хватает: … открытая смена»), отдельная плашка сдвинула бы строки. */
+  saleBlocked?: boolean
 }) {
   // Связь — с сервером, а не только сеть устройства; не отправлено — чеки вошедшего пользователя.
   const online = useServerOnline()
@@ -114,7 +118,7 @@ export function CashierModeBar({
             </span>
           </>
         ) : shift === null ? (
-          <span className="flex flex-wrap items-center gap-3 text-base text-amber-300">
+          <span className="flex flex-wrap items-center gap-3 text-base text-amber-300" data-testid={saleBlocked ? 'shift-needed' : undefined}>
             Смена не открыта
             <button type="button" className="rounded-lg bg-amber-500 px-5 font-semibold text-slate-900 active:bg-amber-400" onClick={onOpenShift}>
               Открыть смену

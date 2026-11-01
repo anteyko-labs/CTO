@@ -97,8 +97,11 @@ export async function shiftOnTill(page: Page, name?: string): Promise<void> {
   await ready.first().waitFor({ state: 'attached', timeout: 10_000 })
   if (!(await banner.isVisible())) return
   await ensureShift(page.request, name)
-  await banner.getByRole('button', { name: 'Открыть смену' }).click()
-  await expect(banner).toBeHidden()
+  // Касса перечитывает смену по нажатию; не успела — нажать ещё раз.
+  await expect(async () => {
+    if (await banner.isVisible()) await banner.getByRole('button', { name: 'Открыть смену' }).click({ timeout: 2_000 })
+    await expect(banner).toBeHidden({ timeout: 2_000 })
+  }).toPass({ timeout: 15_000 })
 }
 
 export async function pickCashier(page: Page, name: string): Promise<void> {
