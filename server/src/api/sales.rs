@@ -1412,8 +1412,9 @@ pub async fn post_sale_core(
         .map_or(req.cashier_id, |s| s.cashier_employee_id);
     // Кассир, вошедший своим логином, пробивает онлайн-чек только в своей смене (задача 005 Н1,
     // ADR-170): иначе чек и процент ушли бы кассиру чужой смены. Владелец и вход без сотрудника —
-    // как раньше; чек без сети уже состоялся и не отклоняется (I9, I10).
-    if !lenient
+    // как раньше; чек без сети уже состоялся и не отклоняется (I9, I10), но владелец узнаёт
+    // о нём (`sale.offline_bypass`, ADR-062): признак без сети не даёт прав.
+    if replay.is_none()
         && req.correction.is_none()
         && let (Some(me), Some(shift)) = (ctx.user.employee_id, at_shift.as_ref())
         && shift.cashier_employee_id != me
@@ -1427,12 +1428,18 @@ pub async fn post_sale_core(
         .fetch_one(&mut *conn)
         .await?;
         if names.me_cashier == Some(true) {
-            return Err(AppError::Conflict(format!(
-                "Смена открыта на {}: закройте её и откройте свою",
-                names
-                    .shift_cashier
-                    .unwrap_or_else(|| "другого кассира".into())
-            )));
+            let shift_cashier = names
+                .shift_cashier
+                .unwrap_or_else(|| "другого кассира".into());
+            if offline {
+                bypass.push(format!(
+                    "пробит в смене {shift_cashier} личным входом другого кассира"
+                ));
+            } else {
+                return Err(AppError::Conflict(format!(
+                    "Смена открыта на {shift_cashier}: закройте её и откройте свою"
+                )));
+            }
         }
     }
     // Кассира смены могли отключить посреди смены — чек смены всё равно его. Исправление

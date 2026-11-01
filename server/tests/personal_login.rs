@@ -775,6 +775,22 @@ async fn cashier_sells_online_only_in_own_shift(pool: PgPool) {
     offline["client_time"] = json!(chrono::Utc::now());
     let (s, e) = w.req("POST", &me, "/api/v1/sales", Some(offline)).await;
     assert_eq!(s, StatusCode::OK, "{e}");
+    // …но владелец узнаёт, что чек пробит в чужой смене (`sale.offline_bypass`, ADR-062).
+    let reasons: Value = sqlx::query_scalar(
+        "select data->'reasons' from audit_log where action = 'sale.offline_bypass' and entity_id = $1::uuid",
+    )
+    .bind(e["id"].as_str().unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert!(
+        reasons
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str().unwrap().contains("в смене Нурлан")),
+        "{reasons}"
+    );
     // Владелец, общий вход и мастер со своим входом — как раньше.
     for who in [&w.owner, &w.kassa, &master] {
         let (s, e) = w
