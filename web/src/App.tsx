@@ -303,14 +303,16 @@ function Shell() {
         </div>
         {nav}
         <div className="mt-6 border-t border-slate-700 px-3 pt-4 text-sm text-slate-300">
-          <NavLink to="/profile" className="font-medium text-white hover:underline" title="Профиль: сменить свой пароль">
-            {user.full_name}
-          </NavLink>
+          <div className="font-medium text-white">{user.full_name}</div>
           <div className="text-xs">
             {user.login}
             {user.full_name !== roleLabel && ` · ${roleLabel}`}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-4">
+            {/* Профиль — сменить свой пароль, у сотрудника — «Мой заработок» (задача 005 Н1). */}
+            <NavLink to="/profile" className="text-xs text-sky-300 hover:underline">
+              Профиль
+            </NavLink>
             <button type="button" className="text-xs text-sky-300 hover:underline" onClick={askLogout}>
               Выйти
             </button>
@@ -461,9 +463,7 @@ function Shell() {
             <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-slate-300" />
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm">
-                <NavLink to="/profile" className="font-semibold text-sky-700" onClick={() => setOpen(false)}>
-                  {user.full_name}
-                </NavLink>
+                <div className="font-semibold">{user.full_name}</div>
                 {user.full_name !== roleLabel && <div className="text-xs text-slate-500">{roleLabel}</div>}
                 <div className="mt-1">
                   <BranchSwitch user={user} tone="light" />
@@ -498,9 +498,14 @@ function Shell() {
               </div>
             ))}
             <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-sm">
-              <button type="button" className="text-sky-700" onClick={askLogout}>
-                Выйти
-              </button>
+              <span className="flex gap-4">
+                <NavLink to="/profile" className="text-sky-700" onClick={() => setOpen(false)}>
+                  Профиль
+                </NavLink>
+                <button type="button" className="text-sky-700" onClick={askLogout}>
+                  Выйти
+                </button>
+              </span>
               <button
                 type="button"
                 className="inline-flex items-center gap-1.5 text-slate-600"
