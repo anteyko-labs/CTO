@@ -84,8 +84,44 @@ function LoyaltyRate() {
   )
 }
 
+/** «Сотрудники привязывают Телеграм сами» (ADR-{h18}): по умолчанию да — сотрудник со входом
+ *  берёт код в «Мой Телеграм»; выключено — код даёт только владелец в «Пользователи → Телеграм». */
+function AdminsSelfLink() {
+  const st = useLoad(() => get<{ self_link: boolean }>('/settings/telegram/admins'), [])
+  const act = useAction()
+  if (!st.data) return <ErrorBox error={st.error} />
+  const on = st.data.self_link
+  return (
+    <Card className="flex flex-col gap-2 text-sm text-slate-700" data-testid="telegram-admins-card">
+      <CardTitle>Телеграм сотрудников</CardTitle>
+      <div className="-mt-2">
+        {on
+          ? 'Сотрудник со входом сам привязывает свой чат: на сайте «Мой Телеграм» → «Привязать Телеграм». Вам придёт уведомление о каждой привязке и отвязке.'
+          : 'Код привязки сотруднику даёте только вы — в «Пользователи → Телеграм». У сотрудника на сайте — «Привязку делает владелец».'}{' '}
+        Отвязать любого — «Пользователи → Телеграм».
+      </div>
+      <div data-testid="telegram-admins-self">
+        <Checkbox
+          label="Сотрудники привязывают Телеграм сами"
+          checked={on}
+          onChange={(v) =>
+            !act.busy &&
+            void act.run(async () => {
+              st.setData(await put<{ self_link: boolean }>('/settings/telegram/admins', { op_id: newOpId(), self_link: v }))
+              toast(v ? 'Сотрудники привязывают Телеграм сами' : 'Привязку сотрудникам делаете вы')
+            })
+          }
+        />
+      </div>
+      <ErrorBox error={act.error} />
+    </Card>
+  )
+}
+
 interface Usage {
   questions: number
+  /** Из них — вопросы администраторов помощнику (SPEC-40 «Дополнено: помощник»). */
+  admin_questions: number
   input_tokens: number
   output_tokens: number
 }
@@ -93,6 +129,8 @@ interface Usage {
 interface QuestionsUsage {
   enabled: boolean
   daily_limit: number | null
+  /** Помощник администраторов не выключен всем. */
+  admins_on: boolean
   today: Usage
   month: Usage
 }
@@ -102,8 +140,22 @@ const count = (n: number) => n.toLocaleString('ru-RU')
 /** Вопросы владельца боту обычным текстом: включены ли и расход (SPEC-21). */
 function BotQuestions() {
   const st = useLoad(() => get<QuestionsUsage>('/settings/telegram/questions'), [])
+  const act = useAction()
   const u = st.data
   if (!u) return <ErrorBox error={st.error} />
+  const setAdmins = (on: boolean) => {
+    st.setData((prev) => prev && { ...prev, admins_on: on })
+    void act.run(async () => {
+      try {
+        const saved = await put<{ on: boolean }>('/settings/telegram/helper-admins', { op_id: newOpId(), on })
+        st.setData((prev) => prev && { ...prev, admins_on: saved.on })
+        toast(saved.on ? 'Помощник администраторов включён' : 'Помощник выключен всем администраторам')
+      } catch (e) {
+        st.reload()
+        throw e
+      }
+    })
+  }
   return (
     <Card className="flex flex-col gap-2 text-sm text-slate-700">
       <CardTitle>Вопросы боту текстом</CardTitle>
@@ -129,12 +181,22 @@ function BotQuestions() {
           <div key={title} className="rounded border border-slate-200 p-2">
             <div className="font-medium">{title}</div>
             <div>вопросов: {count(x.questions)}</div>
+            {x.admin_questions > 0 && <div className="text-slate-500">из них администраторов: {count(x.admin_questions)}</div>}
             <div className="text-slate-500">
               токенов: {count(x.input_tokens)} на вход, {count(x.output_tokens)} на выход
             </div>
           </div>
         ))}
       </div>
+      <div data-testid="bot-helper-admins">
+        <Checkbox label="Помощник в боте у администраторов" checked={u.admins_on} onChange={setAdmins} />
+        <div className="text-slate-500">
+          Администратор спрашивает своими словами и получает ответ только в пределах своих прав и своего филиала, без прибыли и денег владельца. Включается
+          каждому отдельно в «Пользователи → Телеграм» (по умолчанию выключен); здесь — выключить всем сразу. Его вопросы — в расходе выше, у каждого свой лимит в
+          день.
+        </div>
+      </div>
+      <ErrorBox error={act.error} />
     </Card>
   )
 }
@@ -217,6 +279,7 @@ export default function TelegramSettings() {
           )}
         </Card>
       )}
+      {s && <AdminsSelfLink />}
       {s?.enabled && <BotQuestions />}
       {s?.enabled && <LoyaltyRate />}
       {s?.enabled && <BotReceiptsCard ownerLinked={s.linked} />}

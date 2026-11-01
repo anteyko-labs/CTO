@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update telegram_links set tg_name = $2 where chat_id = $1 and tg_name is distinct from $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e918c4d50746af936065d00bae2d0a304429ae5a93a91ac88b20f806f4470e10"
+}

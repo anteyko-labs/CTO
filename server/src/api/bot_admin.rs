@@ -10,6 +10,12 @@
 //! себестоимости, марже и валовой вырезается. Лента событий администратору по умолчанию не идёт;
 //! владелец включает ему отдельные события из [`EVENTS`] — только без денег владельца, тексты —
 //! [`event_text`], свой филиал (I16).
+//!
+//! Помощник (SPEC-40 «Дополнено: помощник», ADR-{h17}): если владелец включил его
+//! администратору (и не выключил всем в «Настройки → Телеграм»), свободный текст уходит в сервис
+//! разбора вопросов (`assistant::answer_admin`). Модель видит только инструменты [`HELPER_TOOLS`]
+//! по правам этого администратора ([`helper_tools`]) и только его филиал; каждый вызов проверяет
+//! право заново ([`helper_call`]), результаты — те же тексты без денег владельца, что у кнопок.
 
 use std::collections::HashMap;
 
@@ -21,11 +27,12 @@ use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::assistant::Assistant;
 use crate::api::bot_debtors::{BTN_ADD_DEBT, BTN_DEBTORS};
 use crate::api::bot_drafts::{DraftOp, Prepared};
 use crate::api::expenses::ExpenseReq;
 use crate::api::shift_report::{ShiftReport, method_label};
-use crate::api::telegram::{BTN_INVOICE, BTN_MY_INVOICES, Button, Keys, Outgoing, Reply};
+use crate::api::telegram::{BTN_INVOICE, BTN_MY_INVOICES, Button, Follow, Keys, Outgoing, Reply};
 use crate::auth::{Access, Ctx, CurrentUser, Owner, Role};
 use crate::domain::money::{format_som, parse_spoken_som};
 use crate::error::{AppError, AppResult, invalid};
@@ -36,6 +43,11 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/users/{id}/bot", routing::get(get_bot))
         .route("/users/{id}/bot-feed", routing::put(put_feed))
+        .route("/users/{id}/bot-helper", routing::put(put_helper))
+        .route(
+            "/settings/telegram/helper-admins",
+            routing::put(put_helper_common),
+        )
 }
 
 // ---------- Меню ----------
@@ -142,12 +154,25 @@ impl Menu {
             .map(|(_, i)| i)
     }
 
-    /// Кнопки внизу чата: по две в ряд в порядке [`ITEMS`].
+    /// Кнопки внизу чата: по две в ряд в порядке [`ITEMS`]; в чате, где он ещё и работник по
+    /// телефону, первым рядом — «💼 Мой заработок» (один чат, задача 005, ответ 8а).
     pub fn rows(self) -> Vec<Vec<&'static str>> {
         let buttons: Vec<&'static str> = self.items().map(|i| i.button).collect();
-        buttons.chunks(2).map(<[&str]>::to_vec).collect()
+        let mut rows: Vec<Vec<&'static str>> = buttons.chunks(2).map(<[&str]>::to_vec).collect();
+        if self.0 & EARNINGS != 0 {
+            rows.insert(0, vec![crate::api::bot_staff::BTN_EARNINGS]);
+        }
+        rows
+    }
+
+    /// Чат ещё и кабинет работника (SPEC-23): в меню — «💼 Мой заработок».
+    pub fn with_earnings(self) -> Self {
+        Self(self.0 | EARNINGS)
     }
 }
+
+/// Бит «чат ещё и кабинет работника» — вне битов пунктов [`ITEMS`].
+const EARNINGS: u16 = 1 << 15;
 
 /// Отказ в праве словами — как ответ сервера 403 (ADR-097, ADR-152).
 fn denied_text(a: &Access, key: &str) -> String {
@@ -211,6 +236,14 @@ pub fn help(menu: Menu) -> String {
     }
     lines.push("Остальное — в программе.".into());
     lines.join("\n")
+}
+
+/// Подсказка с помощником: можно спросить своими словами.
+fn help_with_helper(menu: Menu) -> String {
+    format!(
+        "{}\n💬 Можно спросить своими словами — ответит помощник, только в пределах ваших прав.",
+        help(menu)
+    )
 }
 
 // ---------- Защита ответов (I13) ----------
@@ -343,6 +376,7 @@ fn item_of(t: &str) -> Option<&'static Item> {
 /// отвечает раньше.
 pub async fn on_message(
     conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
     chat_id: i64,
     text: Option<&str>,
 ) -> AppResult<Option<Reply>> {
@@ -425,7 +459,345 @@ pub async fn on_message(
     if crate::api::telegram::is_code(t) {
         return Ok(None);
     }
-    Ok(answer(help(menu)))
+    // Свободный текст — помощнику, если владелец его включил (SPEC-40 «Дополнено: помощник»);
+    // иначе — подсказка по меню, как раньше.
+    let Some(setting) = helper_on(conn, &user).await? else {
+        return Ok(answer(help(menu)));
+    };
+    if !crate::api::telegram::is_question(t) {
+        return Ok(answer(help_with_helper(menu)));
+    }
+    // Ключа сервиса на сервере нет — как без помощника (I21); владельцу на экране «не настроен».
+    let Some(a) = assistant else {
+        return Ok(answer(help(menu)));
+    };
+    let said = crate::api::assistant::answer_admin(conn, a, chat_id, &user, setting.daily_limit, t)
+        .await?;
+    let mut r = Reply::new(said.text, Keys::Admin(menu));
+    r.follow = said.draft.as_ref().map(Follow::draft);
+    Ok(Some(r))
+}
+
+// ---------- Помощник (SPEC-40 «Дополнено: помощник») ----------
+
+/// Вопросов помощнику в день у администратора по умолчанию и самое большее.
+pub const HELPER_DAILY_LIMIT: i64 = 50;
+pub const HELPER_MAX_LIMIT: i64 = 500;
+/// Общий выключатель помощника администраторов филиала (`settings`), по умолчанию — включён;
+/// каждому входу владелец ещё выключает его отдельно.
+const HELPER_COMMON_KEY: &str = "bot_helper_admins";
+
+const fn default_helper_limit() -> i64 {
+    HELPER_DAILY_LIMIT
+}
+
+const fn default_helper_on() -> bool {
+    true
+}
+
+/// Помощник администратора: включён ли (по умолчанию — да у каждого входа, владелец выключает
+/// каждому; задача 005, ответ 9б) и сколько вопросов в день. Хранится в `settings` филиала
+/// администратора, ключ `bot_helper_admin:<id>`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct HelperSetting {
+    #[serde(default = "default_helper_on")]
+    pub on: bool,
+    #[serde(default = "default_helper_limit")]
+    pub daily_limit: i64,
+}
+
+impl Default for HelperSetting {
+    fn default() -> Self {
+        Self {
+            on: true,
+            daily_limit: HELPER_DAILY_LIMIT,
+        }
+    }
+}
+
+fn helper_key(user_id: Uuid) -> String {
+    format!("bot_helper_admin:{user_id}")
+}
+
+async fn load_helper(conn: &mut PgConnection, user_id: Uuid) -> AppResult<HelperSetting> {
+    let v = sqlx::query_scalar!(
+        r#"select s.value from settings s join users u on u.id = $1
+           where s.branch_id = u.branch_id and s.key = $2"#,
+        user_id,
+        helper_key(user_id)
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(
+        v.and_then(|v| serde_json::from_value::<HelperSetting>(v).ok())
+            .unwrap_or_default(),
+    )
+}
+
+/// Общий выключатель помощника администраторов филиала; не задан — включён.
+pub async fn helper_common(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<bool> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = $2",
+        branch_id,
+        HELPER_COMMON_KEY
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(v.and_then(|v| v.get("on").and_then(Value::as_bool))
+        .unwrap_or(true))
+}
+
+/// Настройка помощника, если он включён администратору и не выключен всем; иначе `None`.
+async fn helper_on(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+) -> AppResult<Option<HelperSetting>> {
+    let s = load_helper(conn, user.id).await?;
+    if !s.on || !helper_common(conn, user.branch_id).await? {
+        return Ok(None);
+    }
+    Ok(Some(s))
+}
+
+/// Чат администратора с включённым помощником: свободный текст из него ждёт очереди вопросов,
+/// а не отвечается сразу (ADR-063).
+pub async fn helper_chat(conn: &mut PgConnection, chat_id: i64) -> AppResult<bool> {
+    let Some((user, _)) = chat_user(conn, chat_id).await? else {
+        return Ok(false);
+    };
+    Ok(helper_on(conn, &user).await?.is_some())
+}
+
+/// Инструменты помощника: имя и пункт меню [`ITEMS`], права которого он требует. Те же данные,
+/// что у кнопок: смена в виде администратора, товары по роли, должники-клиенты филиала, книжка
+/// без себестоимости, свои накладные без сумм; изменения — только черновиками.
+pub const HELPER_TOOLS: [(&str, &str); 8] = [
+    ("shift_now", "shift"),
+    ("stock_search", "stock"),
+    ("customer_debtors", "debtors"),
+    ("customer_debt", "debtors"),
+    ("oil_book", "book"),
+    ("my_invoices", "my_invoices"),
+    ("draft_expense", "expense"),
+    ("draft_old_debt", "add_debt"),
+];
+
+/// Объявление инструмента для модели.
+fn helper_decl(name: &str) -> Value {
+    let none = json!({ "type": "object", "properties": {}, "additionalProperties": false });
+    let query = |what: &str| {
+        json!({
+            "type": "object",
+            "properties": { "query": { "type": "string", "description": what } },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    };
+    let (description, params) = match name {
+        "shift_now" => (
+            "Смена кассы сейчас (не открыта — последняя): номер, кассир, выручка смены по способам оплаты, чеки и возвраты, касса «на начало / приход / расход / должно быть», расходы смены из кассы.",
+            none,
+        ),
+        "stock_search" => (
+            "Остаток товара в филиале и цена продажи (розлив — за 1 л) по названию, артикулу, штрихкоду или кросс-номеру, до 8 строк.",
+            query("Название, бренд, артикул или штрихкод товара"),
+        ),
+        "customer_debtors" => (
+            "Должники-клиенты филиала сейчас: кто сколько должен, по убыванию долга, с просрочкой.",
+            none,
+        ),
+        "customer_debt" => (
+            "Долг одного клиента: долг, лимит, срок оплаты, просрочка и последние 10 записей. Нашлось несколько — список для уточнения.",
+            query("Имя, название, телефон или госномер машины клиента"),
+        ),
+        "oil_book" => (
+            "Масляная книжка машины по госномеру: что залито, когда, следующая замена.",
+            query("Госномер машины, например 01KG123ABC"),
+        ),
+        "my_invoices" => (
+            "Последние 5 накладных, которые администратор прислал фото в бот: номер, поставщик, что с ними.",
+            none,
+        ),
+        "draft_expense" => (
+            "Черновик расхода из кассы смены сегодня. Ничего не проводит: сервер проверит и покажет черновик администратору с кнопкой «✅ Провести». Статья — из статей точки (по «Прочее» нужен комментарий).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "article": { "type": "string", "description": "Статья расхода словами администратора" },
+                    "amount": { "type": "string", "description": "Сумма строкой, как сказал администратор: «1 500», «350,50»" },
+                    "payee": { "type": "string", "description": "Кому отдали деньги, если сказал" },
+                    "comment": { "type": "string", "description": "За что" }
+                },
+                "required": ["article", "amount"],
+                "additionalProperties": false
+            }),
+        ),
+        _ => (
+            "Черновик старого долга клиента из тетради: клиент должен точке с такой-то даты. Ничего не проводит: сервер проверит и покажет черновик администратору с кнопкой «✅ Провести». Без даты долга черновика нет — спроси дату.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "client": { "type": "string", "description": "Клиент: имя, телефон или госномер" },
+                    "amount": { "type": "string", "description": "Сумма строкой, как сказал администратор" },
+                    "date": { "type": "string", "description": "Дата долга ГГГГ-ММ-ДД — когда взял" },
+                    "comment": { "type": "string", "description": "Что брал, страница тетради" }
+                },
+                "required": ["client", "amount"],
+                "additionalProperties": false
+            }),
+        ),
+    };
+    json!({ "name": name, "description": description, "parametersJsonSchema": params })
+}
+
+/// Инструменты помощника этого администратора по его правам сейчас (I12): инструмента без права
+/// у модели просто нет. Второе — чего нет и почему, словами отказа («Нет права: … — его выдаёт
+/// владелец.»), чтобы модель так и ответила.
+pub async fn helper_tools(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+) -> AppResult<(Value, Vec<String>)> {
+    let mut decls = Vec::new();
+    let mut denied = Vec::new();
+    for item in &ITEMS {
+        let tools: Vec<&str> = HELPER_TOOLS
+            .iter()
+            .filter(|(_, i)| *i == item.key)
+            .map(|(n, _)| *n)
+            .collect();
+        if tools.is_empty() {
+            continue;
+        }
+        match missing(conn, user, item).await? {
+            None => decls.extend(tools.into_iter().map(helper_decl)),
+            Some(why) => denied.push(format!("— {}: «{why} — его выдаёт владелец.»", item.what)),
+        }
+    }
+    Ok((Value::Array(decls), denied))
+}
+
+/// Строковый параметр инструмента: от 1 до 100 знаков.
+fn helper_arg(input: &Value, key: &str) -> Result<String, String> {
+    let s = input
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if s.is_empty() {
+        return Err(format!("нужно поле {key}"));
+    }
+    if s.chars().count() > 100 {
+        return Err(format!("поле {key} не длиннее 100 знаков"));
+    }
+    Ok(s.to_string())
+}
+
+/// Вызов инструмента помощником: право — заново (I12), филиал — администратора (I16). Результат —
+/// текст для модели (уже через [`scrub`]) и черновик, если он создан; `Ok(Err)` — отказ словами
+/// для модели (нет права, неверный параметр); `Err` — сбой базы.
+pub async fn helper_call(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    chat_id: i64,
+    name: &str,
+    input: &Value,
+) -> AppResult<Result<(String, Option<crate::api::bot_drafts::Shown>), String>> {
+    let Some((_, key)) = HELPER_TOOLS.iter().find(|(n, _)| *n == name) else {
+        return Ok(Err("такого инструмента нет".into()));
+    };
+    let Some(item) = ITEMS.iter().find(|i| i.key == *key) else {
+        return Ok(Err("такого инструмента нет".into()));
+    };
+    if user.role != Role::Admin {
+        return Ok(Err("только администратору".into()));
+    }
+    if let Some(why) = missing(conn, user, item).await? {
+        return Ok(Err(format!("{why} — его выдаёт владелец.")));
+    }
+    let arg = |k: &str| helper_arg(input, k);
+    let text = match name {
+        "shift_now" => shift_now(conn, user.branch_id).await?,
+        "stock_search" => match arg("query") {
+            Ok(q) => stock_text(conn, user, &q).await?,
+            Err(e) => return Ok(Err(e)),
+        },
+        "customer_debtors" => debtors_text(conn, user.branch_id).await?,
+        "customer_debt" => match arg("query") {
+            Ok(q) => crate::api::assistant::client_debt_text(conn, user.branch_id, &q).await?,
+            Err(e) => return Ok(Err(e)),
+        },
+        "oil_book" => match arg("query") {
+            Ok(q) => book_text(conn, &q).await?,
+            Err(e) => return Ok(Err(e)),
+        },
+        "my_invoices" => crate::api::receipt_drafts::my_drafts(conn, user).await?,
+        _ => {
+            return Ok(Ok(
+                match crate::api::bot_drafts::prepare_admin(conn, user, chat_id, name, input)
+                    .await?
+                {
+                    Prepared::Draft(d) => (
+                        scrub(&format!(
+                            "Черновик подготовлен и показан администратору отдельным сообщением с кнопками «✅ Провести» и «✖ Отмена». Он ещё НЕ проведён: провести может только администратор кнопкой в течение 10 минут. Коротко попроси проверить черновик и нажать кнопку. Черновик:\n{}",
+                            d.summary
+                        )),
+                        Some(d),
+                    ),
+                    Prepared::Refused(why) if why.starts_with("Черновик") => {
+                        (scrub(&why), None)
+                    }
+                    Prepared::Refused(why) => (scrub(&format!("Черновик не создан: {why}")), None),
+                },
+            ));
+        }
+    };
+    Ok(Ok((scrub(&text), None)))
+}
+
+/// Должники-клиенты филиала: имя, долг в филиале, просрочка — как «📋 Должники», до 15 строк.
+pub async fn debtors_text(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
+    let rows = crate::api::parties::debts_list_in(&mut *conn, branch_id, false).await?;
+    let mut debtors: Vec<_> = rows
+        .into_iter()
+        .filter(|r| r.party.role == "customer" && r.party.branch_balance_tyiyn > 0)
+        .collect();
+    if debtors.is_empty() {
+        return Ok("Должников нет — клиенты точке не должны.".into());
+    }
+    debtors.sort_by(|a, b| {
+        b.party
+            .branch_balance_tyiyn
+            .cmp(&a.party.branch_balance_tyiyn)
+            .then_with(|| a.party.name.cmp(&b.party.name))
+    });
+    let total = debtors.iter().fold(0i64, |acc, r| {
+        acc.saturating_add(r.party.branch_balance_tyiyn)
+    });
+    let mut lines = vec![format!(
+        "Должники-клиенты на сейчас: {}, всего {} (по убыванию долга)",
+        debtors.len(),
+        format_som(total)
+    )];
+    for (i, r) in debtors.iter().take(15).enumerate() {
+        let mut line = format!(
+            "{}. {} — {}",
+            i + 1,
+            r.party.name,
+            format_som(r.party.branch_balance_tyiyn)
+        );
+        if r.overdue_days > 0 && r.party.overdue_tyiyn > 0 {
+            line.push_str(&format!(
+                " · просрочка {} дн. ({})",
+                r.overdue_days,
+                format_som(r.party.overdue_tyiyn)
+            ));
+        }
+        lines.push(line);
+    }
+    if debtors.len() > 15 {
+        lines.push(format!("и ещё {}", debtors.len() - 15));
+    }
+    Ok(lines.join("\n"))
 }
 
 // ---------- 🧾 Смена сейчас ----------
@@ -1556,8 +1928,10 @@ pub async fn event_text(
 
 // ---------- Экран «Пользователи → Телеграм» ----------
 
+/// Пункт «Что видит в боте»: у владельца в «Пользователи → Телеграм» и у самого администратора
+/// в «Мой Телеграм» (ADR-{h18}).
 #[derive(Serialize)]
-struct ItemOut {
+pub(crate) struct ItemOut {
     key: &'static str,
     button: &'static str,
     what: &'static str,
@@ -1589,10 +1963,46 @@ struct GroupOut {
 struct BotOut {
     linked: bool,
     linked_at: Option<DateTime<Utc>>,
+    /// Телеграм-имя привязанного чата (@имя или имя в Телеграме), ADR-{h18}.
+    tg_name: Option<String>,
     /// Что видит администратор в боте: пункты меню по его правам.
     items: Vec<ItemOut>,
     on: Vec<String>,
     groups: Vec<GroupOut>,
+    /// Помощник в боте (SPEC-40 «Дополнено: помощник»).
+    helper: HelperOut,
+}
+
+#[derive(Serialize)]
+struct HelperOut {
+    /// Включён этому администратору.
+    on: bool,
+    daily_limit: i64,
+    /// Общий выключатель администраторов филиала в «Настройки → Телеграм».
+    common_on: bool,
+    /// На сервере задан ключ сервиса разбора вопросов.
+    configured: bool,
+    /// Вопросов сегодня (без отказов по лимиту).
+    today: i64,
+}
+
+#[derive(Deserialize)]
+struct HelperIn {
+    op_id: Uuid,
+    on: bool,
+    #[serde(default)]
+    daily_limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct HelperCommonIn {
+    op_id: Uuid,
+    on: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct HelperCommonOut {
+    on: bool,
 }
 
 #[derive(Deserialize)]
@@ -1632,13 +2042,50 @@ async fn branch_admin(
     })
 }
 
-async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotOut> {
-    let linked_at = sqlx::query_scalar!(
-        "select linked_at from telegram_links where user_id = $1 order by linked_at desc limit 1",
-        admin.id
+async fn helper_out(
+    conn: &mut PgConnection,
+    admin: &CurrentUser,
+    configured: bool,
+) -> AppResult<HelperOut> {
+    let s = load_helper(conn, admin.id).await?;
+    let today = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from bot_questions
+           where user_id = $1
+             and asked_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'
+             and error is distinct from $2"#,
+        admin.id,
+        crate::api::assistant::LIMIT_ERROR
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(HelperOut {
+        on: s.on,
+        daily_limit: s.daily_limit,
+        common_on: helper_common(conn, admin.branch_id).await?,
+        configured,
+        today,
+    })
+}
+
+/// Привязка чата пользователя: когда и к какому Телеграм-имени.
+pub(crate) async fn link_of(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+) -> AppResult<Option<(DateTime<Utc>, Option<String>)>> {
+    Ok(sqlx::query!(
+        "select linked_at, tg_name from telegram_links where user_id = $1 order by linked_at desc limit 1",
+        user_id
     )
     .fetch_optional(&mut *conn)
-    .await?;
+    .await?
+    .map(|r| (r.linked_at, r.tg_name)))
+}
+
+/// Пункты меню администратора по его правам сейчас: доступен или чего не хватает.
+pub(crate) async fn items_of(
+    conn: &mut PgConnection,
+    admin: &CurrentUser,
+) -> AppResult<Vec<ItemOut>> {
     let mut items = Vec::with_capacity(ITEMS.len());
     for i in &ITEMS {
         let need = missing(conn, admin, i).await?;
@@ -1650,6 +2097,39 @@ async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotO
             need,
         });
     }
+    Ok(items)
+}
+
+/// Какие события ему приходят: включённые владельцем, право на которые у него есть (подписи).
+pub(crate) async fn events_of(
+    conn: &mut PgConnection,
+    admin: &CurrentUser,
+) -> AppResult<Vec<&'static str>> {
+    let feed = load_feed(conn, admin.id).await?;
+    let mut out = Vec::new();
+    for e in EVENTS
+        .iter()
+        .filter(|e| feed.on.iter().any(|o| o == e.action))
+    {
+        let allowed = match e.right {
+            // Как в окне владельца: право, снятое у кассира смены, ленту не закрывает.
+            Some(r) => crate::auth::access(conn, admin, r).await? != Access::NoRight,
+            None => true,
+        };
+        if allowed {
+            out.push(e.label);
+        }
+    }
+    Ok(out)
+}
+
+async fn bot_out(
+    conn: &mut PgConnection,
+    admin: &CurrentUser,
+    configured: bool,
+) -> AppResult<BotOut> {
+    let link = link_of(conn, admin.id).await?;
+    let items = items_of(conn, admin).await?;
     let feed = load_feed(conn, admin.id).await?;
     let mut groups = Vec::with_capacity(GROUPS.len());
     for (key, title) in GROUPS {
@@ -1674,11 +2154,13 @@ async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotO
         groups.push(GroupOut { key, title, events });
     }
     Ok(BotOut {
-        linked: linked_at.is_some(),
-        linked_at,
+        linked: link.is_some(),
+        linked_at: link.as_ref().map(|l| l.0),
+        tg_name: link.and_then(|l| l.1),
         items,
         on: feed.on,
         groups,
+        helper: helper_out(conn, admin, configured).await?,
     })
 }
 
@@ -1691,7 +2173,102 @@ async fn get_bot(
 ) -> AppResult<Json<BotOut>> {
     let mut conn = state.pool.acquire().await?;
     let admin = branch_admin(&mut conn, &user, id).await?;
-    Ok(Json(bot_out(&mut conn, &admin).await?))
+    Ok(Json(
+        bot_out(&mut conn, &admin, state.assistant.is_some()).await?,
+    ))
+}
+
+/// Помощник администратора: включить или выключить и дневной лимит вопросов (1–500). Только
+/// владелец; `op_id` (I8), журнал `user.bot_helper` — было и стало (I5).
+async fn put_helper(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<HelperIn>,
+) -> AppResult<Json<HelperSetting>> {
+    ctx.user.require_owner()?;
+    const KIND: &str = "user.bot_helper";
+    let mut tx = state.pool.begin().await?;
+    let admin = branch_admin(&mut tx, &ctx.user, id).await?;
+    if let Some(n) = req.daily_limit
+        && !(1..=HELPER_MAX_LIMIT).contains(&n)
+    {
+        return Err(invalid(format!(
+            "вопросов в день — от 1 до {HELPER_MAX_LIMIT}"
+        )));
+    }
+    if let Some(done) = ops::begin_op::<HelperSetting>(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let before = load_helper(&mut tx, admin.id).await?;
+    let after = HelperSetting {
+        on: req.on,
+        daily_limit: req.daily_limit.unwrap_or(before.daily_limit),
+    };
+    let value = serde_json::to_value(&after).map_err(|e| AppError::Internal(e.to_string()))?;
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, $2, $3)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        admin.branch_id,
+        helper_key(admin.id),
+        value
+    )
+    .execute(&mut *tx)
+    .await?;
+    if before != after {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            KIND,
+            "user",
+            Some(admin.id),
+            json!({ "full_name": admin.full_name, "before": before, "after": after }),
+        )
+        .await?;
+    }
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &after).await?;
+    tx.commit().await?;
+    Ok(Json(after))
+}
+
+/// Общий выключатель помощника администраторов филиала («Настройки → Телеграм»). Только
+/// владелец; `op_id`, журнал `settings.bot_helper_admins`.
+async fn put_helper_common(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<HelperCommonIn>,
+) -> AppResult<Json<HelperCommonOut>> {
+    ctx.user.require_owner()?;
+    const KIND: &str = "settings.bot_helper_admins";
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op::<HelperCommonOut>(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let before = helper_common(&mut tx, ctx.user.branch_id).await?;
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, $2, $3)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        ctx.user.branch_id,
+        HELPER_COMMON_KEY,
+        json!({ "on": req.on })
+    )
+    .execute(&mut *tx)
+    .await?;
+    if before != req.on {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            KIND,
+            "settings",
+            None,
+            json!({ "before": before, "after": req.on }),
+        )
+        .await?;
+    }
+    let out = HelperCommonOut { on: req.on };
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 /// Лента администратора: что из [`EVENTS`] ему приходит. Только владелец; `op_id` (I8), журнал
@@ -1809,6 +2386,31 @@ mod tests {
         assert_eq!(item_of("книжка").map(|i| i.key), Some("book"));
         assert_eq!(item_of(BTN_SHIFT_NOW).map(|i| i.key), Some("shift"));
         assert!(item_of("масло моторное").is_none());
+    }
+
+    #[test]
+    fn helper_tools_are_menu_items_without_owner_money() {
+        let mut seen = Vec::new();
+        for (name, item) in &HELPER_TOOLS {
+            assert!(ITEMS.iter().any(|i| i.key == *item), "{name}: {item}");
+            assert!(!seen.contains(name), "повтор {name}");
+            seen.push(*name);
+            let d = helper_decl(name);
+            assert_eq!(d["name"], *name);
+            assert!(!leaks(&d.to_string()), "{name}: {d}");
+        }
+        // Черновики — только расход и старый долг; отчётов владельца среди инструментов нет.
+        let drafts: Vec<&str> = seen
+            .iter()
+            .copied()
+            .filter(|n| n.starts_with("draft_"))
+            .collect();
+        assert_eq!(drafts, ["draft_expense", "draft_old_debt"]);
+        assert!(!leaks(&help_with_helper(Menu::all())));
+        let s: HelperSetting = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(s, HelperSetting::default());
+        // Задача 005, ответ 9б: включён у каждого входа, владелец выключает.
+        assert_eq!((s.on, s.daily_limit), (true, HELPER_DAILY_LIMIT));
     }
 
     #[test]

@@ -37,6 +37,7 @@ pub mod gifts;
 pub mod income;
 pub mod loyalty;
 pub mod my_earnings;
+pub mod my_telegram;
 pub mod notifications;
 pub mod offline;
 pub mod oil;
@@ -100,6 +101,7 @@ pub fn routes() -> Router<AppState> {
         .merge(income::routes())
         .merge(loyalty::routes())
         .merge(my_earnings::routes())
+        .merge(my_telegram::routes())
         .merge(notifications::routes())
         .merge(offline::routes())
         .merge(oil::routes())

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from bot_questions q join users u on u.id = q.user_id\n           where q.branch_id = $1 and q.asked_at > now() - interval '1 hour'\n             and q.error is distinct from $2 and u.role <> 'admin'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f642bd64b21a30bf34e16f6f0ab1cb2e500e46650d2286b052bdb7be25c60ba5"
+}

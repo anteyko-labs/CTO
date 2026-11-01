@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from telegram_codes c using users u\n               where u.id = c.user_id and c.by_self and u.branch_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87d2129d289bda661dcac28ac11e4b54c6b15748fb9fccaea6432d3945bc3d75"
+}

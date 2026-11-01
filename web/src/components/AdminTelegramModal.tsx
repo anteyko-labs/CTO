@@ -24,13 +24,16 @@ export function AdminTelegramModal({ user, onClose, onChanged }: { user: UserRow
       <div className="flex flex-col gap-3 text-sm" data-testid="user-telegram-modal">
         <div className="text-slate-600">
           В чате администратора — кнопки по его правам: с правом «Приход товара» он присылает фото накладных («📷 Накладная», «📄 Мои накладные»), смотрит
-          смену, остаток, должников, книжку машины, проводит расход из кассы смены. Прибыли и себестоимости бот ему не показывает.
+          смену, остаток, должников, книжку машины, проводит расход из кассы смены. Прибыли и себестоимости бот ему не показывает. Если включить «Помощник в
+          боте», он спрашивает своими словами — в тех же пределах.
         </div>
         {noReceiptsRight(user) && (
           <div className="rounded bg-amber-50 p-2 text-amber-800">Нет права «Приход товара» — фото не примутся. Выдайте его в «Что можно».</div>
         )}
         <div data-testid="user-telegram-state">
-          {user.telegram_linked_at ? `Привязан ${formatDateTime(user.telegram_linked_at)}` : 'Телеграм не привязан — дайте код ниже'}
+          {user.telegram_linked_at
+            ? `Привязан ${formatDateTime(user.telegram_linked_at)}`
+            : 'Телеграм не привязан — дайте код ниже или администратор возьмёт его сам в «Мой Телеграм»'}
         </div>
         {code ? (
           <div className="flex flex-col gap-2">

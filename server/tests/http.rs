@@ -12711,6 +12711,81 @@ async fn bot_feed_settings_are_owner_only(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn my_telegram_is_admin_only_and_its_switch_owner_only(pool: PgPool) {
+    // «Мой Телеграм» (SPEC-40 §10, ADR-{h18}): свой код и отвязка — только администратору
+    // (владельцу 403); настройка «Сотрудники привязывают Телеграм сами» — только владельцу;
+    // без входа — 401; код администратора — только ему, даже если в запросе чужой id.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let admin_id: Uuid = sqlx::query_scalar("select id from users where login = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let code_body = || json!({ "op_id": Uuid::now_v7(), "user_id": owner_id, "id": owner_id });
+    for (method, uri, body) in [
+        ("GET", "/api/v1/me/telegram".to_string(), None),
+        (
+            "POST",
+            "/api/v1/me/telegram/code".to_string(),
+            Some(code_body()),
+        ),
+        ("DELETE", "/api/v1/me/telegram".to_string(), None),
+        ("GET", "/api/v1/settings/telegram/admins".to_string(), None),
+        (
+            "PUT",
+            "/api/v1/settings/telegram/admins".to_string(),
+            Some(json!({ "op_id": Uuid::now_v7(), "self_link": false })),
+        ),
+    ] {
+        let (s, _, _) = call(&app, method, &uri, None, body.clone()).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{method} {uri} без входа");
+        let admin_route = uri.starts_with("/api/v1/me/");
+        let (s, _, v) = call(
+            &app,
+            method,
+            &uri,
+            Some(if admin_route { &owner } else { &admin }),
+            body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}: {v}");
+    }
+    let (s, _, v) = call(
+        &app,
+        "POST",
+        "/api/v1/me/telegram/code",
+        Some(&admin),
+        Some(code_body()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let holders: Vec<Uuid> = sqlx::query_scalar("select user_id from telegram_codes")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        holders,
+        vec![admin_id],
+        "код — только самому администратору"
+    );
+    let (s, _, v) = call(
+        &app,
+        "GET",
+        "/api/v1/settings/telegram/admins",
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["self_link"], true);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn admin_bot_screen_and_feed_are_owner_only(pool: PgPool) {
     // «Пользователи → Телеграм» администратора (SPEC-40): что видит в боте и его лента — только
     // владелец; владелец — не администратор (422), чужой id — 404; чужое событие — 422; повтор

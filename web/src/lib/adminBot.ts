@@ -27,12 +27,47 @@ export interface AdminBotGroup {
   events: AdminBotEvent[]
 }
 
+/** Помощник в боте администратора (SPEC-40 «Дополнено: помощник»). */
+export interface AdminBotHelper {
+  /** Включён этому администратору (по умолчанию — нет). */
+  on: boolean
+  daily_limit: number
+  /** Общий выключатель администраторов в «Настройки → Телеграм». */
+  common_on: boolean
+  /** На сервере задан ключ сервиса разбора вопросов. */
+  configured: boolean
+  /** Вопросов сегодня. */
+  today: number
+}
+
 export interface AdminBot {
   linked: boolean
   linked_at: string | null
+  /** Телеграм-имя привязанного чата: @имя или имя в Телеграме (ADR-{h18}). */
+  tg_name?: string | null
   items: AdminBotItem[]
   on: string[]
   groups: AdminBotGroup[]
+  helper: AdminBotHelper
+}
+
+/** Самое большее вопросов помощнику в день — как на сервере. */
+export const HELPER_MAX_LIMIT = 500
+
+/** Лимит из поля: целое от 1 до 500, иначе `null`. */
+export function helperLimit(text: string): number | null {
+  const t = text.trim()
+  if (!/^\d+$/.test(t)) return null
+  const n = Number(t)
+  return n >= 1 && n <= HELPER_MAX_LIMIT ? n : null
+}
+
+/** Что сейчас с помощником у администратора — одной строкой. */
+export function helperStatus(h: AdminBotHelper): string {
+  if (!h.on) return 'Выключен: на свободный текст бот отвечает «Что можно в боте».'
+  if (!h.configured) return 'Включён, но не настроен: на сервере нет ключа сервиса разбора вопросов — на свободный текст бот отвечает «Что можно в боте».'
+  if (!h.common_on) return 'Включён, но выключен всем администраторам в «Настройки → Телеграм».'
+  return `Работает: сегодня ${h.today} из ${h.daily_limit} вопросов.`
 }
 
 /** Список включённого после переключения одного события: без повторов, порядок прежний. */

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) filter (where asked_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek') as \"day!\",\n                  count(*) filter (where asked_at > now() - interval '1 hour') as \"hour!\"\n           from bot_questions\n           where user_id = $1 and asked_at >= now() - interval '2 days'\n             and error is distinct from $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "hour!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "87171db4a01ffa94e7ee480e248bb684d1eaa3ce8b0252ed05556cad081ef556"
+}

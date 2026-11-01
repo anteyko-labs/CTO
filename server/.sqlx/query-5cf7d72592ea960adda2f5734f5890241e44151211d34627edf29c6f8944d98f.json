@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with b as (select ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek' as day)\n           select count(*) filter (where q.asked_at >= b.day) as \"day!\",\n                  count(*) filter (where q.asked_at > now() - interval '1 hour') as \"hour!\"\n           from b join bot_questions q\n             on q.branch_id = $1 and q.asked_at >= least(b.day, now() - interval '1 hour')\n            and q.error is distinct from $2\n           join users u on u.id = q.user_id and u.role <> 'admin'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "hour!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "5cf7d72592ea960adda2f5734f5890241e44151211d34627edf29c6f8944d98f"
+}
