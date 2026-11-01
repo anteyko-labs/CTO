@@ -106,6 +106,9 @@ export interface CashierSettings {
   print_shift_profit: boolean
   /** Себестоимость и прибыль на экране чека в режиме кассы (по умолчанию нет). */
   sale_cost_on_till: boolean
+  /** «Продажа только при открытой смене» (задача 005 Н4): при связи без смены чек не пробивается
+   *  (по умолчанию да — прямая просьба заказчика). */
+  sale_requires_shift: boolean
 }
 
 export const DEFAULT_CASHIER: CashierSettings = {
@@ -121,6 +124,7 @@ export const DEFAULT_CASHIER: CashierSettings = {
   print_discount: false,
   print_shift_profit: false,
   sale_cost_on_till: false,
+  sale_requires_shift: true,
 }
 
 export const buttonDef = (id: ButtonId): ButtonDef | undefined => BUTTONS.find((b) => b.id === id)
