@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select a.product_id, a.mode, a.qty, a.seq, u.full_name\n           from revision_line_adds a join users u on u.id = a.user_id\n           where a.revision_id = $1 order by a.seq",
+  "query": "select a.product_id, a.mode, a.qty, a.seq, a.user_id, u.full_name\n           from revision_line_adds a join users u on u.id = a.user_id\n           where a.revision_id = $1 order by a.seq",
   "describe": {
     "columns": [
       {
@@ -25,6 +25,11 @@
       },
       {
         "ordinal": 4,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
         "name": "full_name",
         "type_info": "Text"
       }
@@ -39,8 +44,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "7b84ac57b55855b3f64d97b267be0e14923faef9e3136908c5fe0dde49d3eba9"
+  "hash": "222c1d5b8714c15da7863978b73a054f7ccfc8b84c2c4663422fe8c334052b8d"
 }

@@ -1,17 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { appendCount, countLogText, defaultCountMode, type CountEntry } from './revisionCount'
+import { appendCount, countLogText, countSummary, defaultCountMode, type CountEntry } from './revisionCount'
 
 describe('defaultCountMode', () => {
-  it('строку уже считали — прибавить своё, не считали — итог', () => {
-    expect(defaultCountMode({ unit: 'piece', container_ml: null, counted_qty: null })).toBe('set')
-    expect(defaultCountMode({ unit: 'piece', container_ml: null, counted_qty: 0 })).toBe('set')
-    expect(defaultCountMode({ unit: 'piece', container_ml: null, counted_qty: 2 })).toBe('add')
-    expect(defaultCountMode({ unit: 'g', container_ml: null, counted_qty: 1500 })).toBe('add')
-  })
-
-  it('масло в таре — всегда прибавка (вскрытая канистра литрами)', () => {
-    expect(defaultCountMode({ unit: 'ml', container_ml: 4000, counted_qty: null })).toBe('add')
-    expect(defaultCountMode({ unit: 'ml', container_ml: 4000, counted_qty: 8000 })).toBe('add')
+  it('всегда «+ добавить»: каждый вписывает найденное в своём месте, «= итог» — только явным выбором (задача 005, Н7)', () => {
+    expect(defaultCountMode()).toBe('add')
   })
 })
 
@@ -35,5 +27,47 @@ describe('журнал строки', () => {
     l = appendCount(l, { by: 'Азиз', mode: 'set', qty: 5 })
     l = appendCount(l, { by: 'Азиз', mode: 'set', qty: 6 })
     expect(l).toEqual([...log, { by: 'Азиз', mode: 'set', qty: 6 }])
+  })
+})
+
+describe('кто сколько добавил (задача 005, Н7)', () => {
+  const sht = (q: number) => `${q} шт`
+
+  it('«Азиз +6 шт, Алексей +4 шт = 10 шт»: прибавки одного входа складываются и не подряд', () => {
+    const log: CountEntry[] = [
+      { by: 'Азиз', user_id: 'a', mode: 'add', qty: 2 },
+      { by: 'Алексей', user_id: 'b', mode: 'add', qty: 4 },
+      { by: 'Азиз', user_id: 'a', mode: 'add', qty: 4 },
+    ]
+    expect(countSummary(log, 10, sht)).toBe('Азиз +6 шт, Алексей +4 шт = 10 шт')
+  })
+
+  it('с последнего «= итог»: прежние прибавки итог уже не составляют', () => {
+    const log: CountEntry[] = [
+      { by: 'Азиз', user_id: 'a', mode: 'add', qty: 6 },
+      { by: 'Алексей', user_id: 'b', mode: 'set', qty: 5 },
+      { by: 'Азиз', user_id: 'a', mode: 'add', qty: 4 },
+    ]
+    expect(countSummary(log, 9, sht)).toBe('Алексей = 5 шт, Азиз +4 шт = 9 шт')
+    expect(countSummary(log.slice(0, 2), 5, sht)).toBe('Алексей = 5 шт')
+  })
+
+  it('после «убрал» — только новые прибавки', () => {
+    const log: CountEntry[] = [
+      { by: 'Азиз', user_id: 'a', mode: 'add', qty: 6 },
+      { by: 'Азиз', user_id: 'a', mode: 'clear', qty: 0 },
+      { by: 'Алексей', user_id: 'b', mode: 'add', qty: 3 },
+    ]
+    expect(countSummary(log, 3, sht)).toBe('Алексей +3 шт = 3 шт')
+  })
+
+  it('одинаковые имена разных входов не сливаются; прежний ответ без входа — по имени', () => {
+    const log: CountEntry[] = [
+      { by: 'Азиз', user_id: 'a', mode: 'add', qty: 1 },
+      { by: 'Азиз', user_id: 'z', mode: 'add', qty: 2 },
+    ]
+    expect(countSummary(log, 3, sht)).toBe('Азиз +1 шт, Азиз +2 шт = 3 шт')
+    expect(appendCount(log, { by: 'Азиз', user_id: 'z', mode: 'add', qty: 1 })).toEqual([log[0], { ...log[1], qty: 3 }])
+    expect(appendCount([{ by: 'Азиз', mode: 'add', qty: 1 }], { by: 'Азиз', mode: 'add', qty: 1 })).toEqual([{ by: 'Азиз', mode: 'add', qty: 2 }])
   })
 })

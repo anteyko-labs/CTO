@@ -83,6 +83,10 @@ pub struct RevisionLine {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct CountEntry {
     pub by: String,
+    /// Вход, который записал: у сотрудников свои входы (задача 005, Н7), а имена бывают одинаковые —
+    /// прибавки складываются по входу, а не по имени.
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
     pub mode: String,
     pub qty: i64,
 }
@@ -101,7 +105,7 @@ async fn count_log(
     id: Uuid,
 ) -> AppResult<std::collections::HashMap<Uuid, LineLog>> {
     let rows = sqlx::query!(
-        r#"select a.product_id, a.mode, a.qty, a.seq, u.full_name
+        r#"select a.product_id, a.mode, a.qty, a.seq, a.user_id, u.full_name
            from revision_line_adds a join users u on u.id = a.user_id
            where a.revision_id = $1 order by a.seq"#,
         id
@@ -114,11 +118,14 @@ async fn count_log(
         line.version = r.seq;
         let log = &mut line.entries;
         match log.last_mut() {
-            Some(last) if r.mode == "add" && last.mode == "add" && last.by == r.full_name => {
+            Some(last)
+                if r.mode == "add" && last.mode == "add" && last.user_id == Some(r.user_id) =>
+            {
                 last.qty = last.qty.saturating_add(r.qty);
             }
             _ => log.push(CountEntry {
                 by: r.full_name,
+                user_id: Some(r.user_id),
                 mode: r.mode,
                 qty: r.qty,
             }),
@@ -566,7 +573,8 @@ fn expected_of(qty: Option<i64>, empty: bool) -> Option<Option<i64>> {
 }
 
 /// «= итог» без `expected_qty` шлёт только экран до обновления: строку, которую за последние
-/// 10 минут прибавляли с других устройств, он затёр бы — 409 «обновите страницу».
+/// 10 минут прибавляли с других устройств или другим входом (на общем планшете сотрудники входят
+/// по очереди, задача 005, Н7), он затёр бы — 409 «обновите страницу».
 async fn outdated_screen(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -576,11 +584,12 @@ async fn outdated_screen(
     let fresh = sqlx::query_scalar!(
         r#"select exists(select 1 from revision_line_adds
                          where revision_id = $1 and product_id = $2 and mode = 'add'
-                           and device_id <> $3
+                           and (device_id <> $3 or user_id <> $4)
                            and created_at > clock_timestamp() - interval '10 minutes') as "fresh!""#,
         id,
         product_id,
-        ctx.device_id
+        ctx.device_id,
+        ctx.user.id
     )
     .fetch_one(&mut *conn)
     .await?;
