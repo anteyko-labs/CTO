@@ -124,7 +124,8 @@ test('администратор без права «Товары и штрих�
   expect(me.permissions).toContain('revision')
   await api(page.request, 'put', `/users/${u.id}/permissions`, {
     op_id: crypto.randomUUID(),
-    permissions: me.permissions.filter((p) => p !== 'products'),
+    // Код к товару открывает и право кассы «Привязывать коды на кассе» (ADR-168) — снято тоже.
+    permissions: me.permissions.filter((p) => p !== 'products' && p !== 'till_barcode'),
   })
   await a.goto('/revision')
   await a.getByRole('row', { name: new RegExp(w.catName) }).first().click()
@@ -145,6 +146,7 @@ test('администратор без права «Товары и штрих�
   expect(((await denied.json()) as { error: { message: string } }).error.message).toBe('Нет права: Товары и штрихкоды')
   const barcode = await a.request.post(`/api/v1/products/${w.id}/barcodes`, { data: { code: `49${RUN}01` }, headers: DEVICE })
   expect(barcode.status()).toBe(403)
+  expect(((await barcode.json()) as { error: { message: string } }).error.message).toBe('Нет права: Привязывать коды на кассе')
   await ctx.close()
   await api(page.request, 'post', `/revisions/${rev.head.id}/cancel`, {})
 })
