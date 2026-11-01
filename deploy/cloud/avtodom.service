@@ -1,0 +1,34 @@
+# Сервер Avtodom в облаке. Ставит setup.sh в /etc/systemd/system/avtodom.service.
+# Программа — /opt/avtodom/bin → текущая версия (releases/<ревизия>, ссылку меняет deploy.sh).
+# Миграции базы сервер применяет сам при запуске. Журнал: journalctl -u avtodom.
+[Unit]
+Description=Avtodom server
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=avtodom
+Group=avtodom
+EnvironmentFile=/etc/avtodom/env
+Environment=BIND_ADDR=127.0.0.1:8080
+Environment=WEB_DIR=/opt/avtodom/web
+Environment=TZ=Asia/Bishkek
+WorkingDirectory=/var/lib/avtodom
+ExecStart=/opt/avtodom/bin/avtodom-server
+# Сервер завершается штатно по Ctrl+C (SIGINT): дожидается текущих запросов.
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+# Защита: только чтение системы, свои каталоги — запись.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/avtodom
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

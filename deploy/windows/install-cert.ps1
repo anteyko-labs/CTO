@@ -3,13 +3,17 @@
 # Ярлык «Avtodom касса» (рабочий стол и автозагрузка): Chrome окном кассы с --kiosk-printing —
 # чеки печатаются сразу на принтер по умолчанию, без окна печати (ADR-127). Повторный запуск
 # ничего не дублирует: сертификат и ярлыки перезаписываются.
-param([string]$Url = '')
+# Сервер в облаке (deploy/cloud, сертификат Let's Encrypt): свой сертификат не нужен —
+#   install-cert.ps1 -Url https://ДОМЕН -NoCert
+param([string]$Url = '', [switch]$NoCert)
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$cert = Join-Path $Here 'root.crt'
-if (-not (Test-Path $cert)) { throw 'Положите root.crt (с сервера: C:\Avtodom\caddy-data\pki\authorities\local\root.crt) рядом с этим файлом' }
-Import-Certificate -FilePath $cert -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-Write-Host 'Сертификат установлен.' -ForegroundColor Green
+if (-not $NoCert) {
+  $cert = Join-Path $Here 'root.crt'
+  if (-not (Test-Path $cert)) { throw 'Положите root.crt (с сервера: C:\Avtodom\caddy-data\pki\authorities\local\root.crt) рядом с этим файлом' }
+  Import-Certificate -FilePath $cert -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+  Write-Host 'Сертификат установлен.' -ForegroundColor Green
+}
 
 # Адрес кассы: параметр -Url или файл, который положил install.ps1 на сервере.
 $urlFile = Join-Path $Here 'kassa-url.txt'
