@@ -3,6 +3,7 @@
 // баллы у клиентов всего.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { ensureShift } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -133,6 +134,8 @@ test('оплата долга на кассе открывается на кли
   const p = await product(page.request, cat.id, `Долг ${RUN} фильтр`)
   const client = `Должник Чеков ${RUN}`
   const party = await apiPost<{ id: string }>(page.request, '/parties', { role: 'customer', kind: 'person', name: client, inn: `4${RUN}12345` })
+  // Онлайн-чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(page.request, cashier.id)
   await apiPost(page.request, '/sales', {
     op_id: crypto.randomUUID(),
     client_time: new Date().toISOString(),

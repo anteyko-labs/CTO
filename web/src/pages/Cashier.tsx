@@ -2132,6 +2132,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           {!fix && lines.length > 0 && <div className="flex gap-1.5">{parkClear}</div>}
           <Button
             className="min-h-[76px]! w-full flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
+            data-testid="sale-submit"
             disabled={submitDisabled}
             onClick={onSubmitClick}
           >
@@ -2145,6 +2146,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <div className="flex shrink-0 items-stretch gap-2">
           <Button
             className="min-h-[76px]! min-w-0 flex-1 flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
+            data-testid="sale-submit"
             disabled={submitDisabled}
             onClick={onSubmitClick}
           >
@@ -2155,7 +2157,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </div>
       ) : (
         <>
-          <Button className="min-h-14! py-3 text-lg!" disabled={submitDisabled} onClick={onSubmitClick}>
+          <Button className="min-h-14! py-3 text-lg!" data-testid="sale-submit" disabled={submitDisabled} onClick={onSubmitClick}>
             {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
           </Button>
           <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>

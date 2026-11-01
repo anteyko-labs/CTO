@@ -2,7 +2,7 @@
 // книжка по каждому фильтру.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickCashier } from './cashier'
+import { ensureShift, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -152,6 +152,8 @@ test('масляная книжка по каждому фильтру: стро
   const kind = await api<{ id: string }>(page.request, 'POST', '/services', { name: `Замена масла по строкам ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
   const plate = `01KG${RUN.slice(-3)}FFF`
   const vehicle = await api<{ id: string }>(page.request, 'POST', `/parties/${party.id}/vehicles`, { plate })
+  // Онлайн-чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(page.request, emp.id)
   await api(page.request, 'POST', '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'service',

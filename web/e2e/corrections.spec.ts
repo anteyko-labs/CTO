@@ -2,6 +2,7 @@
 // что создаются; исходный сторнируется, верный проводится, оба ссылаются друг на друга.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { ensureShift } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -37,7 +38,8 @@ test('исправить чек: количество в той же кассе,
     lines: [{ product_id: item.id, qty: 10, cost_tyiyn: 200_000 }],
   })
   const cashier = await apiPost<{ id: string }>(page.request, '/employees', { full_name: `Кассир исправления ${RUN}`, is_cashier: true, pin: '1234' })
-  // Картой: возврат на карту смены не требует — проверка не зависит от открытой смены.
+  // Картой: возврат на карту смены не требует; сам чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(page.request, cashier.id)
   const sale = await apiPost<{ id: string; number: number }>(page.request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'takeaway',
