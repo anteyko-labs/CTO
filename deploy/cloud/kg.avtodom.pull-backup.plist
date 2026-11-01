@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Мак точки: каждый день в 04:00 забирать копии базы из облака (pull-backup-to-mac.sh).
+     Заменить ПОЛЬЗОВАТЕЛЬ (имя на Маке), ДОМЕН и путь к скрипту, положить в
+     ~/Library/LaunchAgents/ и включить: launchctl load ~/Library/LaunchAgents/kg.avtodom.pull-backup.plist
+     Мак спал в 04:00 — запуск при пробуждении. Журнал — ~/avtodom-backups/cloud/pull.log. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>kg.avtodom.pull-backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/ПОЛЬЗОВАТЕЛЬ/avtodom-cloud/pull-backup-to-mac.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AVTODOM_CLOUD_HOST</key>
+		<string>ДОМЕН</string>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>4</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/ПОЛЬЗОВАТЕЛЬ/avtodom-backups/cloud/pull.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/ПОЛЬЗОВАТЕЛЬ/avtodom-backups/cloud/pull.log</string>
+</dict>
+</plist>
