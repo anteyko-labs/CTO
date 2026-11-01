@@ -190,6 +190,8 @@ function Draft({
   const [adding, setAdding] = useState<{ barcode?: string; hit?: OldCatalogHit } | null>(null)
   /** Заводить из строки Умага в поиске — право «Товары и штрихкоды» (SPEC-35 §4). */
   const mayUmag = useCan()('products')
+  /** Заведён товар из окна «Товар не из программы»: поиск вне списка перечитывается. */
+  const [addedCount, setAddedCount] = useState(0)
   /** Карточка товара из строки (задача 002, П5): с правом «Товары и штрихкоды» — правка, иначе просмотр. */
   const [card, setCard] = useState<Product | null>(null)
   const act = useAction()
@@ -842,6 +844,7 @@ function Draft({
       {draft && (
         <RevisionSearchHits
           text={filter}
+          version={addedCount}
           shown={new Set(allLines.map((l) => l.product_id))}
           fits={fitsRevision}
           mayUmag={mayUmag}
@@ -1071,6 +1074,7 @@ function Draft({
           onExisting={goTo}
           onDone={() => {
             setAdding(null)
+            setAddedCount((n) => n + 1)
             onChanged()
           }}
         />

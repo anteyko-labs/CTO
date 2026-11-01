@@ -69,7 +69,8 @@ test('ревизия: два устройства сканируют один т
   // Свой скан виден сразу, чужой — при перечитывании (раз в 5 с): у обоих 2, а не 1.
   for (const page of [a, b]) {
     await expect(total(page, p.id)).toHaveText(text('итого 2 шт'), { timeout: 15_000 })
-    await expect(page.getByTestId('counted-by').first()).toContainText('считали:')
+    // Кто сколько добавил (задача 005, Н7): оба устройства — один вход, прибавки сложены.
+    await expect(page.getByTestId('counted-by').first()).toContainText(text('+2 шт = 2 шт'), { timeout: 15_000 })
   }
 
   // Ещё скан на первом — второй увидит 3.

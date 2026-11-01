@@ -130,6 +130,9 @@ test('вес в ревизии и в приходе — в кг: правка п
 
   await startRevision(page, catName)
   const field = page.locator(`[data-count="${scrap.id}"]`)
+  // Поле по умолчанию — «+ добавить» (задача 005, Н7); правка показанного итога — в «= итог».
+  await expect(field).toHaveAttribute('placeholder', '+ кг')
+  await page.locator(`tr:has([data-count="${scrap.id}"]) [data-mode="set"]`).click()
   await expect(field).toHaveAttribute('placeholder', 'кг')
   const list = await apiGet<{ id: string; status: string; category_id: string | null }[]>(page.request, '/revisions')
   const mine = list.find((r) => r.status === 'draft' && r.category_id === scrap.category_id)!
@@ -180,6 +183,8 @@ test('ревизия: две правки строки подряд — сохр
     await route.continue()
   })
   const field = page.locator(`[data-count="${scrap.id}"]`)
+  // Итог строки — в «= итог» (по умолчанию поле «+ добавить», задача 005, Н7).
+  await page.locator(`tr:has([data-count="${scrap.id}"]) [data-mode="set"]`).click()
   await field.fill('12,5')
   await field.press('Enter')
   await field.fill('12,6')

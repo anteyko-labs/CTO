@@ -11,6 +11,7 @@ import { Button, Card } from './ui'
 
 export function RevisionSearchHits({
   text,
+  version = 0,
   shown,
   fits,
   mayUmag,
@@ -19,6 +20,8 @@ export function RevisionSearchHits({
 }: {
   /** Набранное в «Найти в списке». */
   text: string
+  /** Перечитать найденное: товар только что заведён из строки Умага. */
+  version?: number
   /** Товары, чьи строки уже есть в ревизии на экране. */
   shown: ReadonlySet<string>
   /** Товар входит в эту ревизию (весь склад или её категория). */
@@ -31,10 +34,10 @@ export function RevisionSearchHits({
   const query = useDebounced(text.trim(), 250)
   const on = query.length >= 2
   // Подсказка: сбой поиска не мешает считать — блока просто нет.
-  const own = useLoad(() => (on ? get<Product[]>(`/products${qs({ q: query, limit: 15 })}`).catch(() => []) : Promise.resolve([])), [query])
+  const own = useLoad(() => (on ? get<Product[]>(`/products${qs({ q: query, limit: 15 })}`).catch(() => []) : Promise.resolve([])), [query, version])
   const old = useLoad(
     () => (on && mayUmag ? searchUmag({ q: query }).catch(() => []) : Promise.resolve<OldCatalogHit[]>([])),
-    [query, mayUmag],
+    [query, mayUmag, version],
   )
   if (!on || query !== text.trim()) return null
   const outside = (own.data ?? []).filter((p) => !shown.has(p.id) && fits(p)).slice(0, 8)
