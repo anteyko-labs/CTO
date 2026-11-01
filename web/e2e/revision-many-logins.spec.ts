@@ -64,6 +64,12 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
   const cat = await api<{ id: string }>(page.request, 'post', '/categories', { name: category, kind: 'other' })
   const name = `Фильтр два входа ${RUN}`
   const p = await api<{ id: string }>(page.request, 'post', '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, sale_price_tyiyn: 30_000 })
+  const missing = await api<{ id: string }>(page.request, 'post', '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Свеча нет на полке ${RUN}`,
+    sale_price_tyiyn: 10_000,
+  })
   await api(page.request, 'post', '/revisions', { category_id: cat.id })
   const aziz = await staff(page, browser, 'Азиз')
   const aleksey = await staff(page, browser, 'Алексей')
@@ -104,6 +110,12 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
   await expect(aleksey.getByRole('row', { name: new RegExp(name) }).getByTestId('counted-by')).toHaveText(text(`Азиз ${RUN} = 12 шт`), {
     timeout: 15_000,
   })
+  // 0 в «+ добавить» непосчитанной строки — «не нашли»: строка посчитана нулём, а не пропала молча.
+  const zero = aziz.locator(`[data-count="${missing.id}"]`)
+  await zero.fill('0')
+  await zero.press('Enter')
+  await expect(total(aziz, missing.id)).toHaveText(text('итого 0 шт'), { timeout: 15_000 })
+  await expect(total(aleksey, missing.id)).toHaveText(text('итого 0 шт'), { timeout: 15_000 })
   await cancelDraft(page.request, cat.id)
 })
 

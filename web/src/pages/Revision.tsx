@@ -21,6 +21,7 @@ import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { sameCode } from '../lib/umagCodes'
 import { retrySame } from '../lib/retrySame'
 import {
+  addIsEmpty,
   appendCount,
   countLogText,
   countSummary,
@@ -602,7 +603,7 @@ function Draft({
   const commit = (l: Line, qty: number | null) => {
     const id = l.product_id
     const mode = modeOf(l)
-    if (mode === 'add' && (qty === null || qty === 0)) return dropEdit(id)
+    if (mode === 'add' && addIsEmpty(qty, l.counted_qty)) return dropEdit(id)
     // Пустую строку очистили, своих записей в пути и неотправленных сканов нет — убирать нечего.
     if (
       mode === 'set' &&
@@ -836,8 +837,8 @@ function Draft({
             Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
             {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
             Непересчитанные товары не меняются. Число в строке — «+ добавить»: то, что вы нашли в своём месте, прибавится к общему
-            итогу (считают несколько человек со своих входов — итог складывается). Записать итог строки целиком или 0 «не нашли» —
-            выберите «= итог».
+            итогу (считают несколько человек со своих входов — итог складывается). 0 в непосчитанной строке — «не нашли». Записать итог строки
+            целиком — выберите «= итог».
           </div>
         </Card>
       )}

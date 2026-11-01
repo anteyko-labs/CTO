@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { appendCount, countLogText, countSummary, defaultCountMode, type CountEntry } from './revisionCount'
+import { addIsEmpty, appendCount, countLogText, countSummary, defaultCountMode, type CountEntry } from './revisionCount'
 
 describe('defaultCountMode', () => {
   it('всегда «+ добавить»: каждый вписывает найденное в своём месте, «= итог» — только явным выбором (задача 005, Н7)', () => {
     expect(defaultCountMode()).toBe('add')
+  })
+})
+
+describe('addIsEmpty', () => {
+  it('0 в непосчитанной строке — «не нашли», записывается; в посчитанной +0 и пустое — не уходят', () => {
+    expect(addIsEmpty(0, null)).toBe(false)
+    expect(addIsEmpty(0, 3)).toBe(true)
+    expect(addIsEmpty(0, 0)).toBe(true)
+    expect(addIsEmpty(null, null)).toBe(true)
+    expect(addIsEmpty(2, null)).toBe(false)
   })
 })
 
