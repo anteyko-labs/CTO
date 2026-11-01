@@ -275,11 +275,13 @@ rm -f /etc/caddy/Caddyfile.check
 # caddy validate от root создаёт файл журнала с владельцем root, и служба Caddy (пользователь caddy)
 # потом не может его открыть: перезапуск падает.
 chown -R caddy:caddy /var/log/caddy
-caddy_changed=0
-if printf '%s\n' "$caddyfile" | put_file /etc/caddy/Caddyfile 644; then caddy_changed=1; fi
+printf '%s\n' "$caddyfile" | put_file /etc/caddy/Caddyfile 644 || true
 if [ "$systemd" = 1 ]; then
   systemctl enable caddy
-  if [ "$caddy_changed" = 1 ] || ! systemctl is-active -q caddy; then systemctl reload-or-restart caddy; fi
+  # Перечитывать всегда: прошлый запуск мог записать Caddyfile, но упасть на перезагрузке Caddy —
+  # тогда файл уже тот же, а Caddy работает со старыми настройками (страница пакета на :80).
+  # reload плавный: соединения не рвутся.
+  systemctl reload-or-restart caddy
 fi
 
 say "Служба avtodom и ночная копия"
