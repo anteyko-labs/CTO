@@ -12825,3 +12825,68 @@ async fn unit_change_rounds_disabled_gift_rule_and_marks_it(pool: PgPool) {
         "{r}"
     );
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn self_routes_need_no_permission_and_open_nothing_else(pool: PgPool) {
+    // Задача 005 Н1 (ADR-{n1}): «Сменить свой пароль» и «Мой заработок» — без права, только своё.
+    // Администратор без единого права меняет свой пароль; заработка у входа без сотрудника нет
+    // (404); входы, сотрудники-входы и чужие пароли — по-прежнему только владельцу.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    set_admin_permissions(&app, &owner, &[]).await;
+    let (s, _, v) = call(&app, "GET", "/api/v1/me/earnings", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let (s, _, v) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/password",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "old_password": "admin-pass-1", "new_password": "admin-pass-2" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = admin_id(&app, &owner).await;
+    let employee: Uuid = sqlx::query_scalar(
+        "insert into employees (id, branch_id, full_name, is_cashier, is_master) select $1, branch_id, 'Мастер', false, true from users where login = 'admin' returning id",
+    )
+    .bind(Uuid::now_v7())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for (method, uri, body) in [
+        (
+            "POST",
+            "/api/v1/users".to_string(),
+            json!({ "op_id": Uuid::now_v7(), "login": "self", "password": "self-pass-1", "employee_id": employee }),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/users/{id}"),
+            json!({ "op_id": Uuid::now_v7(), "employee_id": employee }),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/users/{id}"),
+            json!({ "op_id": Uuid::now_v7(), "password": "stolen-pass-1" }),
+        ),
+    ] {
+        let (s, _, v) = call(&app, method, &uri, Some(&admin), Some(body)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}: {v}");
+    }
+    // Без входа — 401.
+    let (s, _, _) = call(&app, "GET", "/api/v1/me/earnings", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/password",
+        None,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "old_password": "x", "new_password": "admin-pass-3" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    login(&app, "admin", "admin-pass-2").await;
+}

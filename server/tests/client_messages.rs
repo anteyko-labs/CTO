@@ -1414,10 +1414,16 @@ async fn payment_switch_of_one_branch_keeps_others_pending(pool: PgPool) {
         let res = w.app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
     }
-    // Утром сообщение первого филиала уходит.
+    // Утром сообщение первого филиала уходит. Рассылка «раз в месяц» (с 1-го по 3-е число) к
+    // проверке не относится — её строку не считаем.
     w.pass(9).await;
+    let texts: Vec<String> =
+        w.tg.texts(801)
+            .into_iter()
+            .filter(|t| !t.contains("ваш долг —"))
+            .collect();
     assert_eq!(
-        w.tg.texts(801),
+        texts,
         vec!["Здравствуйте, Азиз! Получили оплату 1 000 сом. Долг на сегодня — 5 000 сом."]
     );
     // В самом втором филиале погашения до включения не пишутся (ADR-141) — ключ свой.
