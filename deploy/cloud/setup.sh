@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Подготовка облачного сервера Avtodom (Ubuntu 24.04, запуск от root). Повторный запуск безопасен:
+# Подготовка облачного сервера Avtodom (Ubuntu 24.04 или 26.04, запуск от root). Повторный запуск безопасен:
 # пароль базы, /etc/avtodom/env и выкаченные версии сохраняются, файлы настроек переписываются
 # из этого каталога; сервер перезапускается, только если изменились его служба или настройки, а
 # выключенная служба (systemctl disable avtodom — возврат на Мак) не включается снова.
@@ -51,7 +51,21 @@ put_file() {
   mv -f "$dst.new" "$dst"
 }
 [ "$(id -u)" = 0 ] || die "запускать от root"
-grep -q 'VERSION_ID="24.04"' /etc/os-release || die "нужна Ubuntu 24.04"
+# Система — из /etc/os-release (в подоболочке: его имена не смешиваются с именами скрипта).
+os_id=$(. /etc/os-release && echo "${ID:-}")
+os_ver=$(. /etc/os-release && echo "${VERSION_ID:-}")
+codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")
+[ "$os_id" = ubuntu ] || die "нужна Ubuntu 24.04 или 26.04"
+case "$os_ver" in
+  24.04 | 26.04) ;;
+  *) die "нужна Ubuntu 24.04 или 26.04, здесь $os_ver" ;;
+esac
+[ -n "$codename" ] || die "в /etc/os-release нет VERSION_CODENAME"
+# PostgreSQL 16 — как на Маке точки и в CI (ADR-166): копии из облака читает pg_restore 16 Мака
+# (pull-backup-to-mac.sh, возврат на Мак — README 2.9), а копия более новой версии ему не по силам.
+# В Ubuntu 24.04 он в самом дистрибутиве, в 26.04 — из репозитория PostgreSQL (PGDG) для её
+# codename.
+PG=16
 for f in avtodom.service Caddyfile.template env.example backup.sh backup-serve.sh restore.sh deploy.sh verify.sql; do
   [ -f "$HERE/$f" ] || die "нет $HERE/$f — запускайте из каталога deploy/cloud"
 done
@@ -85,20 +99,32 @@ apt-get update -q
 # Порядок строк в базе (сортировка по имени) — en_US.UTF-8, как у PostgreSQL в CI: база avtodom
 # создаётся с ней (--locale), поэтому локаль генерируется до установки PostgreSQL. Сам скрипт
 # работает в C.UTF-8: уже запущенный процесс новую локаль не увидит.
-apt-get install -y -q --no-install-recommends locales
+apt-get install -y -q --no-install-recommends locales ca-certificates curl gnupg
 if ! locale -a | grep -ix 'en_US\.utf8' > /dev/null; then
   locale-gen en_US.UTF-8 > /dev/null
 fi
 locale -a | grep -ix 'en_US\.utf8' > /dev/null || die "локаль en_US.UTF-8 не создалась"
 # Прошлый запуск мог оборвать настройку пакета (например, кластер не создался из-за локали).
 dpkg --configure -a
+if ! apt-cache show "postgresql-$PG" > /dev/null 2>&1; then
+  echo "PostgreSQL $PG нет в Ubuntu $os_ver — подключаю репозиторий PGDG ($codename-pgdg)."
+  pgdg=https://apt.postgresql.org/pub/repos/apt
+  curl -fsSI "$pgdg/dists/$codename-pgdg/Release" > /dev/null || die "в PGDG нет $codename-pgdg"
+  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    | gpg --batch --yes --dearmor -o /usr/share/keyrings/pgdg-archive-keyring.gpg
+  chmod 644 /usr/share/keyrings/pgdg-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/pgdg-archive-keyring.gpg] $pgdg $codename-pgdg main" \
+    | put_file /etc/apt/sources.list.d/pgdg.list 644 || true
+  apt-get update -q
+  apt-cache show "postgresql-$PG" > /dev/null 2>&1 || die "postgresql-$PG не найден и в PGDG"
+fi
 apt-get install -y -q --no-install-recommends \
-  ca-certificates curl gnupg git openssh-server ufw unattended-upgrades \
-  postgresql-16 postgresql-client-16 tzdata xz-utils openssl build-essential pkg-config
+  git openssh-server ufw unattended-upgrades \
+  "postgresql-$PG" "postgresql-client-$PG" tzdata xz-utils openssl build-essential pkg-config
 # Кластер создаёт сам пакет (с локалью системы, /etc/default/locale). Не создал — создаём.
-if ! pg_lsclusters -h | awk '$1 == 16 && $2 == "main"' | grep -q .; then
-  echo "Кластер PostgreSQL 16/main не создан при установке пакета — создаю."
-  pg_createcluster 16 main --locale=en_US.UTF-8 --start > /dev/null
+if ! pg_lsclusters -h | awk -v v="$PG" '$1 == v && $2 == "main"' | grep -q .; then
+  echo "Кластер PostgreSQL $PG/main не создан при установке пакета — создаю."
+  pg_createcluster "$PG" main --locale=en_US.UTF-8 --start > /dev/null
 fi
 
 say "Часовой пояс Asia/Bishkek"
@@ -141,9 +167,9 @@ fi
   printf 'DOMAIN=%q\nEMAIL=%q\nREPO_URL=%q\n' "$domain" "$email" "$repo"
 } | put_file "$CONF" 644 || true
 
-say "PostgreSQL 16"
+say "PostgreSQL $PG"
 pg_changed=0
-if put_file /etc/postgresql/16/main/conf.d/avtodom.conf 644 <<'PGCONF'; then pg_changed=1; fi
+if put_file "/etc/postgresql/$PG/main/conf.d/avtodom.conf" 644 <<'PGCONF'; then pg_changed=1; fi
 # Avtodom: сервер 4 ГБ, одна база. Слушает только localhost (по умолчанию).
 shared_buffers = 512MB
 effective_cache_size = 2GB
@@ -154,10 +180,10 @@ if [ "$systemd" = 1 ]; then
   systemctl enable --now postgresql
   [ "$pg_changed" = 0 ] || systemctl restart postgresql
 else
-  if pg_lsclusters -h | awk '$1 == 16 && $2 == "main" && $4 == "online"' | grep -q .; then
-    [ "$pg_changed" = 0 ] || pg_ctlcluster 16 main restart
+  if pg_lsclusters -h | awk -v v="$PG" '$1 == v && $2 == "main" && $4 == "online"' | grep -q .; then
+    [ "$pg_changed" = 0 ] || pg_ctlcluster "$PG" main restart
   else
-    pg_ctlcluster 16 main start
+    pg_ctlcluster "$PG" main start
   fi
 fi
 for _ in $(seq 30); do as_postgres pg_isready -q && break; sleep 1; done
@@ -221,6 +247,8 @@ for k in BIND_ADDR WEB_DIR; do
 done
 
 say "Caddy (HTTPS)"
+# Репозиторий Caddy один для всех версий Debian и Ubuntu (any-version): от codename не зависит.
+# В самой Ubuntu Caddy старый (в 26.04 — 2.6), поэтому берётся официальный.
 if [ ! -s /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]; then
   curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
     | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -244,6 +272,9 @@ printf '%s\n' "$caddyfile" > /etc/caddy/Caddyfile.check
 caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile.check > /dev/null 2>&1 \
   || { caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile.check || true; rm -f /etc/caddy/Caddyfile.check; die "Caddyfile не прошёл проверку"; }
 rm -f /etc/caddy/Caddyfile.check
+# caddy validate от root создаёт файл журнала с владельцем root, и служба Caddy (пользователь caddy)
+# потом не может его открыть: перезапуск падает.
+chown -R caddy:caddy /var/log/caddy
 caddy_changed=0
 if printf '%s\n' "$caddyfile" | put_file /etc/caddy/Caddyfile 644; then caddy_changed=1; fi
 if [ "$systemd" = 1 ]; then
@@ -388,6 +419,7 @@ if [ "$build_tools" = 1 ]; then
       aarch64) arch=arm64 ;;
       *) die "неизвестная архитектура $(uname -m)" ;;
     esac
+    # Готовая сборка с nodejs.org: от версии Ubuntu не зависит, сумма сверяется.
     tmp=$(mktemp -d)
     base=https://nodejs.org/dist/latest-v22.x
     curl -fsSL "$base/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
