@@ -30,6 +30,8 @@ export interface AdminBotGroup {
 export interface AdminBot {
   linked: boolean
   linked_at: string | null
+  /** Телеграм-имя привязанного чата: @имя или имя в Телеграме (ADR-{h18}). */
+  tg_name?: string | null
   items: AdminBotItem[]
   on: string[]
   groups: AdminBotGroup[]

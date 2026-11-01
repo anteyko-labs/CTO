@@ -84,6 +84,40 @@ function LoyaltyRate() {
   )
 }
 
+/** «Сотрудники привязывают Телеграм сами» (ADR-{h18}): по умолчанию да — сотрудник со входом
+ *  берёт код в «Мой Телеграм»; выключено — код даёт только владелец в «Пользователи → Телеграм». */
+function AdminsSelfLink() {
+  const st = useLoad(() => get<{ self_link: boolean }>('/settings/telegram/admins'), [])
+  const act = useAction()
+  if (!st.data) return <ErrorBox error={st.error} />
+  const on = st.data.self_link
+  return (
+    <Card className="flex flex-col gap-2 text-sm text-slate-700" data-testid="telegram-admins-card">
+      <CardTitle>Телеграм сотрудников</CardTitle>
+      <div className="-mt-2">
+        {on
+          ? 'Сотрудник со входом сам привязывает свой чат: на сайте «Мой Телеграм» → «Привязать Телеграм». Вам придёт уведомление о каждой привязке и отвязке.'
+          : 'Код привязки сотруднику даёте только вы — в «Пользователи → Телеграм». У сотрудника на сайте — «Привязку делает владелец».'}{' '}
+        Отвязать любого — «Пользователи → Телеграм».
+      </div>
+      <div data-testid="telegram-admins-self">
+        <Checkbox
+          label="Сотрудники привязывают Телеграм сами"
+          checked={on}
+          onChange={(v) =>
+            !act.busy &&
+            void act.run(async () => {
+              st.setData(await put<{ self_link: boolean }>('/settings/telegram/admins', { op_id: newOpId(), self_link: v }))
+              toast(v ? 'Сотрудники привязывают Телеграм сами' : 'Привязку сотрудникам делаете вы')
+            })
+          }
+        />
+      </div>
+      <ErrorBox error={act.error} />
+    </Card>
+  )
+}
+
 interface Usage {
   questions: number
   input_tokens: number
@@ -217,6 +251,7 @@ export default function TelegramSettings() {
           )}
         </Card>
       )}
+      {s && <AdminsSelfLink />}
       {s?.enabled && <BotQuestions />}
       {s?.enabled && <LoyaltyRate />}
       {s?.enabled && <BotReceiptsCard ownerLinked={s.linked} />}

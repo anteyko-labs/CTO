@@ -158,7 +158,7 @@ async fn new_code(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Cod
     .await?;
     let expires_at = sqlx::query_scalar!(
         r#"insert into telegram_codes (code, user_id, expires_at) values ($1, $2, now() + interval '15 minutes')
-           on conflict (code) do update set user_id = excluded.user_id, expires_at = excluded.expires_at
+           on conflict (code) do update set user_id = excluded.user_id, expires_at = excluded.expires_at, by_self = false
            returning expires_at"#,
         code,
         ctx.user.id
@@ -232,7 +232,7 @@ async fn user_code(
     .await?;
     let expires_at = sqlx::query_scalar!(
         r#"insert into telegram_codes (code, user_id, expires_at) values ($1, $2, now() + interval '15 minutes')
-           on conflict (code) do update set user_id = excluded.user_id, expires_at = excluded.expires_at
+           on conflict (code) do update set user_id = excluded.user_id, expires_at = excluded.expires_at, by_self = false
            returning expires_at"#,
         code,
         id
@@ -2165,8 +2165,9 @@ async fn handle_text(
     Ok(Some((help, None)))
 }
 
-/// Ответ на неверный или устаревший код привязки: код администратору даёт владелец (ADR-135).
-pub const WRONG_CODE: &str = "Код не подошёл или устарел. Попросите новый у владельца — он берёт его в «Настройки → Телеграм и баллы» (свой) или в «Пользователи → Телеграм» (для администратора).";
+/// Ответ на неверный или устаревший код привязки: код администратору даёт владелец (ADR-135)
+/// или он берёт его сам в «Мой Телеграм» (ADR-{h18}).
+pub const WRONG_CODE: &str = "Код не подошёл или устарел. Возьмите новый: владелец — в «Настройки → Телеграм и баллы», администратор — в «Мой Телеграм» на сайте или у владельца («Пользователи → Телеграм»).";
 
 /// Привязка чата к владельцу по коду — одной транзакцией с журналом. Неверные коды
 /// ограничены: 5 на чат и 20 всего за 15 минут; на 20-м владельцу уходит уведомление (ADR-063).
@@ -2194,11 +2195,14 @@ async fn link(
         );
     }
     // Код владельца или администратора: администратору код даёт владелец в «Пользователях»
-    // (ADR-135).
+    // (ADR-135) или он сам в «Мой Телеграм» (`by_self`, ADR-{h18}); свой код не действует,
+    // если владелец выключил «Сотрудники привязывают Телеграм сами».
     let owner = sqlx::query!(
-        r#"select u.id, u.branch_id, u.full_name, u.login, u.role from telegram_codes c
+        r#"select u.id, u.branch_id, u.full_name, u.login, u.role, c.by_self from telegram_codes c
            join users u on u.id = c.user_id
-           where c.code = $1 and c.expires_at > now() and u.active and u.role in ('owner', 'admin')"#,
+           where c.code = $1 and c.expires_at > now() and u.active and u.role in ('owner', 'admin')
+             and (not c.by_self or coalesce((select (s.value ->> 'self_link')::boolean from settings s
+                                             where s.branch_id = u.branch_id and s.key = 'telegram_admins'), true))"#,
         code
     )
     .fetch_optional(&mut *tx)
@@ -2222,13 +2226,21 @@ async fn link(
     sqlx::query!("delete from telegram_codes where code = $1", code)
         .execute(&mut *tx)
         .await?;
-    sqlx::query!(
-        "delete from telegram_links where chat_id = $1 or user_id = $2",
+    let mut gone = sqlx::query_scalar!(
+        "delete from telegram_links where chat_id = $1 or user_id = $2 returning chat_id",
         chat_id,
         o.id
     )
-    .execute(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
+    // Перепривязка: память разговора, режим вопросов, ввод меню и открытый черновик прежнего
+    // хозяина чата не достаются новому (ответы владельцу — с прибылью, I13; ADR-{h18}).
+    gone.push(chat_id);
+    gone.sort_unstable();
+    gone.dedup();
+    for chat in gone {
+        forget_chat(&mut tx, chat).await?;
+    }
     // Кто привязал чат: кнопки черновиков принимаются только от него (ADR-070).
     sqlx::query!(
         "insert into telegram_links (chat_id, user_id, branch_id, tg_user_id) values ($1, $2, $3, $4)",
@@ -2252,7 +2264,12 @@ async fn link(
         } else {
             "telegram.link"
         },
-        json!({ "chat": chat_id, "full_name": o.full_name, "login": o.login })
+        json!({
+            "chat": chat_id,
+            "full_name": o.full_name,
+            "login": o.login,
+            "via": if o.by_self { "self" } else { "owner" },
+        })
     )
     .execute(&mut *tx)
     .await?;
@@ -2285,6 +2302,20 @@ async fn link(
         "Готово, {}: важные события точки будут приходить сюда.\n\n{HELP}",
         o.full_name
     ))
+}
+
+/// Чат сменил хозяина (привязка заново): память разговора помощника, режим вопросов, ввод
+/// меню администратора и открытый черновик чата — прочь (ADR-{h18}).
+async fn forget_chat(conn: &mut PgConnection, chat_id: i64) -> AppResult<()> {
+    sqlx::query!("delete from bot_dialog where chat_id = $1", chat_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("delete from bot_question_mode where chat_id = $1", chat_id)
+        .execute(&mut *conn)
+        .await?;
+    crate::api::bot_admin::clear(conn, chat_id).await?;
+    crate::api::bot_drafts::close_open(conn, chat_id, "чат привязан заново").await?;
+    Ok(())
 }
 
 /// Подбирают код привязки: владельцам всех филиалов — одно уведомление за 15 минут.
@@ -3816,6 +3847,43 @@ fn pick_photo(sizes: &[PhotoSize]) -> Option<&PhotoSize> {
 #[derive(Deserialize)]
 struct From {
     id: i64,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
+}
+
+/// Телеграм-имя для показа «к кому привязан» (ADR-{h18}): @имя, без него — имя и фамилия в
+/// Телеграме; не длиннее 64 знаков.
+fn tg_name(f: &From) -> Option<String> {
+    let name = match f.username.as_deref().map(str::trim) {
+        Some(u) if !u.is_empty() => format!("@{u}"),
+        _ => [f.first_name.as_deref(), f.last_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    (!name.is_empty()).then(|| name.chars().take(64).collect())
+}
+
+/// Телеграм-имя привязанного чата владельца или администратора — с каждым его сообщением
+/// (сменил имя в Телеграме — на экране новое). Чат не привязан — ничего.
+async fn remember_name(conn: &mut PgConnection, chat_id: i64, name: Option<&str>) -> AppResult<()> {
+    if let Some(name) = name {
+        sqlx::query!(
+            "update telegram_links set tg_name = $2 where chat_id = $1 and tg_name is distinct from $2",
+            chat_id,
+            name
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -3839,6 +3907,8 @@ pub enum Incoming {
     Message {
         chat_id: i64,
         from_id: i64,
+        /// Телеграм-имя отправителя ([`tg_name`]).
+        name: Option<String>,
         text: Option<String>,
         contact: Option<SharedContact>,
     },
@@ -3908,6 +3978,7 @@ fn incoming(u: Update) -> Option<Incoming> {
     Some(Incoming::Message {
         chat_id: m.chat.id,
         from_id: m.from.as_ref().map_or(m.chat.id, |f| f.id),
+        name: m.from.as_ref().and_then(tg_name),
         text: m.text,
         contact: m.contact.map(|c| SharedContact {
             phone: c.phone_number,
@@ -3941,9 +4012,17 @@ async fn handle_incoming(
         Incoming::Message {
             chat_id,
             from_id,
+            name,
             text,
             contact,
-        } => handle_message_with(conn, assistant, chat_id, from_id, text.as_deref(), contact).await,
+        } => {
+            let r =
+                handle_message_with(conn, assistant, chat_id, from_id, text.as_deref(), contact)
+                    .await?;
+            // После ответа: `/start <код>` этим же сообщением привязал чат (ADR-{h18}).
+            remember_name(conn, chat_id, name.as_deref()).await?;
+            Ok(r)
+        }
         Incoming::Callback {
             chat_id,
             from_id,
@@ -5071,6 +5150,30 @@ mod points_line_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tg_name_is_username_or_full_name() {
+        // ADR-{h18}: «к какому Телеграм-имени» — @имя, без него — имя и фамилия.
+        let f = |u: Option<&str>, first: Option<&str>, last: Option<&str>| From {
+            id: 1,
+            username: u.map(str::to_string),
+            first_name: first.map(str::to_string),
+            last_name: last.map(str::to_string),
+        };
+        assert_eq!(
+            tg_name(&f(Some("erbol"), Some("Эрбол"), None)).as_deref(),
+            Some("@erbol")
+        );
+        assert_eq!(
+            tg_name(&f(Some(" "), Some("Эрбол"), Some("Асанов"))).as_deref(),
+            Some("Эрбол Асанов")
+        );
+        assert_eq!(tg_name(&f(None, None, Some("  "))), None);
+        assert_eq!(
+            tg_name(&f(None, Some(&"я".repeat(100)), None)).map(|s| s.chars().count()),
+            Some(64)
+        );
+    }
 
     #[test]
     fn day_reminder_names_other_services() {

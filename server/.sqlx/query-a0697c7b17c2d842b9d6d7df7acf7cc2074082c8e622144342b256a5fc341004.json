@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.id, u.branch_id, u.full_name, u.login, u.role from telegram_codes c\n           join users u on u.id = c.user_id\n           where c.code = $1 and c.expires_at > now() and u.active and u.role in ('owner', 'admin')",
+  "query": "select u.id, u.branch_id, u.full_name, u.login, u.role, c.by_self from telegram_codes c\n           join users u on u.id = c.user_id\n           where c.code = $1 and c.expires_at > now() and u.active and u.role in ('owner', 'admin')\n             and (not c.by_self or coalesce((select (s.value ->> 'self_link')::boolean from settings s\n                                             where s.branch_id = u.branch_id and s.key = 'telegram_admins'), true))",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,11 @@
         "ordinal": 4,
         "name": "role",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "by_self",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -39,8 +44,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "a80717c8747e29728ce0242c61f24dc5096ea14876bcf397eaae9cbd566d0d61"
+  "hash": "a0697c7b17c2d842b9d6d7df7acf7cc2074082c8e622144342b256a5fc341004"
 }

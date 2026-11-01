@@ -9,7 +9,9 @@ import type { Permission } from '../lib/types'
 import { useAction } from '../lib/hooks'
 import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
-const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean; permission?: Permission }[] = [
+const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean; adminOnly?: boolean; permission?: Permission }[] = [
+  // Свой чат с ботом администратор привязывает сам (ADR-{h18}).
+  { to: '/my-telegram', title: 'Мой Телеграм', text: 'Бот на телефоне: накладные фото, должники, смена', icon: 'bell', adminOnly: true },
   { to: '/settings/cashier', title: 'Касса', text: 'Кнопки режима кассы и их место, скидка и её предел, прибыль в чеке смены', icon: 'cashier', ownerOnly: true },
   { to: '/settings/sales', title: 'Продажи', text: 'Кто задаёт цену новой услуги; уведомление об услуге от администратора', icon: 'cashier', ownerOnly: true },
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
@@ -38,7 +40,7 @@ export default function SettingsHub() {
     <div>
       <PageHeader title="Настройки" />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {ITEMS.filter((it) => (owner || !it.ownerOnly) && (!it.permission || can(user, it.permission))).map((it) => (
+        {ITEMS.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.permission || can(user, it.permission))).map((it) => (
           <Link
             key={it.to}
             to={it.to}

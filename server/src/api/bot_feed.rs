@@ -46,7 +46,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 92] = [
+const EVENTS: [(&str, &str, &str); 93] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -255,6 +255,11 @@ const EVENTS: [(&str, &str, &str); 92] = [
         "telegram.admin_link",
         "other",
         "Телеграм привязан администратору",
+    ),
+    (
+        "telegram.admin_unlink",
+        "other",
+        "Администратор отвязал свой Телеграм",
     ),
     (
         "vehicle.plate_conflict",

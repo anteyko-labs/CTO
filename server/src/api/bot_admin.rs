@@ -1554,8 +1554,10 @@ pub async fn event_text(
 
 // ---------- Экран «Пользователи → Телеграм» ----------
 
+/// Пункт «Что видит в боте»: у владельца в «Пользователи → Телеграм» и у самого администратора
+/// в «Мой Телеграм» (ADR-{h18}).
 #[derive(Serialize)]
-struct ItemOut {
+pub(crate) struct ItemOut {
     key: &'static str,
     button: &'static str,
     what: &'static str,
@@ -1587,6 +1589,8 @@ struct GroupOut {
 struct BotOut {
     linked: bool,
     linked_at: Option<DateTime<Utc>>,
+    /// Телеграм-имя привязанного чата (@имя или имя в Телеграме), ADR-{h18}.
+    tg_name: Option<String>,
     /// Что видит администратор в боте: пункты меню по его правам.
     items: Vec<ItemOut>,
     on: Vec<String>,
@@ -1628,13 +1632,25 @@ async fn branch_admin(
     })
 }
 
-async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotOut> {
-    let linked_at = sqlx::query_scalar!(
-        "select linked_at from telegram_links where user_id = $1 order by linked_at desc limit 1",
-        admin.id
+/// Привязка чата пользователя: когда и к какому Телеграм-имени.
+pub(crate) async fn link_of(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+) -> AppResult<Option<(DateTime<Utc>, Option<String>)>> {
+    Ok(sqlx::query!(
+        "select linked_at, tg_name from telegram_links where user_id = $1 order by linked_at desc limit 1",
+        user_id
     )
     .fetch_optional(&mut *conn)
-    .await?;
+    .await?
+    .map(|r| (r.linked_at, r.tg_name)))
+}
+
+/// Пункты меню администратора по его правам сейчас: доступен или чего не хватает.
+pub(crate) async fn items_of(
+    conn: &mut PgConnection,
+    admin: &CurrentUser,
+) -> AppResult<Vec<ItemOut>> {
     let mut items = Vec::with_capacity(ITEMS.len());
     for i in &ITEMS {
         let need = missing(conn, admin, i).await?;
@@ -1646,6 +1662,35 @@ async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotO
             need,
         });
     }
+    Ok(items)
+}
+
+/// Какие события ему приходят: включённые владельцем, право на которые у него есть (подписи).
+pub(crate) async fn events_of(
+    conn: &mut PgConnection,
+    admin: &CurrentUser,
+) -> AppResult<Vec<&'static str>> {
+    let feed = load_feed(conn, admin.id).await?;
+    let mut out = Vec::new();
+    for e in EVENTS
+        .iter()
+        .filter(|e| feed.on.iter().any(|o| o == e.action))
+    {
+        let allowed = match e.right {
+            // Как в окне владельца: право, снятое у кассира смены, ленту не закрывает.
+            Some(r) => crate::auth::access(conn, admin, r).await? != Access::NoRight,
+            None => true,
+        };
+        if allowed {
+            out.push(e.label);
+        }
+    }
+    Ok(out)
+}
+
+async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotOut> {
+    let link = link_of(conn, admin.id).await?;
+    let items = items_of(conn, admin).await?;
     let feed = load_feed(conn, admin.id).await?;
     let mut groups = Vec::with_capacity(GROUPS.len());
     for (key, title) in GROUPS {
@@ -1670,8 +1715,9 @@ async fn bot_out(conn: &mut PgConnection, admin: &CurrentUser) -> AppResult<BotO
         groups.push(GroupOut { key, title, events });
     }
     Ok(BotOut {
-        linked: linked_at.is_some(),
-        linked_at,
+        linked: link.is_some(),
+        linked_at: link.as_ref().map(|l| l.0),
+        tg_name: link.and_then(|l| l.1),
         items,
         on: feed.on,
         groups,

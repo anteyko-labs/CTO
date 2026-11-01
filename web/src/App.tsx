@@ -13,6 +13,7 @@ import { OfflineBookPrints } from './components/OfflineBookPrints'
 import { BranchSwitch } from './components/BranchSwitch'
 import { setBranchLabel } from './lib/branch'
 import { UpdateBanner } from './components/UpdateBanner'
+import { BotHint } from './components/BotHint'
 import { startUpdates } from './lib/updates'
 import { Button, Loading, Modal, Toaster } from './components/ui'
 import { PageBoundary } from './components/PageBoundary'
@@ -62,6 +63,7 @@ const StockInCorrect = lazyPage(() => import('./pages/StockInCorrect'))
 const StockInView = lazyPage(() => import('./pages/StockInView'))
 const SupplierReturnsPage = lazyPage(() => import('./pages/SupplierReturns'))
 const TelegramSettings = lazyPage(() => import('./pages/TelegramSettings'))
+const MyTelegram = lazyPage(() => import('./pages/MyTelegram'))
 const BotFeedSettings = lazyPage(() => import('./pages/BotFeedSettings'))
 const StockSettingsPage = lazyPage(() => import('./pages/StockSettings'))
 const SalesSettingsPage = lazyPage(() => import('./pages/SalesSettings'))
@@ -137,6 +139,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/gifts', label: 'Подарки', icon: 'gifts', ownerOnly: true },
       // Права администраторов — на виду (задача 003 Н8); экран тот же, что «Настройки → Пользователи».
       { to: '/users', label: 'Пользователи и права', icon: 'employees', ownerOnly: true },
+      // Свой чат с ботом администратор привязывает сам (ADR-{h18}).
+      { to: '/my-telegram', label: 'Мой Телеграм', icon: 'bell', adminOnly: true },
       { to: '/settings', label: 'Настройки', icon: 'settings' },
     ],
   },
@@ -320,6 +324,7 @@ function Shell() {
       {/* Режим кассы на широком экране — ровно во весь экран без прокрутки страницы (ui-rules §9). */}
       <main className={`min-w-0 flex-1 ${touch ? 'pb-3 lg:flex lg:h-dvh lg:flex-col lg:overflow-hidden lg:pb-0' : 'pb-24'}`}>
         <UpdateBanner />
+        {!owner && !touch && <BotHint userId={user.id} />}
         <OfflineBar />
         <OfflineBookPrints />
         {logoutAsk && (
@@ -392,6 +397,7 @@ function Shell() {
           {can(user, 'oil_transfer') && <Route path="/oil-transfer" element={<OilTransfer />} />}
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
+          {!owner && <Route path="/my-telegram" element={<MyTelegram />} />}
           {owner && <Route path="/settings/bot-feed" element={<BotFeedSettings />} />}
           {owner && <Route path="/settings/stock" element={<StockSettingsPage />} />}
           {owner && <Route path="/settings/sales" element={<SalesSettingsPage />} />}

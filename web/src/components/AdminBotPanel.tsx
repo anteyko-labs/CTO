@@ -30,6 +30,11 @@ export function AdminBotPanel({ userId }: { userId: string }) {
   if (!bot) return st.error ? <ErrorBox error={st.error} /> : <Loading />
   return (
     <div className="flex flex-col gap-3" data-testid="admin-bot-panel">
+      {bot.linked && bot.tg_name && (
+        <div className="text-slate-600" data-testid="admin-bot-tg-name">
+          Чат в Телеграме: {bot.tg_name}
+        </div>
+      )}
       <div>
         <div className="font-medium">Что видит в боте</div>
         <div className="text-slate-500">По его правам («Что можно»); меняются права — меняется меню. Прибыли, себестоимости и сводки в боте нет.</div>

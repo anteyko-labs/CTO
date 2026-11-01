@@ -688,6 +688,14 @@ async fn admin_of_branch_b_sees_and_changes_nothing_of_branch_a(pool: PgPool) {
     probe.dedup();
     let routes = routes();
     assert!(routes.len() > 150, "маршрутов мало: {}", routes.len());
+    // «Мой Телеграм» администратора и настройка владельца (ADR-{h18}) — в обходе.
+    for r in [
+        "/me/telegram",
+        "/me/telegram/code",
+        "/settings/telegram/admins",
+    ] {
+        assert!(routes.iter().any(|(x, _)| x == r), "нет маршрута {r}");
+    }
     let mut problems = Vec::new();
     let mut requests = 0usize;
     // Вход и выход — не про данные филиала; выход закрыл бы сессию обхода.

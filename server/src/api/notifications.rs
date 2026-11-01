@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 79] = [
+pub(crate) const WATCHED: [&str; 80] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -103,6 +103,8 @@ pub(crate) const WATCHED: [&str; 79] = [
     "service.create_admin",
     // Старый долг поставщику из тетради (задача 003 Н15).
     "debt.old_supplier",
+    // Администратор отвязал свой Телеграм сам (ADR-{h18}).
+    "telegram.admin_unlink",
 ];
 
 #[derive(Serialize)]
@@ -771,9 +773,19 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 ),
             )
         }
+        // Кнопки бота — по его правам, без денег владельца (SPEC-40); код — от владельца или
+        // сам в «Мой Телеграм» (ADR-{h18}).
         "telegram.admin_link" => (
             format!("Телеграм привязан: администратор {}", text("full_name")),
-            "его чат принимает только фото накладных".into(),
+            if text("via") == "self" {
+                "привязал сам в «Мой Телеграм»; кнопки бота — по его правам, прибыли и себестоимости в нём нет".into()
+            } else {
+                "по коду от владельца; кнопки бота — по его правам, прибыли и себестоимости в нём нет".into()
+            },
+        ),
+        "telegram.admin_unlink" => (
+            format!("Телеграм отвязан: администратор {}", text("full_name")),
+            "отвязал сам в «Мой Телеграм»; бот ему больше не отвечает".into(),
         ),
         "auth.login_flood" => (
             format!("Подбирают пароль: {}", text("login")),
@@ -1669,6 +1681,22 @@ mod tests {
                 "{action} без описания"
             );
         }
+    }
+
+    #[test]
+    fn admin_telegram_link_and_unlink_say_who_did_it() {
+        // ADR-{h18}: привязка — по коду от владельца или сам; отвязка самим администратором.
+        let (title, text) = describe(
+            "telegram.admin_link",
+            &json!({ "full_name": "Эрбол", "via": "self" }),
+        );
+        assert_eq!(title, "Телеграм привязан: администратор Эрбол");
+        assert!(text.starts_with("привязал сам в «Мой Телеграм»"), "{text}");
+        let (_, text) = describe("telegram.admin_link", &json!({ "full_name": "Эрбол" }));
+        assert!(text.starts_with("по коду от владельца"), "{text}");
+        let (title, text) = describe("telegram.admin_unlink", &json!({ "full_name": "Эрбол" }));
+        assert_eq!(title, "Телеграм отвязан: администратор Эрбол");
+        assert!(text.contains("отвязал сам"), "{text}");
     }
 
     #[test]
