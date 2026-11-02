@@ -116,6 +116,18 @@ test('ревизия: после поиска одного товара скан
   await scanner.fill(b.barcodes[0])
   await scanner.press('Enter')
   await expect(page.locator(`[data-total="${b.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
+  // Посчитанное — последнее изменённое сверху: скан «Щётки» поднимает её над «Лампой».
+  await scanner.fill(a.barcodes[0])
+  await scanner.press('Enter')
+  await expect(page.locator(`[data-total="${a.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
+  await page.getByPlaceholder('Название, артикул или вязкость').fill('')
+  const rows = page.locator('[data-total]')
+  await expect(rows.first()).toHaveAttribute('data-total', a.id)
+  await scanner.fill(b.barcodes[0])
+  await scanner.press('Enter')
+  await expect(page.locator(`[data-total="${b.id}"]`)).toContainText('моё 2', { timeout: 15_000 })
+  await page.getByPlaceholder('Название, артикул или вязкость').fill('')
+  await expect(rows.first()).toHaveAttribute('data-total', b.id)
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
 })

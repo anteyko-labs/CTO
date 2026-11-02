@@ -724,6 +724,13 @@ function Draft({
     if (!q) return true
     return l.name.toLowerCase().includes(q) || l.article.toLowerCase().includes(q) || (v !== null && qKey.length >= 3 && viscosityKey(v.v).includes(qKey))
   })
+  // Черновик: посчитанное — сверху, последнее изменённое первым (номер последней записи строки),
+  // непосчитанное — по алфавиту (задача 007). Проведённая — по алфавиту, как с сервера.
+  if (draft)
+    lines.sort(
+      (a, b) =>
+        Number(a.counted_qty === null) - Number(b.counted_qty === null) || (b.version ?? 0) - (a.version ?? 0) || a.name.localeCompare(b.name, 'ru'),
+    )
   // Длинный склад — по страницам; поиск в списке возвращает на первую.
   const pager = usePager(lines, 'revision.lines', `${q}|${visc}`)
 
