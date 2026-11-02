@@ -65,6 +65,22 @@ describe('накладная по фото', () => {
     })
   })
 
+  it('в длину — метры и цена за м; другая единица накладной — заметка (ADR-175)', () => {
+    const hose = { unit: 'mm', container_ml: null } as const
+    // 25 м на 3 000 с: 120 с за м — одним округлением из суммы.
+    expect(suggestFor(line({ quantity: '25', unit: 'м', qty_milli: 25_000, sum_tyiyn: 300_000 }), hose)).toEqual({
+      count: 25_000,
+      each: 12_000,
+      note: null,
+      measure: 'm',
+    })
+    const cm = suggestFor(line({ quantity: '150', unit: 'см', qty_milli: 150_000, price_tyiyn: 100 }), hose)
+    expect(cm.measure).toBe('m')
+    expect(nb(cm.note)).toContain('проверьте единицу')
+    const grams = suggestFor(line({ quantity: '500', unit: 'г', qty_milli: 500_000, price_tyiyn: 100 }), { unit: 'g', container_ml: null })
+    expect(nb(grams.note)).toContain('строка в кг')
+  })
+
   it('штуки, дробное количество, цена по сумме', () => {
     expect(suggestFor(line({ qty_milli: 3000, price_tyiyn: 35_000 }), piece)).toEqual({ count: 3, each: 35_000, note: null })
     // Канистры штуками — как есть.

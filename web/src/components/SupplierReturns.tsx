@@ -8,6 +8,7 @@ import { get, newOpId, post, qs, randomId } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { qtyText } from '../lib/defects'
+import { unitShort } from '../lib/units'
 import { fixedText, returnLineFromDraft, type DraftReturnLine } from '../lib/docFix'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -44,7 +45,7 @@ interface ReturnDoc {
   lines: DraftReturnLine[]
 }
 
-const unitWord = (p: Product) => (p.unit === 'ml' ? 'л' : p.unit === 'g' ? 'кг' : 'шт')
+const unitWord = (p: Product) => unitShort(p.unit)
 
 /** Окно возврата поставщику; с `fix` — исправление проведённого, строки уже заполнены. */
 export function SupplierReturnModal({

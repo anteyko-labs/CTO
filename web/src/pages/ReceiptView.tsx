@@ -19,22 +19,27 @@ import { useAction, useLoad } from '../lib/hooks'
 import { paidFromText } from '../lib/receiptPay'
 import { useCan } from '../lib/permissions'
 import type { Product, Receipt, ReceiptLine } from '../lib/types'
+import { qtyText as unitQtyText } from '../lib/units'
 
-/** Количество строки: канистры для масла, штуки для штучного товара. */
+/** Количество строки: канистры для масла, штуки, кг и м — в своей единице. */
 function qtyText(l: ReceiptLine): string {
-  if (l.unit === 'ml') {
-    if (l.container_ml && l.qty % l.container_ml === 0) {
-      return `${l.qty / l.container_ml} кан. по ${formatLiters(l.container_ml)}`
-    }
-    return formatLiters(l.qty)
+  if (l.unit === 'ml' && l.container_ml && l.qty % l.container_ml === 0) {
+    return `${l.qty / l.container_ml} кан. по ${formatLiters(l.container_ml)}`
   }
-  return `${l.qty} шт`
+  return unitQtyText(l.unit, l.qty)
 }
 
-/** Число этикеток по строке: штуки или целые канистры. */
+/** Число этикеток по строке: штуки или целые канистры; на вес и в длину — одна (как `lineCalc`). */
 function labelCopies(l: ReceiptLine): number {
-  if (l.unit === 'ml') return l.container_ml ? Math.trunc(l.qty / l.container_ml) : 0
-  return l.qty
+  switch (l.unit) {
+    case 'ml':
+      return l.container_ml ? Math.trunc(l.qty / l.container_ml) : 0
+    case 'g':
+    case 'mm':
+      return l.qty > 0 ? 1 : 0
+    case 'piece':
+      return l.qty
+  }
 }
 
 export default function ReceiptView() {

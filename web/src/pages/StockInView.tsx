@@ -8,24 +8,25 @@ import { ExportButton } from '../components/ExportButton'
 import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
-import { formatDateTime, formatKg, formatLiters, formatPermille, formatSom } from '../lib/format'
+import { formatDateTime, formatLiters, formatPermille, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { markupPermille } from '../lib/money'
 import { unitCostPerLiter } from '../lib/receiptLines'
 import { useCan } from '../lib/permissions'
 import type { Product, StockIn, StockInLine } from '../lib/types'
+import { isKgM, perWord, qtyText as unitQtyText } from '../lib/units'
 
-/** Количество строки: штуки, литры масла (и канистры, если целые), килограммы. */
+/** Количество строки: штуки, литры масла (и канистры, если целые), килограммы, метры. */
 function qtyText(l: StockInLine): string {
   if (l.unit === 'ml') {
     const cans = l.container_ml && l.qty % l.container_ml === 0 ? ` (${Math.abs(l.qty / l.container_ml)} кан.)` : ''
     return `${formatLiters(l.qty)}${cans}`
   }
-  return l.unit === 'g' ? formatKg(l.qty) : `${l.qty} шт`
+  return unitQtyText(l.unit, l.qty)
 }
 
 /** Единица цены строки словами. */
-const perText = (l: StockInLine): string => (l.unit === 'ml' && l.container_ml ? `за канистру ${formatLiters(l.container_ml)}` : l.unit === 'g' ? 'за кг' : 'за шт')
+const perText = (l: StockInLine): string => (l.unit === 'ml' && l.container_ml ? `за канистру ${formatLiters(l.container_ml)}` : perWord(l.unit))
 
 export default function StockInView() {
   const { id = '' } = useParams()
@@ -56,7 +57,8 @@ export default function StockInView() {
     void labels.run(async () => {
       const items: { product: Product; copies: number }[] = []
       for (const l of d.lines) {
-        const copies = l.unit === 'piece' ? l.qty : l.unit === 'ml' && l.container_ml ? Math.trunc(l.qty / l.container_ml) : 0
+        // Штуки — по штуке, канистры — по канистре, на вес и в длину — одна этикетка.
+        const copies = l.unit === 'piece' ? l.qty : l.unit === 'ml' && l.container_ml ? Math.trunc(l.qty / l.container_ml) : isKgM(l.unit) && l.qty > 0 ? 1 : 0
         if (copies <= 0) continue
         items.push({ product: await get<Product>(`/products/${l.product_id}`), copies })
       }
