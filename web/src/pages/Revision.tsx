@@ -10,6 +10,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
+import { printLabels } from '../components/labels'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -639,6 +640,19 @@ function Draft({
 
   /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
+  /** Товар без штрихкода (не из Умага, старая карточка): программа выдаёт свой код, этикетка —
+   *  на принтер; дальше товар сканируется (задача 007). */
+  const issueCode = (l: Line) =>
+    void act.run(async () => {
+      if (l.barcodes.length === 0) {
+        const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
+        setLine(l.product_id, undefined, (x) => ({ ...x, barcodes: [...x.barcodes, r.code] }))
+        toast(`Выдан код ${r.code}`)
+      }
+      const product = await get<Product>(`/products/${l.product_id}`)
+      await printLabels([{ product, copies: 1 }])
+    })
+
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
   const removeMine = (l: Line) => {
     if (!window.confirm(`Убрать «${l.name}» из своего пересчёта?`)) return
@@ -1028,6 +1042,17 @@ function Draft({
                         ))}
                     </div>
                     {l.article && <div className="text-xs text-slate-500">{l.article}</div>}
+                    {draft && !readOnly && mayUmag && (
+                      <button
+                        type="button"
+                        className="mt-1 rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                        data-issue-code={l.product_id}
+                        title="Этикетка со штрихкодом на принтер; нет кода — программа выдаст свой"
+                        onClick={() => issueCode(l)}
+                      >
+                        {l.barcodes.length === 0 ? '🖨 Выдать код и этикетку' : '🖨 Этикетка'}
+                      </button>
+                    )}
                   </td>
                   {!blind && (
                     <td className="whitespace-nowrap px-2 py-2" data-testid="expected">

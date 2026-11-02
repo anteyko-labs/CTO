@@ -53,3 +53,25 @@ test('ревизия: новая категория из окна товара, 
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {} })
 })
+
+test('ревизия: у строки — «🖨 Этикетка» с кодом товара', async ({ page }) => {
+  await login(page)
+  const H = { 'X-Device-Id': '00000000-0000-4000-8000-0000000c0de1' }
+  const cat = (await (await page.request.post('/api/v1/categories', { data: { name: `Этикетки ${RUN}`, kind: 'other' }, headers: H })).json()) as { id: string }
+  const p = (await (
+    await page.request.post('/api/v1/products', { data: { op_id: crypto.randomUUID(), category_id: cat.id, name: `Шланг этикетка ${RUN}`, sale_price_tyiyn: 10_000 }, headers: H })
+  ).json()) as { id: string; barcodes: string[] }
+  // Без своего кода программа выдала код сама.
+  expect(p.barcodes.length).toBe(1)
+  await page.goto('/revision')
+  await page.getByLabel('Что пересчитываем').selectOption({ label: `Этикетки ${RUN}` })
+  await page.getByRole('button', { name: 'Начать ревизию' }).click()
+  await page.locator('[data-view="own"]').click()
+  const scanner = page.getByPlaceholder('Сканируйте штрихкод')
+  await scanner.fill(p.barcodes[0])
+  await scanner.press('Enter')
+  await expect(page.locator(`[data-total="${p.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
+  await expect(page.locator(`[data-issue-code="${p.id}"]`)).toHaveText('🖨 Этикетка')
+  const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
+  for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
+})
