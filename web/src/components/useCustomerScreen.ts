@@ -8,8 +8,9 @@ export function useCustomerScreen() {
   const [seen, setSeen] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [signed, setSigned] = useState<{ id: string; png: string } | null>(null)
-  const last = useRef('')
-  const signing = useRef<string | null>(null)
+  // Что на экране без подписи (QR, чек кассы, заставка) и открытая просьба подписи.
+  const base = useRef<ToScreen | null>(null)
+  const signing = useRef<Extract<ToScreen, { type: 'sign' }> | null>(null)
 
   useEffect(() => {
     if (!channel) return
@@ -18,10 +19,12 @@ export function useCustomerScreen() {
       if (m.type === 'here') {
         setSeen(Date.now())
         // Экран открыли или перезагрузили — повторить, что на нём должно быть.
-        if (last.current) channel.postMessage(JSON.parse(last.current) as ToScreen)
-      } else if (m.type === 'signed' && m.id === signing.current) {
+        if (base.current) channel.postMessage(base.current)
+        if (signing.current) channel.postMessage(signing.current)
+      } else if (m.type === 'signed' && m.id === signing.current?.id) {
         signing.current = null
         setSigned({ id: m.id, png: m.png })
+        if (base.current) channel.postMessage(base.current)
       }
     }
     const t = setInterval(() => setNow(Date.now()), 2000)
@@ -31,13 +34,12 @@ export function useCustomerScreen() {
     }
   }, [channel])
 
-  /** Показать на экране; то же самое повторно не шлётся. */
+  /** Показать на экране; то же самое повторно не шлётся. Пока ждём подпись — только запомнить. */
   const show = useCallback(
     (m: ToScreen) => {
-      const text = JSON.stringify(m)
-      if (!channel || text === last.current) return
-      last.current = text
-      channel.postMessage(m)
+      if (!channel || JSON.stringify(m) === JSON.stringify(base.current)) return
+      base.current = m
+      if (!signing.current) channel.postMessage(m)
     },
     [channel],
   )
@@ -46,19 +48,22 @@ export function useCustomerScreen() {
   const askSign = useCallback(
     (title: string, lines: string[]) => {
       const id = randomId()
-      signing.current = id
+      signing.current = { type: 'sign', id, title, lines }
       setSigned(null)
-      show({ type: 'sign', id, title, lines })
+      channel?.postMessage(signing.current)
       return id
     },
-    [show],
+    [channel],
   )
 
+  /** Подпись больше не нужна — экран возвращается к чеку кассы. */
   const cancelSign = useCallback(() => {
-    const id = signing.current
+    const s = signing.current
     signing.current = null
-    if (id) show({ type: 'sign-cancel', id })
-  }, [show])
+    if (!channel || !s) return
+    channel.postMessage({ type: 'sign-cancel', id: s.id } satisfies ToScreen)
+    if (base.current) channel.postMessage(base.current)
+  }, [channel])
 
   return { present: Boolean(channel) && now - seen < SCREEN_GONE_MS, show, askSign, cancelSign, signed }
 }

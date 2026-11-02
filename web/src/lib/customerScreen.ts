@@ -10,9 +10,17 @@ export const SCREEN_GONE_MS = 5000
 /** «Оплачено ✓» держится столько мс, потом — заставка. */
 export const PAID_SHOW_MS = 5000
 
+/** Строка чека на экране покупателя. */
+export interface ScreenLine {
+  name: string
+  qty: string
+  amount_tyiyn: number
+}
+
 /** Что касса велит показать. */
 export type ToScreen =
   | { type: 'idle' }
+  | { type: 'cart'; lines: ScreenLine[]; total_tyiyn: number }
   | { type: 'qr'; amount_tyiyn: number; qr_base64: string }
   | { type: 'paid'; amount_tyiyn: number }
   | { type: 'sign'; id: string; title: string; lines: string[] }
@@ -23,6 +31,7 @@ export type FromScreen = { type: 'here' } | { type: 'signed'; id: string; png: s
 
 export type ScreenState =
   | { kind: 'idle' }
+  | { kind: 'cart'; lines: ScreenLine[]; total_tyiyn: number }
   | { kind: 'qr'; amount_tyiyn: number; qr_base64: string }
   | { kind: 'paid'; amount_tyiyn: number; until: number }
   | { kind: 'sign'; id: string; title: string; lines: string[] }
@@ -47,12 +56,22 @@ export function screenStep(state: ScreenState, msg: ToScreen, now: number): Scre
     case 'idle':
       // «Оплачено» досматривается до конца, даже если касса уже очистила чек.
       return state.kind === 'paid' && state.until > now ? state : { kind: 'idle' }
+    case 'cart':
+      if (state.kind === 'paid' && state.until > now) return state
+      return msg.lines.length > 0 ? { kind: 'cart', lines: msg.lines, total_tyiyn: msg.total_tyiyn } : { kind: 'idle' }
   }
 }
 
 /** Время вышло — «Оплачено» уходит в заставку. */
 export function screenTick(state: ScreenState, now: number): ScreenState {
   return state.kind === 'paid' && state.until <= now ? { kind: 'idle' } : state
+}
+
+/** Что показать: QR кассы важнее чека; нет QR — чек, как его набирает касса (дубль кассы). */
+export function toScreen(qr: Parameters<typeof qrToScreen>[0], lines: ScreenLine[], total_tyiyn: number): ToScreen {
+  const q = qrToScreen(qr)
+  if (q.type !== 'idle') return q
+  return lines.length > 0 ? { type: 'cart', lines, total_tyiyn } : q
 }
 
 /** Что показать по QR кассы: ждущий с картинкой — QR, оплаченный — «Оплачено», иначе ничего. */

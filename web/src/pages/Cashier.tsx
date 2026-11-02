@@ -22,7 +22,7 @@ import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
 import { BankQrPanel, useBankQr, useOpenQrs } from '../components/BankQrPanel'
 import { SignaturePad } from '../components/SignaturePad'
 import { useCustomerScreen } from '../components/useCustomerScreen'
-import { qrToScreen } from '../lib/customerScreen'
+import { toScreen } from '../lib/customerScreen'
 import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
@@ -684,6 +684,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const amounts = lines.map(lineAmount)
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
   const total = amounts.reduce<number>((acc, a) => acc + (a ?? 0), 0)
+  // Экран покупателя: QR банка, иначе — чек, как его набирает касса (задача 008, просьба 02.11.2026).
+  const screenMsg = toScreen(
+    bankQr.qr,
+    lines.map((l, i) => ({
+      name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
+      qty: l.kind === 'service' ? '' : `${l.qtyText} ${l.kind === 'pour' ? 'л' : l.kind === 'weight' ? 'кг' : 'шт'}`,
+      amount_tyiyn: amounts[i] ?? 0,
+    })),
+    total,
+  )
+  const screenKey = JSON.stringify(screenMsg)
+  const screenShow = screen.show
+  useEffect(() => {
+    screenShow(screenMsg)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenKey, screenShow])
   const bonusAmount = bonus?.amount_tyiyn ?? 0
   const batteryGrams = batteryPay ? parseLiters(batteryPay.kgText) : null
   // Цену за кг кассир может поменять в чеке: по умолчанию — цена приёма из настроек (ADR-078).
@@ -941,14 +957,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (qrPaid && payMode !== 'card' && payMode !== 'mixed') setPayMode('card')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qrPaid])
-  // QR кассы — на экран покупателя: ждущий — крупно, оплаченный — «Оплачено ✓».
-  const screenShow = screen.show
-  const screenQr = qrToScreen(bankQr.qr)
-  const screenQrKey = JSON.stringify(screenQr)
-  useEffect(() => {
-    screenShow(screenQr)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screenQrKey, screenShow])
 
   const reset = () => {
     setLines([])

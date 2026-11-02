@@ -335,6 +335,9 @@ test('долг с экрана покупателя: подпись пером �
   await pickCashier(page, cashier)
   await page.locator('[data-client-input]').fill(client)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
+  // Экран покупателя дублирует чек кассы.
+  await expect(screen.getByTestId('customer-cart')).toContainText(product)
+  await expect(screen.getByTestId('customer-cart-total')).toContainText(money('700 с'))
   await payButton(page, 'В долг').click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
 
@@ -343,9 +346,9 @@ test('долг с экрана покупателя: подпись пером �
   const sign = screen.getByTestId('customer-sign')
   await expect(sign).toContainText(money('Подпишите: в долг 700 с'))
   await expect(sign).toContainText(client)
-  // Отмена — чек не проведён, экран снова на заставке.
+  // Отмена — чек не проведён, на экране снова чек кассы.
   await page.getByTestId('debt-sign-wait').getByRole('button', { name: 'Отмена' }).click()
-  await expect(screen.getByTestId('customer-idle')).toBeVisible()
+  await expect(screen.getByTestId('customer-cart')).toBeVisible()
   await expect(page.getByText(/Чек № \d+ проведён/)).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Провести чек' }).click()

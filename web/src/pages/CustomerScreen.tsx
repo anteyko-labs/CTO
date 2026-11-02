@@ -44,6 +44,29 @@ export default function CustomerScreen() {
           <div className="mt-4 text-2xl text-slate-500">Спасибо, что вы с нами</div>
         </div>
       )}
+      {state.kind === 'cart' && (
+        <div className="flex h-full w-full max-w-5xl flex-col gap-4" data-testid="customer-cart">
+          <div className="text-3xl font-semibold">Ваша покупка</div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {/* Новые строки — внизу; не влезли — видны последние. */}
+            <div className="flex h-full flex-col justify-end divide-y divide-slate-200 text-2xl">
+              {state.lines.slice(-12).map((l, i) => (
+                <div key={i} className="flex items-baseline gap-4 py-2">
+                  <span className="min-w-0 flex-1 truncate">{l.name}</span>
+                  <span className="shrink-0 text-slate-500 tabular-nums">{l.qty}</span>
+                  <span className="w-48 shrink-0 text-right font-semibold tabular-nums">{formatSom(l.amount_tyiyn)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-baseline justify-between border-t-4 border-slate-900 pt-4">
+            <span className="text-4xl font-semibold">Итого</span>
+            <span className="text-6xl font-bold tabular-nums" data-testid="customer-cart-total">
+              {formatSom(state.total_tyiyn)}
+            </span>
+          </div>
+        </div>
+      )}
       {state.kind === 'qr' && (
         <div className="flex h-full w-full flex-col items-center justify-center gap-6" data-testid="customer-qr">
           <div className="text-4xl font-semibold">К оплате</div>
