@@ -54,10 +54,15 @@ export function printAsPage(html: string): void {
   style.textContent =
     Array.from(parsed.querySelectorAll('style'))
       .map((s) => s.textContent ?? '')
-      .join('\n') + '\n@media print { body > *:not([data-print-page]) { display: none !important; } }\n@media screen { [data-print-page] { display: none; } }'
+      .join('\n') + '\nbody > *:not([data-print-page]) { display: none !important; }'
   const root = document.createElement('div')
   root.setAttribute('data-print-page', '')
   root.innerHTML = parsed.body.innerHTML
+  // Стили программы на время печати выключены: в них @page A4 для отчётов, и этикетка
+  // печаталась на лист A4 — пусто и на несколько наклеек (проверка 03.11.2026).
+  const sheets = Array.from(document.querySelectorAll<HTMLStyleElement | HTMLLinkElement>('style, link[rel="stylesheet"]'))
+  const media = sheets.map((el) => el.media)
+  sheets.forEach((el) => (el.media = 'not all'))
   document.head.appendChild(style)
   document.body.appendChild(root)
   try {
@@ -65,5 +70,6 @@ export function printAsPage(html: string): void {
   } finally {
     root.remove()
     style.remove()
+    sheets.forEach((el, i) => (el.media = media[i]))
   }
 }
