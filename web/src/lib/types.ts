@@ -737,8 +737,8 @@ export interface GiftRule {
   id: string
   trigger_product_id: string
   trigger_name: string
-  /** `ml` — масло, порог в миллилитрах; иначе в штуках. */
-  trigger_unit: string
+  /** Единица товара-условия: порог в мл, г, мм или штуках. */
+  trigger_unit: StockUnit
   min_units: number
   active: boolean
   /** Порог или количество подарка округлены при смене единицы товара: правило выключено, пока
@@ -1043,7 +1043,7 @@ export interface ProfitReport {
 
 /** Строки-документы «Прибыли и убытков» (`server/src/api/pnl.rs`). Суммы — в тыйынах. */
 export interface ProfitDetail {
-  products: { product_id: string | null; name: string; category: string; unit: string; units: number; revenue_tyiyn: number; cost_tyiyn: number }[]
+  products: { product_id: string | null; name: string; category: string; unit: StockUnit; units: number; revenue_tyiyn: number; cost_tyiyn: number }[]
   services: { service_id: string | null; name: string; count: number; revenue_tyiyn: number; master_fee_tyiyn: number }[]
   returns_tyiyn: number
   revision_tyiyn: number

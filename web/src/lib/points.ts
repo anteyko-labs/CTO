@@ -1,8 +1,8 @@
 // Баллы по товару, категории и общей ставке (задача 002, П1; ADR-140). Считает сервер; здесь —
 // ввод и показ правила. Процент — сотые доли процента (50 = 0,5 %), «за единицу» — тыйыны за
-// штуку, литр или кг. Без float.
+// штуку, литр, кг или метр. Без float.
 import { formatPercentBp, formatPoints, parsePercentBp, parseSom } from './format'
-import type { PointsMode } from './types'
+import type { PointsMode, StockUnit } from './types'
 
 export type { PointsMode }
 
@@ -12,8 +12,8 @@ export interface PointsRule {
 }
 
 /** Подпись «за единицу» по единице товара. */
-export function perUnitWord(unit: 'piece' | 'ml' | 'g' | undefined): string {
-  return unit === 'ml' ? 'за литр' : unit === 'g' ? 'за кг' : 'за штуку'
+export function perUnitWord(unit: StockUnit | undefined): string {
+  return unit === 'ml' ? 'за литр' : unit === 'g' ? 'за кг' : unit === 'mm' ? 'за метр' : 'за штуку'
 }
 
 /** Значение для поля ввода: процент «0,5», баллы «10». */
@@ -37,7 +37,7 @@ export function parsePointsRule(mode: PointsMode, text: string): PointsRule | st
 }
 
 /** Правило словами: «0,5 % от оплаченного», «10 баллов за литр», «не начислять». */
-export function pointsRuleText(rule: PointsRule, unit?: 'piece' | 'ml' | 'g'): string {
+export function pointsRuleText(rule: PointsRule, unit?: StockUnit): string {
   switch (rule.mode) {
     case 'none':
       return 'не начислять'

@@ -3,6 +3,7 @@
 // отдал этому пользователю (I12, I13): столбцы выгрузки повторяют условия столбцов экрана.
 import { get, getPage, type Page } from './api'
 import { formatDate, formatDateTime } from './format'
+import { isMilli, unitShort, type StockUnit } from './units'
 import { writeXlsx, type Cell, type Sheet } from './xlsxWrite'
 
 /** Столбец выгрузки: подпись и значение строки. */
@@ -18,8 +19,8 @@ export const xl = {
   int: (n: number): Cell => ({ int: n }),
   /** Миллилитры → литры с тремя знаками. */
   liters: (ml: number): Cell => ({ qty: ml, scale: 3 }),
-  /** Количество в единице товара: мл → литры, граммы → кг (три знака), остальное — целым. */
-  units: (units: number, unit: string | undefined): Cell => (unit === 'ml' || unit === 'g' ? { qty: units, scale: 3 } : { int: units }),
+  /** Количество в единице товара: мл → литры, граммы → кг, мм → м (три знака), штуки — целым. */
+  units: (units: number, unit: StockUnit | undefined): Cell => (unit && isMilli(unit) ? { qty: units, scale: 3 } : { int: units }),
   date: (iso: string | null | undefined): Cell => (iso ? { date: iso.slice(0, 10) } : null),
   /** Дата и время текстом, как на экране: «31.10.2026 14:05». */
   dateTime: (iso: string | null | undefined): Cell => (iso ? formatDateTime(iso) : ''),
@@ -28,9 +29,9 @@ export const xl = {
   maybeMoney: (tyiyn: number | null | undefined): Cell => (tyiyn == null ? null : { money: tyiyn }),
 }
 
-/** Единица количества в файле: «л», «кг», «шт» — числа в столбце количества идут в ней. */
-export function unitName(unit: string | undefined): string {
-  return unit === 'ml' ? 'л' : unit === 'g' ? 'кг' : 'шт'
+/** Единица количества в файле: «л», «кг», «м», «шт» — числа в столбце количества идут в ней. */
+export function unitName(unit: StockUnit | undefined): string {
+  return unit ? unitShort(unit) : 'шт'
 }
 
 /** Подпись над таблицей: название, отбор (непустые части), когда выгружено. */

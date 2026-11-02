@@ -1,7 +1,7 @@
 // «Исправить» у начислений, выплат и складских документов (SPEC-29 §24, ADR-085): исходный документ
 // с сервера → поля формы, которой его создают. Сервер решает окончательно; здесь — только показ.
 import { numberText, type Correction } from './corrections'
-import { litersInput, somInput } from './format'
+import { somInput } from './format'
 import { qtyInputText, type StockUnit } from './units'
 
 /** Количество в единицах учёта → текст поля: штуки целым, масло литрами, кг и м — десятичным. */

@@ -153,7 +153,7 @@ export function DiscountModal({
             </div>
             {line && (
               <div className="grid grid-cols-2 gap-3">
-                <Field label={line.kind === 'pour' ? 'Новая цена за л, с' : line.kind === 'weight' ? 'Новая цена за кг, с' : 'Новая цена, с'}>
+                <Field label={line.kind === 'pour' ? 'Новая цена за л, с' : line.kind === 'weight' ? 'Новая цена за кг, с' : line.kind === 'length' ? 'Новая цена за м, с' : 'Новая цена, с'}>
                   <input
                     id="discount-line-price"
                     {...num('decimal')}

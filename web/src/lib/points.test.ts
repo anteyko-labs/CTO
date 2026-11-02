@@ -31,6 +31,8 @@ describe('баллы товара и категории', () => {
     expect(pointsInput({ mode: 'fixed', value: 1000 })).toBe('10')
     expect(pointsRuleText({ mode: 'percent', value: 50 })).toBe('0,5 % от оплаченного')
     expect(pointsRuleText({ mode: 'fixed', value: 1000 }, 'ml')).toBe('10 за литр')
+    expect(pointsRuleText({ mode: 'fixed', value: 1000 }, 'mm')).toBe('10 за метр')
+    expect(pointsRuleText({ mode: 'fixed', value: 1000 }, 'g')).toBe('10 за кг')
     expect(pointsRuleText({ mode: 'fixed', value: 250 }, 'piece')).toBe('2,50 за штуку')
     expect(pointsRuleText({ mode: 'none', value: 0 })).toBe('не начислять')
   })

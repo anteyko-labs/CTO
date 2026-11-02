@@ -15,11 +15,11 @@ import { useUser } from '../lib/auth'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useLoad, useRangeParam } from '../lib/hooks'
 import { METHOD_LABELS, MOVEMENT_LABELS } from '../lib/income'
-import type { IncomeReport } from '../lib/types'
+import type { IncomeReport, StockUnit } from '../lib/types'
 import { BranchBreakdown, BranchScope } from '../components/BranchScope'
 import { branchParam, useAllBranches, type AllBranches } from '../lib/branchReport'
 
-const qtyText = (unit: 'piece' | 'ml' | 'g', containerMl: number | null, qty: number) =>
+const qtyText = (unit: StockUnit, containerMl: number | null, qty: number) =>
   stockText({ unit, container_ml: containerMl, stock_qty: qty })
 
 export default function Income() {

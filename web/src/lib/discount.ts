@@ -5,11 +5,12 @@
 // строку или услугу (лучше с количеством 1); если точно не попасть (например, в чеке только розлив),
 // показывается настоящая скидка. Право «Скидка в чеке» и предел администратора проверяет сервер.
 import { divRound, pourAmount } from './money'
+import { isMilliKind } from './units'
 
-export type DiscKind = 'piece' | 'container' | 'pour' | 'weight' | 'service'
+export type DiscKind = 'piece' | 'container' | 'pour' | 'weight' | 'length' | 'service'
 
-/** Строка чека для скидки: количество — шт или канистры, у розлива — мл, у веса — граммы; цены —
- *  за единицу (шт, канистру, литр, кг), тыйын. */
+/** Строка чека для скидки: количество — шт или канистры, у розлива — мл, у веса — граммы, у длины —
+ *  мм; цены — за единицу (шт, канистру, литр, кг, м), тыйын. */
 export interface DiscLine {
   key: string
   kind: DiscKind
@@ -21,9 +22,9 @@ export interface DiscLine {
   gift?: boolean
 }
 
-/** Сумма строки: как у сервера — у розлива и веса мл × цена за литр / 1000. */
+/** Сумма строки: как у сервера — у розлива, веса и длины мл (г, мм) × цена за 1000 / 1000. */
 export function lineSum(kind: DiscKind, qty: number, price: number): number {
-  return kind === 'pour' || kind === 'weight' ? pourAmount(qty, price) : qty * price
+  return isMilliKind(kind) ? pourAmount(qty, price) : qty * price
 }
 
 /** До целого сома вниз. */
@@ -77,7 +78,7 @@ export function spreadDiscount(
   if (rest > 0) {
     // Остаток — на штучную строку или услугу: сначала с количеством 1 (попадаем точно), затем дороже.
     const units = ls
-      .filter((l) => l.kind !== 'pour' && l.kind !== 'weight')
+      .filter((l) => !isMilliKind(l.kind))
       .sort((a, b) => Number(b.qty === 1) - Number(a.qty === 1) || (prices.get(b.key) ?? 0) - (prices.get(a.key) ?? 0))
     for (const l of units) {
       if (rest <= 0) break
@@ -87,9 +88,9 @@ export function spreadDiscount(
       prices.set(l.key, now + add)
       rest = target - sum()
     }
-    // Только розлив и вес: добавка к цене литра самой большой строки, сколько поместится.
+    // Только розлив, вес и длина: добавка к цене литра самой большой строки, сколько поместится.
     if (rest > 0) {
-      const big = ls.filter((l) => l.kind === 'pour' || l.kind === 'weight').sort((a, b) => b.qty - a.qty)[0]
+      const big = ls.filter((l) => isMilliKind(l.kind)).sort((a, b) => b.qty - a.qty)[0]
       if (big) {
         const now = prices.get(big.key) ?? big.list
         let add = Math.min(Math.floor((rest * 1000) / big.qty), big.list - now)

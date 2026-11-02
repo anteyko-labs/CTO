@@ -1,7 +1,7 @@
 // Правило баллов товара или категории (задача 002, П1; ADR-140): «как выше», «не начислять»,
 // процент от оплаченного, баллы за единицу. Меняет владелец; остальным — только посмотреть.
 import { perUnitWord, type PointsDraft } from '../lib/points'
-import type { PointsMode } from '../lib/types'
+import type { PointsMode, StockUnit } from '../lib/types'
 import { Field } from './ui'
 
 export function PointsRuleField({
@@ -14,14 +14,14 @@ export function PointsRuleField({
 }: {
   /** «как в категории» у товара, «по общей ставке» у категории. */
   inheritLabel: string
-  /** Единица товара; у категории — нет (за штуку, литр или кг — по товару). */
-  unit?: 'piece' | 'ml' | 'g'
+  /** Единица товара; у категории — нет (за штуку, литр, кг или метр — по товару). */
+  unit?: StockUnit
   draft: PointsDraft
   onChange: (d: PointsDraft) => void
   disabled?: boolean
   hint?: string
 }) {
-  const perUnit = unit ? perUnitWord(unit) : 'за единицу (шт, л или кг)'
+  const perUnit = unit ? perUnitWord(unit) : 'за единицу (шт, л, кг или м)'
   return (
     <Field label="Баллы клиенту" hint={hint}>
       <div className="flex gap-2">

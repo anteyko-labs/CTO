@@ -27,7 +27,7 @@ import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
-import { qtyText } from '../lib/units'
+import { isKgM, perWord, qtyText } from '../lib/units'
 import type { Category, OldCatalogHit, Product, ProductList, ProductRow, StockChip, StockMismatch } from '../lib/types'
 import { findByBarcode, readSnapshot } from '../lib/offline'
 import { offlineCodeText, resolveCode, type CodeOutcome } from '../lib/umagLink'
@@ -74,9 +74,9 @@ function goodsWord(n: number): string {
   return 'товаров'
 }
 
-/** За что цена: канистра масла, килограмм или штука. */
+/** За что цена: канистра масла, килограмм, метр или штука. */
 const perText = (p: Product): string =>
-  p.unit === 'ml' && p.container_ml ? `за ${formatLiters(p.container_ml)}` : p.unit === 'g' ? 'за кг' : ''
+  p.unit === 'ml' && p.container_ml ? `за ${formatLiters(p.container_ml)}` : isKgM(p.unit) ? perWord(p.unit) : ''
 
 export default function Products() {
   const user = useUser()
@@ -749,8 +749,8 @@ function MismatchTable({ rows }: { rows: Mismatch[] }) {
           return (
             <tr key={m.product_id}>
               <td className="px-2 py-2">{p?.name ?? m.product_id}</td>
-              <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.cached_qty)}</td>
-              <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.moved_qty)}</td>
+              <td className="whitespace-nowrap px-2 py-2">{p ? qtyText(p.unit, m.cached_qty) : m.cached_qty}</td>
+              <td className="whitespace-nowrap px-2 py-2">{p ? qtyText(p.unit, m.moved_qty) : m.moved_qty}</td>
               <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.cached_value_tyiyn)}</td>
               <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.moved_value_tyiyn)}</td>
             </tr>

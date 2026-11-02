@@ -84,4 +84,13 @@ describe('карточка из старой программы', () => {
     expect(p).toMatchObject({ unit: 'g', liters: '', price: '300', cost: '200' })
     expect(presetFromHit(hit({}), cats).unit).toBeUndefined()
   })
+
+  it('строка «м»: товар в метрах; единица сервера важнее колонки (ADR-175)', () => {
+    const p = presetFromHit(hit({ name: 'Шланг 8 мм', unit: 'м', price_tyiyn: 25_000, cost_tyiyn: 15_000 }), cats)
+    expect(p).toMatchObject({ unit: 'mm', liters: '', price: '250', cost: '150' })
+    expect(presetFromHit(hit({ unit: 'метр' }), cats).unit).toBe('mm')
+    expect(presetFromHit(hit({ unit: 'шт', product_unit: 'mm' }), cats).unit).toBe('mm')
+    // «г» — штуки: цена у Умага за грамм.
+    expect(presetFromHit(hit({ unit: 'г' }), cats).unit).toBeUndefined()
+  })
 })

@@ -4,7 +4,8 @@
 import { formatSom, shiftDate } from './format'
 import { PURPOSE_LABELS } from './payouts'
 import { periodLabel, shortDate } from './payrollPeriod'
-import type { ProfitDetail, ProfitReport, SalaryExpected } from './types'
+import type { ProfitDetail, ProfitReport, SalaryExpected, StockUnit } from './types'
+import { isMilli, qtyText } from './units'
 import { periodText, xl } from './exportTable'
 import type { Cell, Sheet, SheetRow } from './xlsxWrite'
 
@@ -436,19 +437,9 @@ export function notInProfit(r: ProfitReport): PnlNode[] {
   return out.filter((n) => n.amount !== 0 || (n.children?.length ?? 0) > 0)
 }
 
-/** Количество по единице товара для подписи: мл — литрами, остальное — штуками. Без float. */
-function unitsText(units: number, unit: string): string {
-  if (unit === 'ml') {
-    const abs = Math.abs(units)
-    const frac = String(abs % 1000).padStart(3, '0').replace(/0+$/, '')
-    return `${units < 0 ? '−' : ''}${Math.trunc(abs / 1000)}${frac ? ',' + frac : ''} л`
-  }
-  if (unit === 'g') {
-    const abs = Math.abs(units)
-    const frac = String(abs % 1000).padStart(3, '0').replace(/0+$/, '')
-    return `${units < 0 ? '−' : ''}${Math.trunc(abs / 1000)}${frac ? ',' + frac : ''} кг`
-  }
-  return `${units} шт.`
+/** Количество по единице товара для подписи: мл — литрами, г — кг, мм — м, штуки — «шт.». Без float. */
+function unitsText(units: number, unit: StockUnit): string {
+  return isMilli(unit) ? qtyText(unit, units).replace(/\u00a0/g, ' ') : `${units} шт.`
 }
 
 // ---------- Выгрузка в Excel ----------

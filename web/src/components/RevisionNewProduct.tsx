@@ -14,7 +14,7 @@ import { presetFromHit } from '../lib/oldCatalog'
 import { can } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { searchUmag, umagStep } from '../lib/umagLink'
-import { countText, parseKg, parseOil } from '../lib/units'
+import { countText, parseOil, parseQty, perWord, unitShort } from '../lib/units'
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
 import { PurchasePriceInput } from './PurchasePriceInput'
@@ -46,8 +46,8 @@ interface Form {
   from: string | null
   /** Строка Умага, из которой заполнена карточка: товар с ней свяжется (SPEC-35). */
   umagId: string | null
-  /** Не масло — в килограммах (ADR-174): на полке и цена — за кг. */
-  kg?: boolean
+  /** Не масло — в килограммах или метрах (ADR-174, ADR-175): на полке и цена — за кг (м). */
+  unit?: 'g' | 'mm'
 }
 
 const empty = (barcode = '', name = ''): Form => ({
@@ -74,12 +74,9 @@ function shelfOf(cans: string, liters: string): ShelfInput | null {
   return ml === null ? null : { cans: c ? Number(c) : 0, ml }
 }
 
-/** Количество на полке: штуки целым; масло — «кан. + л» по объёму тары (SPEC-36 §13). */
-function countOf(tare: number | null, cans: string, liters: string, kg = false): number | null {
-  if (kg && tare === null) {
-    const g = parseKg(cans)
-    return g !== null && g >= 0 ? g : null
-  }
+/** Количество на полке: штуки целым; масло — «кан. + л» по объёму тары (SPEC-36 §13); кг и м — до 3 знаков. */
+function countOf(tare: number | null, cans: string, liters: string, milli: 'g' | 'mm' | null = null): number | null {
+  if (milli && tare === null) return parseQty(milli, cans)
   if (tare !== null) {
     const v = tare > 0 ? parseOil(cans, liters, tare) : null
     return typeof v === 'number' ? v : null
@@ -127,7 +124,8 @@ export function RevisionNewProduct({
   const mayLink = can(useUser(), 'products')
   const category = cats.find((c) => c.id === form?.categoryId)
   const oil = category?.kind === 'oil'
-  const kg = !oil && Boolean(form?.kg)
+  // Кг или м — у не-масла (ADR-174, ADR-175).
+  const milli = !oil ? (form?.unit ?? null) : null
   const ml = oil && form ? parseLiters(form.liters) : null
   const price = form?.price.trim() ? parseSom(form.price) : 0
   const pour = ml && price ? canisterPourPrice(price, ml) : null
@@ -172,7 +170,7 @@ export function RevisionNewProduct({
       cost: p.cost,
       from: h.name,
       umagId: h.id,
-      kg: p.unit === 'g',
+      unit: p.unit,
     })
     setTimeout(() => document.getElementById('revnew-count')?.focus(), 50)
   }
@@ -180,7 +178,7 @@ export function RevisionNewProduct({
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f))
   // Закупка масла — за канистру или за литр, вторая считается сама (задача 003, Н7).
   const [costShown, setCostShown] = useState<PricePer>('can')
-  const count = form ? countOf(oil ? (ml ?? 0) : null, form.count, form.countL, kg) : null
+  const count = form ? countOf(oil ? (ml ?? 0) : null, form.count, form.countL, milli) : null
   const missing = form
     ? missingWithFocus(
         [Boolean(form.name.trim()), 'название', '#revnew-name'],
@@ -189,7 +187,7 @@ export function RevisionNewProduct({
         // Без цены товар продался бы за 0 с (проверка 20.10.2026): цена обязательна, как в «Товарах».
         [(parseSom(form.price) ?? 0) > 0, 'цену продажи', '#revnew-price'],
         [entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null) !== null, 'закупку числом', '#revnew-cost'],
-        [count !== null, oil ? 'сколько на полке — канистры и литры' : kg ? 'сколько кг на полке' : 'сколько штук на полке', '#revnew-count'],
+        [count !== null, oil ? 'сколько на полке — канистры и литры' : milli ? `сколько ${unitShort(milli)} на полке` : 'сколько штук на полке', '#revnew-count'],
       )
     : []
 
@@ -204,7 +202,7 @@ export function RevisionNewProduct({
         brand: form.brand.trim(),
         article: form.article.trim(),
         container_ml: oil ? ml : null,
-        ...(kg ? { unit: 'g' } : {}),
+        ...(milli ? { unit: milli } : {}),
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
         initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
@@ -252,8 +250,8 @@ export function RevisionNewProduct({
         if (categoryId && r.product.category_id !== categoryId)
           throw new Error(`Код ${form.barcode.trim()} уже у товара «${r.product.name}» из другой категории — в эту ревизию он не входит`)
         // Найденное — в единицах его товара (у него может быть другая тара или штуки вместо литров).
-        const raw = kg ? null : shelfOf(form.count, oil ? form.countL : '')
-        const qty = kg ? (r.product.unit === 'g' ? count : null) : raw === null ? null : qtyInUnits(raw, r.product)
+        const raw: ShelfInput | null = milli ? { cans: 0, ml: 0, milli: { unit: milli, qty: count } } : shelfOf(form.count, oil ? form.countL : '')
+        const qty = raw === null ? null : qtyInUnits(raw, r.product)
         if (qty === null) {
           toast(`Этот товар только что завёл другой, у него другие единицы — впишите найденное в строке «${r.product.name}»`)
           onExisting(r.product)
@@ -317,13 +315,18 @@ export function RevisionNewProduct({
               )}
               {!oil && (
                 <Field label="Учитывать">
-                  <select data-testid="revnew-unit" value={kg ? 'g' : 'piece'} onChange={(e) => set('kg', e.target.value === 'g')}>
+                  <select
+                    data-testid="revnew-unit"
+                    value={milli ?? 'piece'}
+                    onChange={(e) => set('unit', e.target.value === 'piece' ? undefined : (e.target.value as 'g' | 'mm'))}
+                  >
                     <option value="piece">в штуках</option>
                     <option value="g">в килограммах</option>
+                    <option value="mm">в метрах</option>
                   </select>
                 </Field>
               )}
-              <Field label={oil ? 'Цена канистры, с' : kg ? 'Цена продажи за кг, с' : 'Цена продажи, с'} hint={pour !== null ? `на розлив: ${formatSom(pour)} за л` : undefined}>
+              <Field label={oil ? 'Цена канистры, с' : milli ? `Цена продажи ${perWord(milli)}, с` : 'Цена продажи, с'} hint={pour !== null ? `на розлив: ${formatSom(pour)} за л` : undefined}>
                 <input id="revnew-price" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
               </Field>
               <PurchasePriceInput
@@ -332,7 +335,7 @@ export function RevisionNewProduct({
                 entry={{ text: form.cost, per: form.costPer ?? 'can' }}
                 shown={costShown}
                 containerMl={oil ? ml : null}
-                unitWord={oil ? 'за канистру' : kg ? 'за кг' : 'за шт'}
+                unitWord={oil ? 'за канистру' : milli ? perWord(milli) : 'за шт'}
                 sale={parseSom(form.price)}
                 hint="По ней ревизия оценит найденное"
                 onChange={(e) => setForm((f) => (f ? { ...f, cost: e.text, costPer: e.per } : f))}
@@ -351,10 +354,10 @@ export function RevisionNewProduct({
                   </Field>
                 </div>
               ) : (
-                <Field label={oil ? 'На полке — сначала объём тары' : kg ? 'На полке, кг' : 'На полке, шт'} required>
+                <Field label={oil ? 'На полке — сначала объём тары' : `На полке, ${milli ? unitShort(milli) : 'шт'}`} required>
                   <input
                     id="revnew-count"
-                    inputMode={kg ? 'decimal' : 'numeric'}
+                    inputMode={milli ? 'decimal' : 'numeric'}
                     disabled={oil}
                     value={form.count}
                     onChange={(e) => set('count', e.target.value)}

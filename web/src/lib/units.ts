@@ -107,6 +107,31 @@ export function lineKindOf(unit: StockUnit): 'piece' | 'container' | 'weight' | 
 /** Строка чека в тысячных (розлив — мл, на вес — г, в длину — мм): ввод десятичным, сумма — цена × q / 1000. */
 export const isMilliKind = (kind: string): boolean => kind === 'pour' || kind === 'weight' || kind === 'length'
 
+/**
+ * Количество строки чека словами по её виду: розлив «2,5 л», канистры «2 кан. × 4 л», на вес «1,5 кг»,
+ * в длину «1,25 м», услуги «1 усл.», штуки «3 шт». Как `domain/qty.rs::sale_qty_text` на сервере.
+ */
+export function saleQtyText(kind: string, qty: number, containerMl?: number | null): string {
+  switch (kind) {
+    case 'pour':
+      return formatLiters(qty)
+    case 'container':
+      return `${qty} кан.${containerMl ? ` × ${formatLiters(containerMl)}` : ''}`
+    case 'weight':
+      return formatKg(qty)
+    case 'length':
+      return formatMeters(qty)
+    case 'service':
+      return `${qty} усл.`
+    default:
+      return `${qty} шт`
+  }
+}
+
+/** Цена строки чека с единицей: у розлива «/л», на вес «/кг», в длину «/м», иначе без суффикса. */
+export const salePriceSuffix = (kind: string): string =>
+  kind === 'pour' ? '/л' : kind === 'weight' ? '/кг' : kind === 'length' ? '/м' : ''
+
 /** Количество по единице учёта: 3500 мл → «3,5 л», 12 000 г → «12 кг», 1250 мм → «1,25 м», 3 → «3 шт». */
 export function qtyText(unit: StockUnit, qty: number): string {
   switch (unit) {

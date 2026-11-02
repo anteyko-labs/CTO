@@ -1,7 +1,8 @@
 // Кабинет юрлица (SPEC-12): покупки за период — «В Excel» (задача 003 Н13). Строка файла — строка
 // чека с шапкой чека (дата, №, работник, машина, филиал); итог — суммы чеков, как на экране.
 // Деньги и количества — числами из целых (I1).
-import { formatKg, formatLiters } from './format'
+import { formatLiters } from './format'
+import { saleQtyText } from './units'
 import { totalBy, xl, type ExportCol } from './exportTable'
 import type { Cell } from './xlsxWrite'
 
@@ -33,17 +34,14 @@ export interface CabinetSale {
 
 /** Количество строки словами — как на экране кабинета. */
 export function cabinetQtyText(l: CabinetSaleLine): string {
-  if (l.kind === 'pour') return formatLiters(l.qty)
-  if (l.kind === 'weight') return formatKg(l.qty)
-  if (l.kind === 'container') return `${l.qty} кан.${l.container_ml ? ` × ${formatLiters(l.container_ml)}` : ''}`
-  if (l.kind === 'service') return `${l.qty} усл.`
-  return `${l.qty} шт`
+  return saleQtyText(l.kind, l.qty, l.container_ml)
 }
 
-/** Количество строки числом и единица: литры и килограммы — с тремя знаками из мл и г. */
+/** Количество строки числом и единица: литры, килограммы и метры — с тремя знаками из мл, г и мм. */
 function qtyCell(l: CabinetSaleLine): { qty: Cell; unit: string } {
   if (l.kind === 'pour') return { qty: xl.liters(l.qty), unit: 'л' }
   if (l.kind === 'weight') return { qty: { qty: l.qty, scale: 3 }, unit: 'кг' }
+  if (l.kind === 'length') return { qty: { qty: l.qty, scale: 3 }, unit: 'м' }
   if (l.kind === 'container') return { qty: xl.int(l.qty), unit: l.container_ml ? `кан. × ${formatLiters(l.container_ml)}` : 'кан.' }
   if (l.kind === 'service') return { qty: xl.int(l.qty), unit: 'усл.' }
   return { qty: xl.int(l.qty), unit: 'шт' }

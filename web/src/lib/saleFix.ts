@@ -1,6 +1,7 @@
 // Исправление чека владельцем (SPEC-29 §24): исходный чек с сервера → состояние экрана кассы.
 // Касса та же, что для нового чека; здесь только перевод строк и оплат в её поля.
 import { litersInput, somInput } from './format'
+import { isMilliKind } from './units'
 import { nextFromDraft, type NextEdits } from './nextChange'
 import type { Party, PaymentMethod, Product, SaleLineKind, Service } from './types'
 
@@ -63,7 +64,7 @@ export interface SaleFixState {
 const MONEY: MoneyMethod[] = ['cash', 'card', 'transfer', 'invoice', 'debt']
 
 /** Количество строки текстом: розлив и вес — литры/килограммы с тысячными, остальное — целым. */
-export const qtyInput = (kind: SaleLineKind, qty: number): string => (kind === 'pour' || kind === 'weight' ? litersInput(qty) : String(qty))
+export const qtyInput = (kind: SaleLineKind, qty: number): string => (isMilliKind(kind) ? litersInput(qty) : String(qty))
 
 /**
  * Состояние кассы из исходного чека. Товары и услуги — карточки с сервера (по id); не нашлась
