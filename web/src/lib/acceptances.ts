@@ -2,6 +2,7 @@
 // строкам, показ и ввод количеств, хранение отметок на устройстве до проведения. Количество в
 // учёте — целые штуки, мл, граммы (инвариант 1); здесь только показ и ввод.
 import { formatKg, formatLiters, formatMeters, litersInput, parseLiters } from './format'
+import type { StockUnit } from './units'
 
 export type AcceptanceStatus = 'waiting' | 'accepted' | 'refused' | 'cancelled'
 export type Reason = 'missing' | 'damaged' | 'other'
@@ -20,7 +21,7 @@ export interface AcceptanceLine {
   name: string
   article: string
   barcodes: string[]
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   invoice_qty: number
   /** Сумма строки и новая цена — только с правом «Приход товара». */
