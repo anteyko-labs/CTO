@@ -418,7 +418,7 @@ export default function Products() {
                   <option value="">Все</option>
                   {a.options?.map((o) => (
                     <option key={o} value={o}>
-                      {/* Полярность аккумулятора — с подсказкой «+ слева, Л» (SPEC-27). */}
+                      {/* Полярность аккумулятора — с подсказкой «− слева, Л» (SPEC-27). */}
                       {a.key === 'polarity' ? (POLARITY_LABELS[o] ?? o) : o}
                     </option>
                   ))}
