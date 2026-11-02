@@ -64,7 +64,7 @@ test('ревизия: новая категория из окна товара, 
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {} })
 })
 
-test('ревизия: у строки — «🖨 Этикетка» с кодом товара', async ({ page }) => {
+test('ревизия: у строки — «Этикетка на склад» и «Печать здесь»', async ({ page }) => {
   await login(page)
   const H = { 'X-Device-Id': '00000000-0000-4000-8000-0000000c0de1' }
   const cat = (await (await page.request.post('/api/v1/categories', { data: { name: `Этикетки ${RUN}`, kind: 'other' }, headers: H })).json()) as { id: string }
@@ -81,7 +81,8 @@ test('ревизия: у строки — «🖨 Этикетка» с кодо�
   await scanner.fill(p.barcodes[0])
   await scanner.press('Enter')
   await expect(page.locator(`[data-total="${p.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
-  await expect(page.locator(`[data-issue-code="${p.id}"]`)).toHaveText('🖨 Этикетка')
+  await expect(page.locator(`[data-issue-code="${p.id}"]`)).toHaveText('🏷 Этикетка на склад')
+  await expect(page.locator(`[data-print-here="${p.id}"]`)).toHaveText('🖨 Печать здесь')
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
 })
