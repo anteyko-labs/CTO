@@ -18,7 +18,7 @@
 - Новый маршрут попадает в обход филиалов `server/tests/branches.rs`. Список «Все филиалы» владельца — `?branch=all` (SPEC-33 §3): строки с `branch_id`/`branch_name`, правка — только у строк своего филиала. Задача 003: `POST /debts/old-supplier` — старый долг поставщику (ADR-163; `POST /debts/old` для поставщика — 422); `GET /expenses/all` и `/expenses/all/summary` с `?branch=all` — владельцу все филиалы, строки с `branch_id`/`branch_name`, администратору 404 (ADR-161, ADR-164).
 
 ## Данные
-- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0097). Применённые не правятся; номер — следующий за последним в main.
+- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0099; 0098 — метры, применяется после 0099). Применённые не правятся; номер — следующий за последним в main. Единицы товара — `piece`/`ml`/`g`/`mm`, виды строки чека — `piece`/`container`/`pour`/`weight`/`length` (вид должен подходить к единице, иначе 409).
 - Деньги — `*_tyiyn BIGINT`; объёмы — мл; пробег — `mileage_km` + как вписан (`mileage_value`, `mileage_unit`).
 - Долги — `party_ledger` (append-only, сторно — `reversal_of`); касса/счета — движения; склад — движения.
 - Книжка ТО: `oil_changes` + `oil_change_items` (строка = `slot`, `next_km`/`next_date`); фильтры масляный/воздушный/салонный идут на срок масла (ADR-117); итог чека — только строки этого чека (ADR-111); цель, которую кассир не прислал, ставит сервер — пробег + интервал, `target_auto` (ADR-144).
