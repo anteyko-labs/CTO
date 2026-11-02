@@ -1,6 +1,5 @@
 // Масляная книжка: типы ответа и тексты строк книжки (SPEC-16, SPEC-27).
 import type { ClientNote } from './clientNotes'
-import { formatDate } from './format'
 import { mileageText, type MileageUnit } from './mileage'
 import { BOOK_SLOT_LABELS, type BookSlot } from './types'
 
@@ -106,11 +105,10 @@ export function recordLines(r: OilRecord): BookLine[] {
   return out
 }
 
-/** «следующая замена на 225 000 км» — цель кассира у строки, только пробег (ADR-115); у цели без
- *  пробега — «по сроку до 05.01.2027»; без цели — ''. */
+/** «следующая замена на 225 000 км» — цель кассира у строки, только пробег (ADR-115). Даты
+ *  следующей замены книжка не показывает (задача 013): срок — только для напоминаний клиенту. */
 export function lineNextText(l: BookLine): string {
-  if (l.next_mileage != null) return `следующая замена на ${mileageText(l.next_mileage, l.next_unit ?? 'km')}`
-  return l.next_date ? `следующая замена по сроку до ${formatDate(l.next_date)}` : ''
+  return l.next_mileage != null ? `следующая замена на ${mileageText(l.next_mileage, l.next_unit ?? 'km')}` : ''
 }
 
 /** Жидкости книжки (ADR-116, ADR-117): масло двигателя, масло в коробке, антифриз, тормозная. */
@@ -234,12 +232,11 @@ export function recordMileage(r: Pick<OilRecord, 'mileage' | 'mileage_unit' | 'm
   return r.mileage_km !== null ? mileageText(r.mileage_km, 'km') : null
 }
 
-/** «на 93 000 км» (в милях — у машины в милях) — только пробег (ADR-115); у строки без пробега —
- *  «по сроку до 12.04.2027»; пусто — срока нет. */
-export function slotNextText(n: Pick<SlotNext, 'next_km' | 'next_date' | 'next_mileage' | 'unit'>): string {
+/** «на 93 000 км» (в милях — у машины в милях) — только пробег (ADR-115); без пробега — пусто:
+ *  дат следующей замены книжка и касса не показывают (задача 013). */
+export function slotNextText(n: Pick<SlotNext, 'next_km' | 'next_mileage' | 'unit'> & { next_date?: string | null }): string {
   const at = n.next_mileage !== undefined && n.next_mileage !== null ? mileageText(n.next_mileage, n.unit) : n.next_km !== null ? km(n.next_km) : null
-  if (at !== null) return `на ${at}`
-  return n.next_date ? `по сроку до ${formatDate(n.next_date)}` : ''
+  return at !== null ? `на ${at}` : ''
 }
 
 /** Следующая замена масла одной строкой: «на 93 000 км». */
@@ -271,10 +268,6 @@ export function slotsOfSale(b: VehicleBook, saleId: string): SlotNext[] {
   return slotsWithNext(b).filter((n) => own.has(slotKey(n)))
 }
 
-/** Самый ранний срок по строкам: просрочена ли замена хоть по одной. */
-export function overdueSlots(b: VehicleBook, today: string): SlotNext[] {
-  return (b.slots ?? []).filter((n) => n.next_date !== null && n.next_date < today)
-}
 
 /**
  * Строка книжки категории в списке категорий. У фильтров товар пишется по своему «Типу фильтра»

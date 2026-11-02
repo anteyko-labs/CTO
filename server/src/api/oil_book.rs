@@ -6,7 +6,7 @@ use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -2220,9 +2220,23 @@ struct EditReq {
     mileage_unit: Option<String>,
     comment: Option<String>,
     declined: Option<String>,
+    /// Строки записи целиком (задача 013): `index` — номер строки в записи, как она пришла в
+    /// книжке (текст меняется, цель следующей замены остаётся); без `index` — новая строка;
+    /// не названная строка удаляется. Нет поля — строки не трогаются.
+    #[serde(default)]
+    lines: Option<Vec<EditLine>>,
 }
 
-/// Поправить пробег или комментарий записи: книжка — справка, а не учёт денег (SPEC-16).
+#[derive(Deserialize)]
+struct EditLine {
+    #[serde(default)]
+    index: Option<usize>,
+    slot: String,
+    text: String,
+}
+
+/// Поправить пробег, строки или комментарий записи: книжка — справка, а не учёт денег (SPEC-16);
+/// чек при этом не меняется.
 async fn edit(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -2263,6 +2277,10 @@ async fn edit(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let (lines_before, lines_after) = match &req.lines {
+        Some(lines) => edit_lines(&mut tx, ctx.user.branch_id, id, lines).await?,
+        None => (Value::Null, Value::Null),
+    };
     ops::audit(
         &mut tx,
         &ctx,
@@ -2274,8 +2292,8 @@ async fn edit(
             "mileage": r.mileage_km,
             // Что было и что стало: пробег, комментарий, отказанные работы (инвариант 5).
             "changes": ops::changes(
-                &json!({ "mileage_km": before.mileage_km, "comment": before.comment, "declined": before.declined }),
-                &json!({ "mileage_km": r.mileage_km, "comment": r.comment, "declined": r.declined }),
+                &json!({ "mileage_km": before.mileage_km, "comment": before.comment, "declined": before.declined, "lines": lines_before }),
+                &json!({ "mileage_km": r.mileage_km, "comment": r.comment, "declined": r.declined, "lines": lines_after }),
             ),
         }),
     )
@@ -2286,6 +2304,104 @@ async fn edit(
         .ok_or(AppError::NotFound)?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+/// Строки записи по запросу правки: текст названных меняется, новые добавляются в конец,
+/// неназванные удаляются; пустой текст — строка удаляется. Возвращает строки до и после
+/// («вид: текст») для журнала. Без строк запись не остаётся.
+async fn edit_lines(
+    tx: &mut PgConnection,
+    branch_id: Uuid,
+    record: Uuid,
+    lines: &[EditLine],
+) -> AppResult<(Value, Value)> {
+    for l in lines {
+        if !is_slot(&l.slot) {
+            return Err(invalid("неизвестная строка книжки"));
+        }
+        if l.text.trim().chars().count() > 300 {
+            return Err(invalid("строка книжки — не длиннее 300 знаков"));
+        }
+    }
+    if lines.iter().all(|l| l.text.trim().is_empty()) {
+        return Err(invalid("укажите, что заменили: масло, фильтр или другое"));
+    }
+    let items = sqlx::query!(
+        "select id, slot, text, position from oil_change_items where oil_change_id = $1 order by position, id",
+        record
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let text_of = |slot: &str, text: &str| format!("{slot}: {text}");
+    let before: Vec<String> = items.iter().map(|i| text_of(&i.slot, &i.text)).collect();
+    let mut kept = vec![false; items.len()];
+    let mut next_pos = items.iter().map(|i| i.position).max().unwrap_or(-1) + 1;
+    for l in lines {
+        let text = l.text.trim();
+        match l.index {
+            Some(ix) => {
+                let item = items
+                    .get(ix)
+                    .ok_or_else(|| invalid("строка книжки не найдена — обновите страницу"))?;
+                if text.is_empty() {
+                    continue;
+                }
+                kept[ix] = true;
+                sqlx::query!(
+                    "update oil_change_items set slot = $2, text = $3 where id = $1",
+                    item.id,
+                    l.slot,
+                    text
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
+            None if text.is_empty() => {}
+            None => {
+                sqlx::query!(
+                    r#"insert into oil_change_items (id, branch_id, oil_change_id, slot, text, position)
+                       values ($1, $2, $3, $4, $5, $6)"#,
+                    new_id(),
+                    branch_id,
+                    record,
+                    l.slot,
+                    text,
+                    next_pos
+                )
+                .execute(&mut *tx)
+                .await?;
+                next_pos += 1;
+            }
+        }
+    }
+    for (i, item) in items.iter().enumerate() {
+        if !kept[i] {
+            sqlx::query!("delete from oil_change_items where id = $1", item.id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    let after = sqlx::query!(
+        "select slot, text from oil_change_items where oil_change_id = $1 order by position, id",
+        record
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    // Прежние поля записи (масло, фильтры текстом) — по новым строкам.
+    let lines_after: Vec<BookLine> = after
+        .iter()
+        .map(|a| BookLine::plain(&a.slot, a.text.clone(), None))
+        .collect();
+    sqlx::query!(
+        "update oil_changes set oil_text = $2, filter_text = $3 where id = $1",
+        record,
+        join_slots(&lines_after, |s| s == "oil"),
+        join_slots(&lines_after, |s| s.ends_with("_filter"))
+    )
+    .execute(&mut *tx)
+    .await?;
+    let after: Vec<String> = after.iter().map(|a| text_of(&a.slot, &a.text)).collect();
+    Ok((json!(before), json!(after)))
 }
 
 #[cfg(test)]

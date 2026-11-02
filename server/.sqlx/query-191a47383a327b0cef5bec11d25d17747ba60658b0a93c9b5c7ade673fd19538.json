@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update oil_changes set oil_text = $2, filter_text = $3 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "191a47383a327b0cef5bec11d25d17747ba60658b0a93c9b5c7ade673fd19538"
+}

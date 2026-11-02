@@ -197,6 +197,21 @@ test('масляная книжка по каждому фильтру: стро
   expect(html).toContain(`Фильтр A1 ${RUN} (воздушный) · 1 шт`)
   expect(html).not.toContain('Фильтр воздушный')
   expect(html).toMatch(/на 95\s000 км/)
+  // Задача 013: дат следующей замены нет ни на экране, ни в печати.
+  expect(html).not.toMatch(/по сроку|\d+ дн\./)
+  await expect(slots).not.toContainText(/по сроку|дн\.|пора менять/)
+
+  // Задача 013: запись книжки правится — новая строка и комментарий (пробег прежний: на нём проверки ниже).
+  await page.getByTestId('book-record-edit').first().click()
+  const edit = page.getByRole('dialog', { name: /Запись книжки/ })
+  await expect(edit.locator('#book-edit-mileage')).toHaveValue('85000')
+  await edit.getByLabel('Комментарий').fill(`правка ${RUN}`)
+  await edit.getByRole('button', { name: '+ строка' }).click()
+  await edit.getByLabel('Что залили или поставили').last().fill(`Свечи ${RUN}`)
+  await edit.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(edit).toBeHidden()
+  await expect(page.getByText(`Свечи ${RUN}`).first()).toBeVisible()
+  await expect(page.getByText(`правка ${RUN}`).first()).toBeVisible()
 
   // Касса: под выбранной машиной — следующая замена по строкам.
   await page.goto('/')

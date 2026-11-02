@@ -1519,3 +1519,90 @@ async fn untyped_fuel_filter_in_plain_category_by_its_name(pool: PgPool) {
         "{lines:?}"
     );
 }
+
+/// Задача 013: строку книжки правят — текст и вид строк, новая строка, удаление, пробег и
+/// комментарий; даты в правке нет; было → стало — в журнале.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn record_lines_are_editable(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app).await;
+    let p = ok(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        &owner,
+        json!({ "kind": "person", "first_name": "Азиз", "last_name": "Правкин", "phone": "0700112299" }),
+    )
+    .await;
+    let pid = p["id"].as_str().unwrap();
+    let v = ok(
+        &app,
+        "POST",
+        &format!("/api/v1/parties/{pid}/vehicles"),
+        &owner,
+        json!({ "plate": "01KG013ABC" }),
+    )
+    .await;
+    let vid = v["id"].as_str().unwrap();
+    let book = ok(
+        &app,
+        "POST",
+        &format!("/api/v1/vehicles/{vid}/oil-changes"),
+        &owner,
+        json!({ "change_date": "2026-10-01", "mileage": 120_000, "mileage_unit": "km",
+                "lines": [{ "slot": "oil", "text": "Mobil 5W-30" }, { "slot": "air_filter", "text": "A1" }] }),
+    )
+    .await;
+    let rid = book["records"][0]["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/oil-changes/{rid}");
+
+    // Масло переименовали, воздушный убрали, добавили салонный; пробег и комментарий.
+    let out = ok(
+        &app,
+        "PATCH",
+        &uri,
+        &owner,
+        json!({ "mileage": 121_000, "mileage_unit": "km", "comment": "поправили",
+                "lines": [{ "index": 0, "slot": "oil", "text": "Totachi 0W-20, 4 л" },
+                          { "slot": "cabin_filter", "text": "C2" }] }),
+    )
+    .await;
+    let r = &out["records"][0];
+    let lines: Vec<(String, String)> = r["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["slot"].as_str().unwrap().into(),
+                l["text"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("oil".into(), "Totachi 0W-20, 4 л".into()),
+            ("cabin_filter".into(), "C2".into())
+        ]
+    );
+    assert_eq!(r["mileage_km"], json!(121_000));
+    assert_eq!(r["comment"], json!("поправили"));
+    assert_eq!(r["change_date"], json!("2026-10-01"));
+    let audit: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'vehicle.oil_edit' order by created_at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(audit.to_string().contains("air_filter: A1"), "{audit}");
+
+    // Без строк запись не остаётся; чужой номер строки — понятный отказ.
+    for lines in [
+        json!([{ "index": 0, "slot": "oil", "text": " " }]),
+        json!([{ "index": 7, "slot": "oil", "text": "x" }]),
+    ] {
+        let (s, v) = call(&app, "PATCH", &uri, &owner, Some(json!({ "lines": lines }))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    }
+}
