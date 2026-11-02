@@ -992,7 +992,7 @@ function Draft({
         {lines.length === 0 ? (
           <Empty>Товаров нет</Empty>
         ) : (
-          <Table head={blind ? ['Товар', 'Пересчитано вами'] : ['Товар', 'Должно быть', ownView ? 'Пересчитано вами' : 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
+          <Table head={blind ? ['Товар', 'Пересчитано вами'] : ['Товар', 'Должно быть', ownView && !readOnly ? 'Пересчитано вами' : 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
             {pager.shown.map((l) => {
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
@@ -1127,7 +1127,9 @@ function Draft({
                       '—'
                     ) : draft ? (
                       <span data-total={l.product_id}>
-                        {ownView ? 'моё' : 'итого'} {countText(l, l.counted_qty)}
+                        {/* Чужой пересчёт у владельца — просто количество, без «моё». */}
+                        {readOnly ? '' : ownView ? 'моё ' : 'итого '}
+                        {countText(l, l.counted_qty)}
                       </span>
                     ) : (
                       countText(l, l.counted_qty)
