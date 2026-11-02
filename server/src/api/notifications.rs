@@ -424,6 +424,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     let per = match l.get("kind").and_then(Value::as_str) {
                         Some("pour") => " за л",
                         Some("weight") => " за кг",
+                        Some("length") => " за м",
                         _ => "",
                     };
                     let price = |k: &str| money(l.get(k).and_then(Value::as_i64));

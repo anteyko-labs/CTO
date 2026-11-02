@@ -94,7 +94,7 @@ struct CategoryOut {
 
 /// Правило баллов товара или категории (задача 002, П1): `inherit` — как выше (у товара —
 /// категория, у категории — общая ставка), `none`, `percent` (сотые доли процента), `fixed`
-/// (тыйыны за штуку, литр или кг). Меняет только владелец.
+/// (тыйыны за штуку, литр, кг или метр). Меняет только владелец.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct PointsReq {
     pub mode: String,
@@ -567,9 +567,10 @@ pub struct ProductOut {
     /// Товар продан без цены закупки: процент кассира ждёт, пока владелец её укажет (ADR-062).
     #[serde(default)]
     pub cost_pending: bool,
-    /// Цена последнего прихода за штуку или канистру (ADR-008: закупочные цены видны обеим ролям).
+    /// Цена последнего прихода за единицу цены — штуку, канистру, кг или м (ADR-008: закупочные
+    /// цены видны обеим ролям; ADR-175).
     pub last_purchase_price_tyiyn: Option<i64>,
-    /// Средняя себестоимость за штуку или канистру — только владельцу.
+    /// Средняя себестоимость за единицу цены (штуку, канистру, кг, м) — только владельцу.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_cost_tyiyn: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -703,7 +704,8 @@ async fn query_products_raw(
     Ok(rows
         .into_iter()
         .map(|r| {
-            let per = r.container_ml.unwrap_or(1);
+            // Цены — за единицу цены: канистру, кг, м или штуку (ADR-175).
+            let per = price_unit(&r.unit, r.container_ml);
             let pool = Pool {
                 qty: r.stock_qty,
                 value: r.stock_value_tyiyn,
@@ -830,11 +832,13 @@ pub struct Valuation {
     pub stock_sale: i64,
 }
 
-/// Единица показа цены: канистра масла (без тары — литр), килограмм, штука.
+/// Единица показа цены — сколько единиц учёта в ней: канистра масла (без тары — литр, 1000 мл),
+/// килограмм (1000 г), метр (1000 мм, ADR-175), штука. Единственное место этого правила на
+/// сервере: цена продажи, закупка, себестоимость, баллы «за единицу» считаются через неё.
 pub fn price_unit(unit: &str, container_ml: Option<i64>) -> i64 {
     match (unit, container_ml) {
         ("ml", Some(c)) if c > 0 => c,
-        ("ml", _) | ("g", _) => 1000,
+        ("ml", _) | ("g", _) | ("mm", _) => 1000,
         _ => 1,
     }
 }
@@ -987,6 +991,9 @@ pub struct CategoryTotal {
     pub ml: i64,
     /// Весового товара, г.
     pub grams: i64,
+    /// Товара в метрах, мм (ADR-175).
+    #[serde(default)]
+    pub mm: i64,
     /// Тара, если у всего масла группы она одна: тогда итог показывают «кан. + л».
     pub container_ml: Option<i64>,
     /// По закупке — только владельцу (ADR-008).
@@ -1012,6 +1019,7 @@ impl GroupAcc {
         let qty = match p.unit.as_str() {
             "ml" => &mut t.ml,
             "g" => &mut t.grams,
+            "mm" => &mut t.mm,
             _ => &mut t.pieces,
         };
         *qty = qty.checked_add(p.stock_qty)?;
@@ -1105,6 +1113,7 @@ pub async fn product_list(
                         pieces: 0,
                         ml: 0,
                         grams: 0,
+                        mm: 0,
                         container_ml: None,
                         purchase_tyiyn: None,
                         sale_tyiyn: None,
@@ -1160,8 +1169,8 @@ pub async fn product_list(
             _ => by_name(a, b),
         };
         let o = if desc { o.reverse() } else { o };
-        // Остаток в литрах, штуках и килограммах не сравнивают: сначала единица (штуки, литры,
-        // килограммы — при любом направлении), внутри — количество.
+        // Остаток в литрах, штуках, килограммах и метрах не сравнивают: сначала единица (штуки,
+        // литры, килограммы, метры — при любом направлении), внутри — количество.
         let unit = if sort == "stock" {
             unit_rank(&a.product.unit).cmp(&unit_rank(&b.product.unit))
         } else {
@@ -1482,8 +1491,8 @@ pub struct CreateProductReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_catalog_id: Option<Uuid>,
     /// Единица учёта (задача 002, П4): `ml` — литрами (канистра и розлив), `piece` — штуками,
-    /// `g` — килограммами (граммы, цена за кг; ADR-174). Без поля — по виду категории: масло в
-    /// литрах, остальное в штуках.
+    /// `g` — килограммами (граммы, цена за кг; ADR-174), `mm` — метрами (миллиметры, цена за м;
+    /// ADR-175). Без поля — по виду категории: масло в литрах, остальное в штуках.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     /// Баллы товара (ADR-140) — только владелец.
@@ -1577,12 +1586,17 @@ pub async fn create_product_tx(
     if name.is_empty() {
         return Err(invalid("название обязательно"));
     }
-    // Килограммы — у любого товара (ADR-174): остаток в граммах, цена за кг.
+    // Килограммы и метры — у любого товара (ADR-174, ADR-175): остаток в граммах или
+    // миллиметрах, цена за кг или за м.
     let unit = match req.unit.as_deref() {
         None if kind == "oil" => "ml",
         None => "piece",
-        Some(u @ ("ml" | "piece" | "g")) => u,
-        Some(_) => return Err(invalid("единица товара — литры, штуки или килограммы")),
+        Some(u @ ("ml" | "piece" | "g" | "mm")) => u,
+        Some(_) => {
+            return Err(invalid(
+                "единица товара — литры, штуки, килограммы или метры",
+            ));
+        }
     };
     let container_ml = if unit == "ml" {
         match req.container_ml {
@@ -1662,7 +1676,7 @@ pub async fn create_product_tx(
                where branch_id = $1 and product_id = $2"#,
             ctx.user.branch_id,
             id,
-            // Закупка — за канистру, за кг (1000 г) или за штуку.
+            // Закупка — за канистру, за кг (1000 г), за м (1000 мм) или за штуку.
             price_unit(unit, container_ml),
             cost
         )
@@ -1738,7 +1752,7 @@ async fn update_product(
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let cur = sqlx::query!(
-        "select category_id, unit, archived, merged_into, points_mode, points_value from products where id = $1 for update",
+        "select category_id, unit, archived, merged_into, points_mode, points_value, system_role from products where id = $1 for update",
         id
     )
     .fetch_optional(&mut *tx)
@@ -1752,6 +1766,12 @@ async fn update_product(
         if !arch && cur.merged_into.is_some() {
             return Err(invalid(
                 "карточка влита в другую и из архива не возвращается",
+            ));
+        }
+        // Служебная карточка лома аккумуляторов (ADR-175): на неё ведёт приём аккумуляторов.
+        if arch && cur.system_role.is_some() {
+            return Err(invalid(
+                "это служебная карточка лома аккумуляторов: в архив её не убрать",
             ));
         }
         if arch {
@@ -2206,11 +2226,11 @@ async fn add_barcode(
     if let Some(done) = ops::begin_opt(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
-    let archived = sqlx::query_scalar!("select archived from products where id = $1", id)
+    let card = sqlx::query!("select archived, unit from products where id = $1", id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
-    if archived {
+    if card.archived {
         return Err(invalid(
             "товар в архиве: штрихкод привязывается к основной карточке",
         ));
@@ -2231,7 +2251,13 @@ async fn add_barcode(
     // Замок списка Умага — до записи кода (SPEC-35 §1).
     crate::api::old_catalog::lock_branch(&mut tx, ctx.user.branch_id).await?;
     // Код литра (кг, метра) из Умага — не код упаковки: сначала предупредить (задача 005 Н3).
-    if !internal && !req.measure_ok && umag_measure_code(&mut tx, ctx.user.branch_id, &code).await?
+    // У товара в кг или метрах скан не кладёт «всю тару», а открывает ввод количества — не
+    // спрашиваем (ADR-175).
+    let measured = matches!(card.unit.as_str(), "g" | "mm");
+    if !internal
+        && !measured
+        && !req.measure_ok
+        && umag_measure_code(&mut tx, ctx.user.branch_id, &code).await?
     {
         return Err(AppError::ConflictCode(
             "umag_measure_code",
@@ -2381,14 +2407,14 @@ async fn merge_product(
         )));
     }
     let dup = sqlx::query!(
-        "select name, unit, container_ml, archived from products where id = $1",
+        "select name, unit, container_ml, archived, system_role from products where id = $1",
         id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
     let main = sqlx::query!(
-        "select name, unit, container_ml, archived from products where id = $1",
+        "select name, unit, container_ml, archived, system_role from products where id = $1",
         req.into_product_id
     )
     .fetch_optional(&mut *tx)
@@ -2396,6 +2422,13 @@ async fn merge_product(
     .ok_or_else(|| invalid("основной товар не найден"))?;
     if dup.archived || main.archived {
         return Err(invalid("архивный товар не объединяется"));
+    }
+    // Служебная карточка лома аккумуляторов (ADR-175) не объединяется ни с чем: приём
+    // аккумуляторов ищет её по пометке, а обычный товар в кг — не лом.
+    if dup.system_role.is_some() || main.system_role.is_some() {
+        return Err(invalid(
+            "служебная карточка лома аккумуляторов не объединяется с другими",
+        ));
     }
     if dup.unit != main.unit || dup.container_ml != main.container_ml {
         return Err(invalid("у товаров разные единицы учёта или объём тары"));
@@ -2558,7 +2591,8 @@ fn unit_rank(unit: &str) -> u8 {
         "piece" => 0,
         "ml" => 1,
         "g" => 2,
-        _ => 3,
+        "mm" => 3,
+        _ => 4,
     }
 }
 

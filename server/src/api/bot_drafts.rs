@@ -814,10 +814,11 @@ pub(crate) fn qty_text(qty: i64, unit: &str) -> String {
     crate::domain::qty::qty_text(qty, unit)
 }
 
-/// За что цена товара: за штуку, за канистру, за килограмм.
+/// За что цена товара: за штуку, за канистру, за килограмм, за метр.
 fn per_text(p: &ProductOut) -> String {
     match (p.unit.as_str(), p.container_ml) {
         ("g", _) => "за кг".into(),
+        ("mm", _) => "за м".into(),
         (_, Some(ml)) => format!("за канистру {}", qty_text(ml, "ml")),
         _ => "за шт".into(),
     }
@@ -1833,7 +1834,7 @@ async fn goods(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
     let name = one_line(&p.name);
     if operation.contains("миним") {
         let qty = match p.unit.as_str() {
-            "ml" | "g" => take!(
+            "ml" | "g" | "mm" => take!(
                 parse_liters(value.trim_end_matches(|c: char| c.is_alphabetic()
                     || c == '.'
                     || c.is_whitespace()))
@@ -1990,7 +1991,7 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
             ),
             _ => {
                 return Ok(Err(format!(
-                    "строка {n}: «{}» на розлив или на вес — такой приход внесите в программе",
+                    "строка {n}: «{}» на розлив, на вес или в метрах — такой приход внесите в программе",
                     p.name
                 )));
             }

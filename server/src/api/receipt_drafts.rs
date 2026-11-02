@@ -223,8 +223,27 @@ pub fn is_liters(unit: &str) -> bool {
     u.starts_with('л') || u == "l" || u == "lt" || u == "ltr" || u.starts_with("lit")
 }
 
+/// Единица строки — килограммы.
+pub fn is_kg(unit: &str) -> bool {
+    let u = unit.trim().trim_end_matches('.').to_lowercase();
+    u == "кг" || u == "kg" || u.starts_with("килограм")
+}
+
+/// Единица строки — метры (в том числе погонные).
+pub fn is_meters(unit: &str) -> bool {
+    let u: String = unit
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '.')
+        .collect();
+    matches!(u.as_str(), "м" | "m" | "мп" | "пм" | "погм" | "пог") || u.starts_with("метр")
+}
+
 /// Количество и цена строки прихода по строке накладной: штуки или канистры товара и цена за
 /// штуку или канистру. Литры масла переводятся в канистры, если товар — канистра (SPEC-30 §9).
+/// У товара в кг или метрах (ADR-175) количество — в граммах или миллиметрах (тысячные из
+/// накладной как есть), цена — за кг или м.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggestion {
     pub count: Option<i64>,
@@ -237,7 +256,25 @@ pub fn suggest(line: &InvoiceLine, unit: &str, container_ml: Option<i64>) -> Sug
     let price = money(&line.price);
     let sum = money(&line.sum);
     let mut notes: Vec<String> = Vec::new();
+    // Единиц учёта в единице цены: у кг и метров цена за 1000 г (мм), у остального — за штуку
+    // или канистру, которые и считаются.
+    let per: i64 = if matches!(unit, "g" | "mm") { 1000 } else { 1 };
     let (count, mut each) = match (unit, container_ml, is_liters(&line.unit), qty) {
+        // Кг и метры: 12,5 кг → 12 500 г по цене за кг. Другая единица в накладной — проверить.
+        (u @ ("g" | "mm"), _, _, Some(q)) => {
+            let (right, word) = if u == "g" {
+                (is_kg(&line.unit), "килограммах")
+            } else {
+                (is_meters(&line.unit), "метрах")
+            };
+            if !right && !line.unit.trim().is_empty() {
+                notes.push(format!(
+                    "единица в накладной «{}», а товар учитывается в {word} — проверьте единицу",
+                    line.unit
+                ));
+            }
+            (Some(q), price)
+        }
         // Канистра масла, а в накладной литры: 20 л по 4 л → 5 канистр, цена литра × 4.
         ("ml", Some(c), true, Some(ml)) if c > 0 => {
             if ml % c == 0 {
@@ -275,13 +312,13 @@ pub fn suggest(line: &InvoiceLine, unit: &str, container_ml: Option<i64>) -> Sug
     if each.is_none()
         && let (Some(n), Some(s)) = (count, sum)
     {
-        each = div_round(i128::from(s), i128::from(n));
+        each = div_round(i128::from(s) * i128::from(per), i128::from(n));
         if each.is_some() {
             notes.push("цена — по сумме строки".into());
         }
     }
     if let (Some(n), Some(e), Some(s)) = (count, each, sum)
-        && let Some(calc) = n.checked_mul(e)
+        && let Some(calc) = line_cost(n, e, per)
         && calc != s
     {
         notes.push(format!(
@@ -298,6 +335,11 @@ pub fn suggest(line: &InvoiceLine, unit: &str, container_ml: Option<i64>) -> Sug
         each_tyiyn: each,
         note: (!notes.is_empty()).then(|| notes.join("; ")),
     }
+}
+
+/// Сумма строки: количество × цена за единицу цены (`per` единиц учёта), одно округление (I2).
+pub fn line_cost(count: i64, each: i64, per: i64) -> Option<i64> {
+    div_round(i128::from(count) * i128::from(each), i128::from(per.max(1)))
 }
 
 /// Название поставщика без кавычек и формы собственности: «ОсОО "Автоснаб"» → «Автоснаб».
@@ -374,7 +416,8 @@ pub struct LineOut {
     pub candidates: Vec<ProductOut>,
     /// С какого фото строка: 1 — первое, дальше — «Ещё фото» по порядку.
     pub photo: i64,
-    /// Для найденного товара: штук или канистр и цена за штуку или канистру.
+    /// Для найденного товара: штук или канистр и цена за штуку или канистру; у товара в кг или
+    /// метрах — граммов (мм) и цена за кг (м) (ADR-175).
     pub count: Option<i64>,
     pub each_tyiyn: Option<i64>,
     pub note: Option<String>,
@@ -1645,16 +1688,22 @@ pub fn exact_from(d: &DraftOut) -> Option<ExactInvoice> {
         let p = l.product.as_ref()?;
         let n = l.count.filter(|n| *n > 0)?;
         let each = l.each_tyiyn.filter(|e| *e >= 0)?;
-        let per = match (p.unit.as_str(), p.container_ml) {
-            ("ml", Some(c)) if c > 0 => c,
-            ("g", _) => 1000,
-            ("piece", _) => 1,
+        // `count` — штуки или канистры; у кг и метров — сами граммы (мм), цена за кг (м).
+        let (per, price_per) = match (p.unit.as_str(), p.container_ml) {
+            ("ml", Some(c)) if c > 0 => (c, 1),
+            ("g" | "mm", _) => (1, 1000),
+            ("piece", _) => (1, 1),
             _ => return None,
         };
         let qty = n.checked_mul(per)?;
-        let cost = n.checked_mul(each)?;
-        if l.sum_tyiyn.is_some_and(|sum| sum != cost) {
-            return None;
+        let mut cost = line_cost(n, each, price_per)?;
+        if let Some(sum) = l.sum_tyiyn {
+            // У кг и метров сумма накладной может отличаться на тыйын округления — верна она.
+            let off = (sum - cost).abs();
+            if off > i64::from(price_per > 1) {
+                return None;
+            }
+            cost = sum;
         }
         lines.push(crate::api::receipts::ReceiptLineReq {
             product_id: p.id,
@@ -2374,6 +2423,25 @@ mod tests {
             (s.count, s.each_tyiyn, s.note),
             (Some(3), Some(180_000), None)
         );
+    }
+
+    #[test]
+    fn kilograms_and_meters_in_thousandths() {
+        // 12,5 кг по 450 с за кг: 12 500 г, сумма 5 625 с — без заметок.
+        let s = suggest(&line("12,5", "кг", "450", "5625"), "g", None);
+        assert_eq!(
+            (s.count, s.each_tyiyn, s.note),
+            (Some(12_500), Some(45_000), None)
+        );
+        // 25 м по 120 с — 25 000 мм; цены нет — по сумме за метр.
+        let s = suggest(&line("25", "м", "", "3000"), "mm", None);
+        assert_eq!((s.count, s.each_tyiyn), (Some(25_000), Some(12_000)));
+        // Единица «шт» у метрового товара — проверить.
+        let s = suggest(&line("3", "шт", "100", ""), "mm", None);
+        assert!(s.note.unwrap_or_default().contains("проверьте единицу"));
+        assert!(is_meters("м.п.") && is_meters("метр") && !is_meters("мл"));
+        assert!(is_kg("кг.") && is_kg("килограмм") && !is_kg("г"));
+        assert_eq!(line_cost(1_250, 33_333, 1000), Some(41_666));
     }
 
     #[test]

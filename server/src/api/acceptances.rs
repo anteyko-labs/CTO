@@ -1017,17 +1017,18 @@ fn check_accept_fields(req: &AcceptReq) -> AppResult<()> {
     Ok(())
 }
 
-/// Количество словами для владельца: «2 шт», «3 кан.», «5,5 л», «12,5 кг».
+/// Количество словами для владельца: «2 шт», «3 кан.», «5,5 л», «12,5 кг», «1,25 м».
 fn qty_words(q: i64, unit: &str, container_ml: Option<i64>) -> String {
     match (unit, container_ml) {
         ("ml", Some(c)) if c > 0 && q % c == 0 => format!("{} кан.", q / c),
         ("ml", _) => liters(q),
         ("g", _) => format!("{} кг", fixed3(q)),
+        ("mm", _) => format!("{} м", fixed3(q)),
         _ => format!("{q} шт"),
     }
 }
 
-/// «18 из 20», «0 из 2 кан.», «5,5 из 8 л», «12,5 из 15 кг».
+/// «18 из 20», «0 из 2 кан.», «5,5 из 8 л», «12,5 из 15 кг», «1,25 из 2 м».
 fn pair_words(accepted: i64, invoice: i64, unit: &str, container_ml: Option<i64>) -> String {
     match (unit, container_ml) {
         ("ml", Some(c)) if c > 0 && accepted % c == 0 && invoice % c == 0 => {
@@ -1035,6 +1036,7 @@ fn pair_words(accepted: i64, invoice: i64, unit: &str, container_ml: Option<i64>
         }
         ("ml", _) => format!("{} из {} л", fixed3(accepted), fixed3(invoice)),
         ("g", _) => format!("{} из {} кг", fixed3(accepted), fixed3(invoice)),
+        ("mm", _) => format!("{} из {} м", fixed3(accepted), fixed3(invoice)),
         _ => format!("{accepted} из {invoice}"),
     }
 }
@@ -1175,7 +1177,7 @@ async fn accept_tx(
                 }
                 if *unit != l.unit {
                     return Err(invalid(format!(
-                        "строка {}: выберите товар той же единицы учёта (штуки, литры, кг)",
+                        "строка {}: выберите товар той же единицы учёта (штуки, литры, кг, метры)",
                         l.line_no
                     )));
                 }
@@ -1770,5 +1772,7 @@ mod tests {
         assert!(clean.ends_with("По накладной, без расхождений."), "{clean}");
         assert_eq!(pair_words(5500, 8000, "ml", Some(4000)), "5,5 из 8 л");
         assert_eq!(pair_words(12_500, 15_000, "g", None), "12,5 из 15 кг");
+        assert_eq!(pair_words(1_250, 2_000, "mm", None), "1,25 из 2 м");
+        assert_eq!(qty_words(750, "mm", None), "0,75 м");
     }
 }

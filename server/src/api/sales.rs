@@ -526,22 +526,34 @@ async fn prepare_line(
             div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
             crate::domain::money::canister_pour_price(p.sale_price, c).unwrap_or(0),
         ),
-        // На вес: граммы × цена за кг (ADR-048).
-        ("weight", "g", _) => (
+        // На вес: граммы × цена за кг (ADR-048); в метрах — миллиметры × цена за м (ADR-175).
+        ("weight", "g", _) | ("length", "mm", _) => (
             l.qty,
             div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
             p.sale_price,
         ),
-        ("piece" | "container" | "pour" | "weight", _, _) => {
+        ("piece" | "container" | "pour" | "weight" | "length", _, _) => {
             // Касса видела товар до пересчёта единицы (ADR-139): понятная подсказка. Чек из
             // очереди без сети отклоняется, как раньше (ADR-059).
             let was = match l.kind.as_str() {
                 "piece" => "piece",
                 "weight" => "g",
+                "length" => "mm",
                 _ => "ml",
             };
             if !offline && crate::api::product_units::changed_from(conn, pid, was).await? {
                 return Err(crate::api::product_units::stale_line(
+                    &p.name,
+                    &p.unit,
+                    p.container_ml,
+                ));
+            }
+            // Строка штуками у товара в кг/м или «на вес» у метрового (старая касса не знает
+            // метров, ADR-175) — 409 «обновите строку»: количество в другой единице.
+            let measured = matches!(p.unit.as_str(), "g" | "mm")
+                || matches!(l.kind.as_str(), "weight" | "length");
+            if !offline && measured {
+                return Err(crate::api::product_units::wrong_kind(
                     &p.name,
                     &p.unit,
                     p.container_ml,
@@ -800,7 +812,9 @@ async fn check_discounts(
         }
         let list_amount = |p: &Prepared, list: i64| -> Option<i64> {
             match p.kind.as_str() {
-                "pour" | "weight" => div_round(i128::from(p.qty) * i128::from(list), 1000),
+                "pour" | "weight" | "length" => {
+                    div_round(i128::from(p.qty) * i128::from(list), 1000)
+                }
                 _ => mul(p.qty, list),
             }
         };
@@ -860,6 +874,7 @@ async fn check_discounts(
         let per = match p.kind.as_str() {
             "pour" => " за л",
             "weight" => " за кг",
+            "length" => " за м",
             _ => "",
         };
         bypass.push(format!(
@@ -1856,7 +1871,9 @@ pub async fn post_sale_core(
             .fetch_one(&mut *conn)
             .await?;
             let list_amount = match p.kind.as_str() {
-                "pour" | "weight" => div_round(i128::from(p.qty) * i128::from(seen), 1000),
+                "pour" | "weight" | "length" => {
+                    div_round(i128::from(p.qty) * i128::from(seen), 1000)
+                }
                 _ => mul(p.qty, seen),
             }
             .ok_or_else(overflow)?;
@@ -3218,7 +3235,7 @@ async fn return_sale(
 }
 
 /// Строка возврата без чека (ADR-105): товар, количество в единицах строки (как в чеке:
-/// штуки, канистры, мл розлива, граммы) и сумма строки, которую отдают клиенту.
+/// штуки, канистры, мл розлива, граммы, миллиметры) и сумма строки, которую отдают клиенту.
 #[derive(Deserialize)]
 pub struct NoReceiptLineReq {
     pub kind: String,
@@ -3334,11 +3351,11 @@ pub async fn no_receipt_return_tx(
                 l.qty,
                 crate::domain::money::canister_pour_price(p.sale_price, c).unwrap_or(0),
             ),
-            ("weight", "g", _) => (l.qty, p.sale_price),
+            ("weight", "g", _) | ("length", "mm", _) => (l.qty, p.sale_price),
             _ => return Err(invalid("вид строки не подходит товару")),
         };
-        // Цена за единицу строки — для печати: у розлива и веса — за литр и килограмм.
-        let per = if matches!(l.kind.as_str(), "pour" | "weight") {
+        // Цена за единицу строки — для печати: у розлива, веса и метров — за литр, кг и метр.
+        let per = if matches!(l.kind.as_str(), "pour" | "weight" | "length") {
             1000
         } else {
             1

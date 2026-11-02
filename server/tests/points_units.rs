@@ -519,6 +519,7 @@ fn unit_req(unit: &str, container_ml: Option<i64>, piece_ml: Option<i64>) -> Uni
         container_ml,
         piece_ml,
         keep: None,
+        piece_qty: None,
     }
 }
 

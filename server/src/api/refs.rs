@@ -1620,7 +1620,7 @@ struct SupplyRow {
     receipts: i64,
     qty: i64,
     amount_tyiyn: i64,
-    /// Цена последней поставки за штуку или канистру.
+    /// Цена последней поставки за единицу цены: штуку, канистру, кг или м.
     last_price_tyiyn: i64,
     last_at: DateTime<Utc>,
 }
@@ -1665,20 +1665,28 @@ async fn supplier_supplies(
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
-    .map(|r| SupplyRow {
-        product_id: r.product_id,
-        name: r.name,
-        unit: r.unit,
-        container_ml: r.container_ml,
-        receipts: r.receipts,
-        qty: r.qty,
-        amount_tyiyn: r.amount_tyiyn,
-        last_price_tyiyn: if r.last_qty > 0 {
-            div_round(i128::from(r.last_cost), i128::from(r.last_qty)).unwrap_or(0)
-        } else {
-            0
-        },
-        last_at: r.last_at,
+    .map(|r| {
+        // За единицу цены: штуку, канистру, кг или м (ADR-175).
+        let per = crate::api::catalog::price_unit(&r.unit, r.container_ml);
+        SupplyRow {
+            product_id: r.product_id,
+            name: r.name,
+            unit: r.unit,
+            container_ml: r.container_ml,
+            receipts: r.receipts,
+            qty: r.qty,
+            amount_tyiyn: r.amount_tyiyn,
+            last_price_tyiyn: if r.last_qty > 0 {
+                div_round(
+                    i128::from(r.last_cost) * i128::from(per),
+                    i128::from(r.last_qty),
+                )
+                .unwrap_or(0)
+            } else {
+                0
+            },
+            last_at: r.last_at,
+        }
     })
     .collect();
     Ok(Json(rows))

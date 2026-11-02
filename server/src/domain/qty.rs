@@ -1,5 +1,6 @@
-//! Количество для текста сервера: литры, килограммы, канистры. Учёт ведётся в целых мл и
-//! граммах (инвариант 1); здесь только показ, без округления — все знаки после запятой целые.
+//! Количество для текста сервера: литры, килограммы, метры, канистры. Учёт ведётся в целых мл,
+//! граммах и миллиметрах (инвариант 1); здесь только показ, без округления — все знаки после
+//! запятой целые.
 
 /// Тысячные с запятой без лишних нулей: 14 500 → «14,5», −500 → «−0,5», 1 → «0,001».
 pub fn fixed3(v: i64) -> String {
@@ -44,11 +45,12 @@ pub fn oil_stock(ml: i64, container_ml: i64) -> String {
     }
 }
 
-/// Количество по единице учёта: «2,5 л», «12,35 кг», «3 шт».
+/// Количество по единице учёта: «2,5 л», «12,35 кг», «1,25 м», «3 шт».
 pub fn qty_text(qty: i64, unit: &str) -> String {
     match unit {
         "ml" => liters(qty),
         "g" => format!("{} кг", fixed3(qty)),
+        "mm" => format!("{} м", fixed3(qty)),
         _ if qty < 0 => format!("−{} шт", qty.unsigned_abs()),
         _ => format!("{qty} шт"),
     }
@@ -62,12 +64,14 @@ pub fn stock_text(qty: i64, unit: &str, container_ml: Option<i64>) -> String {
     }
 }
 
-/// Количество строки чека: «2 кан. × 4 л», «3,5 л» (розлив), «12 кг» (лом), «3 шт».
+/// Количество строки чека: «2 кан. × 4 л», «3,5 л» (розлив), «12 кг» (на вес), «1,25 м»
+/// (в метрах), «3 шт».
 pub fn sale_qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
     match (kind, container_ml) {
         ("container", Some(c)) => format!("{qty} кан. × {}", liters(c)),
         ("pour", _) => liters(qty),
         ("weight", _) => format!("{} кг", fixed3(qty)),
+        ("length", _) => format!("{} м", fixed3(qty)),
         _ => format!("{qty} шт"),
     }
 }
@@ -87,6 +91,9 @@ mod tests {
         assert_eq!(liters(-2500), "−2,5 л");
         assert_eq!(qty_text(12_350, "g"), "12,35 кг");
         assert_eq!(qty_text(-3, "piece"), "−3 шт");
+        assert_eq!(qty_text(1250, "mm"), "1,25 м");
+        assert_eq!(qty_text(-500, "mm"), "−0,5 м");
+        assert_eq!(stock_text(2000, "mm", None), "2 м");
     }
 
     #[test]
@@ -110,6 +117,7 @@ mod tests {
         assert_eq!(sale_qty_text("pour", 3500, Some(4000)), "3,5 л");
         assert_eq!(sale_qty_text("container", 2, Some(4000)), "2 кан. × 4 л");
         assert_eq!(sale_qty_text("weight", 12_000, None), "12 кг");
+        assert_eq!(sale_qty_text("length", 1250, None), "1,25 м");
         assert_eq!(sale_qty_text("piece", 3, None), "3 шт");
         assert_eq!(sale_qty_text("service", 1, None), "1 шт");
     }
