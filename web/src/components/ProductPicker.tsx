@@ -331,7 +331,7 @@ export function ProductPicker({
         }}
       />
       {message && <div className="mt-1 text-sm text-rose-600">{message}</div>}
-      {query.length >= 2 && text.trim().length >= 2 && (entries.length > 0 || Boolean(onCreate)) && (
+      {query.length >= 2 && text.trim().length >= 2 && (entries.length > 0 || Boolean(onCreate) || (fresh && results.length === 0)) && (
         <ul ref={fitList} className="absolute z-30 mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
           {fresh && results.length === 0 && <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{resultsFor}»</li>}
           {fresh && ask === text.trim() && entries.length > 1 && (
@@ -354,7 +354,8 @@ export function ProductPicker({
                 <span className="shrink-0 text-right text-xs text-slate-500">
                   {formatSom(p.sale_price_tyiyn)}
                   <br />
-                  {stockText(p)}
+                  {/* Остаток 0 и меньше — «нет в наличии» (задача 015): касса такой товар в чек не кладёт. */}
+                  {p.stock_qty > 0 ? stockText(p) : <span className="text-red-600">нет в наличии</span>}
                 </span>
               </button>
             </li>

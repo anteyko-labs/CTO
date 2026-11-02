@@ -134,6 +134,7 @@ async fn seed(pool: &PgPool) -> World {
     .await
     .unwrap();
     let mut it = users.into_iter();
+    allow_negative(pool).await;
     World {
         owner: it.next().unwrap(),
         admin: it.next().unwrap(),
@@ -12180,6 +12181,19 @@ async fn clear_auto_targets(pool: &PgPool, vehicle: Uuid) {
          where target_auto and oil_change_id in (select id from oil_changes where vehicle_id = $1)",
     )
     .bind(vehicle)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Эти проверки продают сверх остатка (минус, себестоимость без цены): прежнее поведение кассы —
+/// «Продажа в минус на кассе» включена (задача 015). Запрет по умолчанию — `tests/till_stock.rs`.
+async fn allow_negative(pool: &PgPool) {
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'cashier', '{"sale_allow_negative": true}'::jsonb from branches
+           on conflict (branch_id, key) do update set value = settings.value || excluded.value"#,
+    )
     .execute(pool)
     .await
     .unwrap();

@@ -15,8 +15,8 @@ import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
 import { QuickExpense } from '../components/QuickExpense'
 import { StaffPayout } from '../components/StaffPayout'
-import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
+import { canAddToCart, shortages } from '../lib/tillStock'
 import { asUnit, isMilliKind, lineKindOf } from '../lib/units'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
@@ -484,8 +484,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const attempt = useRef<{ key: string; opId: string } | null>(null)
   const [done, setDone] = useState<{ sale: Sale; change: number | null; book?: VehicleBook | null } | null>(null)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
-  const [newProductCode, setNewProductCode] = useState<string | null>(null)
-  const [newProductName, setNewProductName] = useState<string | null>(null)
   const [party, setParty] = useState<Party | null>(draft?.party ?? null)
   const [parked, setParked] = useState<Parked[]>(loadParked)
   const [parkedId, setParkedId] = useState<string | null>(null)
@@ -912,6 +910,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   const addProduct = (p: Product) => putProduct(p, false)
   const putProduct = (p: Product, keep: boolean) => {
+    // Без «Продажи в минус» товар с остатком 0 встаёт красной строкой с аналогом, но чек с ним не
+    // провести (задача 015); «Исправить» — как было.
+    if (!fix && !canAddToCart(p, cs.sale_allow_negative)) toast(`Нет в наличии: ${p.name} — уберите строку или возьмите аналог`)
     if (hold(() => putProduct(p, true))) return
     if (!keep) setDone(null)
     loadAnalogs(p)
@@ -1272,11 +1273,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Продажа только при открытой смене (задача 005 Н4, ADR-169): при связи и без смены вместо
   // «Провести чек» — «Открыть смену». Без связи касса продаёт, как прежде (I9): чек уйдёт позже,
   // владельцу придёт «чек без открытой смены». Проверяет и сервер (409), кнопка — удобство.
+  const short = fix
+    ? []
+    : shortages(
+        lines.map((l) => ({ product: l.product, units: l.product ? lineUnits(l) : 0 })),
+        cs.sale_allow_negative,
+      )
   const needShift = !fix && cs.sale_requires_shift && online && shiftKnown && shift.data === null
   // Короткое название (четвёртое) — для строки «Не хватает: …» в режиме кассы.
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]', 'товары'],
     [lines.length === 0 || valid, 'количество и цены в строках', undefined, 'кол-во и цены'],
+    // Сверх остатка (задача 015): касса сверяет по остатку с сервера или снимка, решает сервер (409).
+    [short.length === 0, `товара на складе: ${short.map((p) => `${p.name} (остаток ${stockText(p)})`).join(', ')}`, undefined, `товара: ${short.map((p) => p.name).join(', ')}`],
     [Boolean(cashierId), 'кассира', '#cashier-select', 'кассир'],
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select', 'мастер'],
     [saleType === 'service' || !hasServiceWork(lines), 'для услуги — режим «В сервис»', undefined, 'режим «В сервис»'],
@@ -2426,9 +2435,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <ProductPicker
                 onPick={addProduct}
                 // Незнакомый код — окно привязки: право «Товары и штрихкоды» или «Привязывать коды
-                // на кассе» (задача 005 Н3); «Новый товар» в окне — только с первым.
+                // на кассе» (задача 005 Н3). Новый товар на кассе не заводится (задача 015).
                 onUnknownCode={can(user, 'products') || can(user, 'till_barcode') ? setUnknownCode : undefined}
-                onCreate={can(user, 'products') ? setNewProductName : undefined}
               />
             </div>
             <Button variant="secondary" className={`shrink-0 ${touch ? 'min-h-[64px]! px-5 text-lg!' : ''}`} onClick={() => setServicesOpen(true)}>
@@ -3710,36 +3718,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             focusPicker()
           }}
           pickLabel="Положить в чек"
-          onCreateNew={
-            can(user, 'products')
-              ? () => {
-                  setNewProductCode(unknownCode)
-                  setUnknownCode(null)
-                }
-              : undefined
-          }
-        />
-      )}
-      {newProductName !== null && (
-        <ProductFormModal
-          presetName={newProductName}
-          onClose={() => setNewProductName(null)}
-          onSaved={(p) => {
-            setNewProductName(null)
-            addProduct(p)
-          }}
-        />
-      )}
-      {newProductCode !== null && (
-        <ProductFormModal
-          presetBarcode={newProductCode}
-          continueIfTaken
-          onClose={() => setNewProductCode(null)}
-          onSaved={(p) => {
-            setNewProductCode(null)
-            addProduct(p)
-            focusPicker()
-          }}
         />
       )}
     </div>

@@ -76,8 +76,11 @@ test('«Склад → Остатки»: ненулевые остатки по 
   const cashier = await apiPost<{ id: string }>(page.request, '/employees', { full_name: `Кассир остатков ${RUN}`, is_cashier: true, pin: '1234' })
   // Онлайн-чек — только при открытой смене (задача 005 Н4).
   await ensureShift(page.request, cashier.id)
+  // Минус бывает только от чека без сети (задача 015): онлайн-чек сверх остатка — 409.
   await apiPost(page.request, '/sales', {
     op_id: crypto.randomUUID(),
+    offline: true,
+    client_time: new Date().toISOString(),
     sale_type: 'takeaway',
     cashier_id: cashier.id,
     lines: [{ kind: 'piece', product_id: lamp.id, qty: 2, unit_price_tyiyn: 10_000 }],

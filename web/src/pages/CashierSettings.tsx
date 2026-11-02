@@ -253,6 +253,20 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
             Включено — без открытой смены чек не пробить никому, и вам тоже: касса предложит «Открыть смену». Без связи касса продаёт как прежде, а вам
             придёт уведомление «чек без открытой смены». «Исправить» и «Изменить оплату» работают и без смены.
           </p>
+          <label className="mt-3 inline-flex items-center gap-2 text-sm">
+            <input
+              id="sale-allow-negative"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={s.sale_allow_negative}
+              onChange={(e) => set({ sale_allow_negative: e.target.checked })}
+            />
+            Продажа в минус на кассе
+          </label>
+          <p className="mt-2 text-sm text-slate-500">
+            Выключено — товар с остатком 0 в чек не попадает, больше остатка не пробить никому, и вам тоже (разлив из бочки — тоже). Без связи касса
+            сверяет по последним остаткам; если чек всё же ушёл в минус, придёт уведомление.
+          </p>
         </Card>
 
         <Card data-testid="cashier-profit">
