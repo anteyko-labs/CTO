@@ -5,8 +5,8 @@ import { colsIf, exportTitle, tableSheet, unitName, xl, type ExportCol } from '.
 import { actLines, actVerdict, type Reconciliation } from './debtDocs'
 import { formatDate, formatSom } from './format'
 import { oilAmountText } from './serviceSale'
-import { groupQty, pricePer, rowViscosity, type StockGroup } from './stockSheet'
-import type { CategoryTotal, DebtRow, InvoicePayment, ProductRow, ServiceKind, TopProduct } from './types'
+import { groupQty, pricePer, rowViscosity, type QtyTotal, type StockGroup } from './stockSheet'
+import type { DebtRow, InvoicePayment, ProductRow, ServiceKind, TopProduct } from './types'
 import { paymentSource } from './supplierPay'
 import type { Cell, Sheet, SheetRow } from './xlsxWrite'
 
@@ -51,12 +51,14 @@ export function productCols(o: { owner: boolean; category: (id: string) => strin
 
 // ---------- Остатки ----------
 
-/** Количество подытога: одной единицей — числом, смесь штук, литров и кг — текстом. */
-function groupQtyCell(t: Pick<CategoryTotal, 'pieces' | 'ml' | 'grams' | 'container_ml'>): Cell {
-  const kinds = [t.pieces, t.ml, t.grams].filter((x) => x !== 0).length
+/** Количество подытога: одной единицей — числом, смесь штук, литров, кг и м — текстом. */
+function groupQtyCell(t: QtyTotal): Cell {
+  const mm = t.mm ?? 0
+  const kinds = [t.pieces, t.ml, t.grams, mm].filter((x) => x !== 0).length
   if (kinds > 1) return groupQty(t)
   if (t.ml !== 0) return xl.liters(t.ml)
   if (t.grams !== 0) return { qty: t.grams, scale: 3 }
+  if (mm !== 0) return { qty: mm, scale: 3 }
   return xl.int(t.pieces)
 }
 
@@ -86,7 +88,7 @@ export function stockSheet(o: {
     'Отметка',
   ].map((label) => ({ label }))
   const rows: SheetRow[] = []
-  const all = { pieces: 0, ml: 0, grams: 0, container_ml: null as number | null }
+  const all = { pieces: 0, ml: 0, grams: 0, mm: 0, container_ml: null as number | null }
   for (const g of o.groups) {
     for (const r of g.rows) {
       rows.push({
@@ -109,6 +111,7 @@ export function stockSheet(o: {
     all.pieces += t.pieces
     all.ml += t.ml
     all.grams += t.grams
+    all.mm += t.mm ?? 0
     rows.push({
       cells: [g.total.name, `Итого по категории: ${t.count} поз.`, null, groupQtyCell(t), null, null, null, null, xl.maybeMoney(t.sale_tyiyn), ...(owner ? [xl.maybeMoney(t.purchase_tyiyn)] : [])],
       bold: true,

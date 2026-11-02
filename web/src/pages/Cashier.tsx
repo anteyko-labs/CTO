@@ -17,6 +17,7 @@ import { QuickExpense } from '../components/QuickExpense'
 import { StaffPayout } from '../components/StaffPayout'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
+import { asUnit, isMilliKind, lineKindOf } from '../lib/units'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
@@ -138,8 +139,8 @@ function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>, ourOil: Oi
 
 /** Количество строки в единицах запроса: шт, канистры или мл для розлива. */
 function lineQty(l: CartLine): number | null {
-  // На вес — килограммы с граммами, как литры розлива: «12,35» → 12 350 г.
-  if (l.kind === 'pour' || l.kind === 'weight') {
+  // На вес и в длину — кг (м) с граммами (мм), как литры розлива: «12,35» → 12 350 г.
+  if (isMilliKind(l.kind)) {
     const ml = parseLiters(l.qtyText)
     return ml && ml > 0 ? ml : null
   }
@@ -150,11 +151,25 @@ function lineAmount(l: CartLine): number | null {
   const qty = lineQty(l)
   const price = parseSom(l.priceText)
   if (qty === null || price === null) return null
-  const amount = l.kind === 'pour' || l.kind === 'weight' ? pourAmount(qty, price) : qty * price
+  const amount = isMilliKind(l.kind) ? pourAmount(qty, price) : qty * price
   return Number.isSafeInteger(amount) ? amount : null
 }
 
 const nextKey = () => randomId()
+
+/** Аналог фильтра (SPEC-17): единица — у нового ответа сервера; без неё — штуки. */
+interface Analog {
+  id: string
+  name: string
+  stock_qty: number
+  sale_price_tyiyn: number
+  unit?: string
+  container_ml?: number | null
+}
+
+/** Остаток аналога в его единице: «8 л = 2 кан. по 4 л», «3 шт», «1,5 м». */
+const analogStock = (a: Analog): string =>
+  stockText({ unit: asUnit(a.unit) ?? 'piece', container_ml: a.container_ml ?? null, stock_qty: a.stock_qty })
 
 /** Сколько ждём свежие цены перед проведением: дольше — берём снимок, чек не задерживаем. */
 const FRESH_WAIT_MS = 4_000
@@ -576,7 +591,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     return () => ro.disconnect()
   }, [touch, lines.length, measureCart])
   // Аналоги фильтров по кросс-номерам: подсказка в строке, особенно когда товара нет (SPEC-17).
-  const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
+  const [analogs, setAnalogs] = useState<Record<string, Analog[]>>({})
   const { busy, error, setError, run } = useAction()
   // Чек проводится: правка чека закрыта — ответ сервера сбросит его, а отложенная копия или
   // «Очистить» продали бы или отменили уже проданное. Товар, отсканированный в это время, ждёт и
@@ -872,16 +887,25 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   const loadAnalogs = (p: Product) => {
     if (p.category_kind !== 'filter' || analogs[p.id]) return
-    void get<{ id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>(`/products/${p.id}/analogs`)
+    void get<Analog[]>(`/products/${p.id}/analogs`)
       .then((list) => setAnalogs((m) => ({ ...m, [p.id]: list })))
       .catch(() => undefined)
   }
 
-  /** Заменить товар строки аналогом: цена — его, количество — прежнее. */
+  /** Заменить товар строки аналогом: цена — его, количество — прежнее; другая единица (метры вместо
+   *  штук) — вид строки по аналогу и количество заново, иначе сервер отклонил бы чек (ADR-178). */
   const swapToAnalog = (l: CartLine, id: string) =>
     void get<Product>(`/products/${id}`)
       .then((p) => {
-        update(l.key, { product: p, priceText: somInput(p.sale_price_tyiyn) })
+        const kind: SaleLineKind = lineKindOf(p.unit)
+        const same = l.product?.unit === p.unit
+        update(l.key, {
+          product: p,
+          kind: same ? l.kind : kind,
+          qtyText: same ? l.qtyText : isMilliKind(kind) ? '' : '1',
+          priceText: somInput(same && l.kind === 'pour' ? listPrice({ kind: 'pour', product: p }) : p.sale_price_tyiyn),
+        })
+        if (!same && isMilliKind(kind)) focusAfterRender(`[data-weight="${l.key}"]`)
         loadAnalogs(p)
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось заменить'))
@@ -901,15 +925,25 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       focusAfterRender(`[data-liters="${key}"]`)
       return
     }
+    // На вес и в длину (ADR-178): скан не прибавляет — строка с пустым количеством и фокус в поле;
+    // повторный скан того же товара только снова ставит фокус (было: 1 кг → «1001»).
+    const milli = isMilliKind(kind)
+    const existing = milli ? lines.find((l) => l.product?.id === p.id && l.kind === kind) : undefined
+    if (existing) {
+      focusAfterRender(`[data-weight="${existing.key}"]`)
+      return
+    }
+    const key = nextKey()
     setLines((ls) => {
       const same = ls.find((l) => l.product?.id === p.id && l.kind === kind)
       if (same) {
+        if (milli) return ls
         const n = lineQty(same) ?? 0
-        // На вес — ещё килограмм (граммы → «2,5»), иначе ещё штука или канистра.
-        return ls.map((l) => (l === same ? { ...l, qtyText: kind === 'weight' ? litersInput(n + 1000) : String(n + 1) } : l))
+        return ls.map((l) => (l === same ? { ...l, qtyText: String(n + 1) } : l))
       }
-      return [...ls, { key: nextKey(), kind, product: p, qtyText: '1', priceText: somInput(listPrice({ kind, product: p })) }]
+      return [...ls, { key, kind, product: p, qtyText: milli ? '' : '1', priceText: somInput(listPrice({ kind, product: p })) }]
     })
+    if (milli) focusAfterRender(`[data-weight="${key}"]`)
   }
 
   /** Аккумуляторы на вес: строка по весу, цена — продажная за кг или средняя закупка (ADR-048). */
@@ -949,10 +983,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (t === 'service' && !hasServiceWork(lines)) setKindsOpen(true)
   }
 
-  /** Шаг количества: 1 шт или канистра, 0,5 л для розлива. */
+  /** Шаг количества: 1 шт или канистра, 0,5 л для розлива, 0,5 кг или 0,5 м. */
   const step = (l: CartLine, dir: 1 | -1) => {
     const q = lineQty(l) ?? 0
-    if (l.kind === 'pour' || l.kind === 'weight') {
+    if (isMilliKind(l.kind)) {
       const ml = Math.max(500, q + dir * 500)
       update(l.key, { qtyText: litersInput(ml) })
     } else {
@@ -2607,7 +2641,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 const changed = parseSom(l.priceText) !== lineList(l)
                 // Без права «Скидка» цену можно поднять, но не опустить ниже прайса (ADR-097).
                 const lowNoRight = !canDiscount && isDiscount(parseSom(l.priceText), lineList(l), l.gift)
-                const priceLabel = l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'
+                const priceLabel = l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : l.kind === 'length' ? 'Цена за м' : 'Цена'
+                const qtyLabel =
+                  l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'length' ? 'Длина, м' : l.kind === 'container' ? 'Канистры' : 'Кол-во'
                 const short = l.product ? (unitsInCart.get(l.product.id) ?? 0) > l.product.stock_qty : false
                 return (
                   <li
@@ -2645,7 +2681,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                                 title="Заменить этим товаром"
                                 onClick={() => swapToAnalog(l, a.id)}
                               >
-                                {a.name} · {a.stock_qty} шт · {formatSom(a.sale_price_tyiyn)} ⇄
+                                {a.name} · {analogStock(a)} · {formatSom(a.sale_price_tyiyn)} ⇄
                               </button>
                             ))}
                           </div>
@@ -2681,9 +2717,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     </div>
                     <label className="flex flex-col text-xs text-slate-500">
                       {/* В режиме кассы подпись только у литров и веса: штуки и канистры понятны и так. */}
-                      <span className={touch && l.kind !== 'pour' && l.kind !== 'weight' ? 'sr-only' : ''}>
-                        {l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
-                      </span>
+                      <span className={touch && !isMilliKind(l.kind) ? 'sr-only' : ''}>{qtyLabel}</span>
                       <span className={`flex items-stretch ${touch ? 'gap-1' : ''}`}>
                         <button
                           type="button"
@@ -2695,11 +2729,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         </button>
                         <input
                           className={`min-h-12 text-center text-lg ${touch ? 'w-[4.5rem] rounded-lg text-xl font-semibold' : 'w-16 rounded-none'}`}
-                          data-weight={l.kind === 'weight' ? l.key : undefined}
+                          data-weight={l.kind === 'weight' || l.kind === 'length' ? l.key : undefined}
                           data-liters={l.kind === 'pour' ? l.key : undefined}
                           // Подпись вокруг поля относится к первой кнопке «−», поэтому у поля своя.
-                          aria-label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
-                          {...(l.kind === 'pour' || l.kind === 'weight'
+                          aria-label={qtyLabel}
+                          {...(isMilliKind(l.kind)
                             ? num('decimal', { decimals: 3, quick: l.kind === 'pour' ? ['1', '4', '5'] : undefined })
                             : num('int'))}
                           value={l.qtyText}
@@ -2719,7 +2753,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                       <div className="w-28 text-xs text-emerald-700">бесплатно</div>
                     ) : (
                       <div className="flex flex-col text-xs text-slate-500">
-                        <label htmlFor={`price-${l.key}`} className={touch && l.kind !== 'pour' && l.kind !== 'weight' ? 'sr-only' : ''}>
+                        <label htmlFor={`price-${l.key}`} className={touch && !isMilliKind(l.kind) ? 'sr-only' : ''}>
                           {priceLabel}
                         </label>
                         <span className="flex items-center gap-0.5">

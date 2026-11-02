@@ -8,7 +8,7 @@
 **Быстрая правка кг уже сделана раньше этой задачи (ветка `save-006-kg`, ADR-174, миграция `0095_kg_quick.sql`, тесты `units_kg_quick.rs`, `units-kg.spec.ts`).** В неё вошло: пометка лома `products.system_role = 'battery_scrap'` и поиск лома по пометке; «в килограммах» в карточке и при создании товара; смена шт↔кг и л↔кг только без остатка; «Завести» из Умага строки «кг» → 'g'. Задача 006 добавляет метры и всё, чего быстрая правка не покрыла. Сборщик в начале и перед концом делает `git merge save-006-kg`. Конфликты решать по смыслу, правка кг первична.
 
 ## Что меняется
-- **К1 Единица в карточке и окно смены единицы (ADR-175, уточнение ADR-139).** «Единица»: в штуках / в литрах / в килограммах / в метрах. У нового товара — любая. У заведённого — окно «Единица и объём канистры» (только владелец, `product_units.rs::plan`). Правила:
+- **К1 Единица в карточке и окно смены единицы (ADR-178, уточнение ADR-139).** «Единица»: в штуках / в литрах / в килограммах / в метрах. У нового товара — любая. У заведённого — окно «Единица и объём канистры» (только владелец, `product_units.rs::plan`). Правила:
   - без остатка во всех филиалах — любая смена;
   - с остатком — шт↔кг и шт↔м с коэффициентом «1 шт = X кг/м» (новое поле `piece_qty`, тысячные: г/мм). Пересчёт: шт→кг/м — mul=X, div=1, цена ×1000/X; кг/м→шт — mul=1, div=X, цена ×X/1000. Если не делится нацело — понятный отказ, как у литров;
   - кг↔м, кг↔л, м↔л с остатком — отказ «обнулите остаток ревизией». Остаток проверяется после чтения строк, по всем филиалам.
@@ -29,12 +29,12 @@
   - подписи «Цена продажи за кг/м», закупка «за кг/м»;
   - блок «Изменить» скрывать по `system_role`, а не по 'g'.
 - **К2 Лом аккумуляторов.** Пометку и поиск по ней сделала быстрая правка. Здесь только проверить, что пометка — единственный признак лома везде. Касса: подсказка «средняя закупка … дешевле не продать» (`Cashier.tsx:2556`) — только у строки товара лома (product_id из `/batteries`), а не у любой 'weight'.
-- **К3 Метры 'mm' везде, где 'g' (ADR-175, расширение I1: длина — мм).** Миграция `0096_meters.sql`:
+- **К3 Метры 'mm' везде, где 'g' (ADR-178, расширение I1: длина — мм).** Миграция `0098_meters.sql`:
   - `products_unit_check` + 'mm';
   - `sale_lines_kind_check` и проверка kind у `cancelled_lines` (0057) + 'length';
   - `product_unit_changes` from/to unit → piece/ml/g/mm (безымянные CHECK из 0077 сносить поиском по `pg_get_constraintdef`, как 0078/0092) и столбец `reset boolean not null default false`;
-  - заполнить `reset = true` у уже записанных смен, где `from_unit <> to_unit` и пара не ml↔piece. До 0096 с коэффициентом шла только ml↔piece, значит всё с 'g' — смены быстрой правки без остатка;
-  - tier2 «последняя — 0096».
+  - заполнить `reset = true` у уже записанных смен, где `from_unit <> to_unit` и пара не ml↔piece. До 0098 с коэффициентом шла только ml↔piece, значит всё с 'g' — смены быстрой правки без остатка;
+  - tier2 «последняя — 0098».
 
   Сервер:
   - `catalog::price_unit` ('g'|'mm' → 1000) — единственная функция «единиц в цене». Ею заменить дубли: `receipts.rs:678,1207,1602`, `receipt_drafts.rs:1648`, `deliveries.rs:176`, `loyalty.rs:242`, `product_units.rs:563`;
@@ -70,7 +70,7 @@
 Весы с выводом веса в программу и разбор весовых наклеек EAN «2…». Дроби у штук. Другие единицы (упаковки, пары, бухты). Приход кг/м через бот — отказ с текстом «на розлив, на вес или в метрах — внесите в программе». Подарок товаром в кг/м.
 
 ## Затронутые файлы
-`server/migrations/0096_meters.sql`; `server/src/api/{catalog,product_units,analogs,sales,cancelled_lines,loyalty,gifts,receipts,receipt_drafts,deliveries,refs,acceptances,bot_drafts,assistant,notifications,oil_book,old_catalog}.rs`, `server/src/domain/{qty,money}.rs`; `web/src/lib/{units,format,types,unitChange,revisionCount,oldCatalog,umagCodes,receiptLines,receiptDrafts,stockIn,receiptFix,docFix,supplierReturn,defects,acceptances,discount,saleFix,debtDocs,cabinetExport,shiftReportExport,nextChange,stockSheet,exportCols,exportTable,pnl,purchasePrice,points,giftRule}.ts`, `web/src/pages/{Revision,ProductIntake,ReceiptNew,ReceiptView,StockInView,Cashier,SaleView,ShiftReport,Products,Stock,Income,TopProducts,Gifts,SupplierCard,Acceptance}.tsx`, `web/src/components/{ProductFormModal,ProductUnitModal,RevisionNewProduct,Umag,UmagCard,ProductPicker,UnknownCodeModal,NoReceiptReturn,DiscountModal,OfflineBar,SupplierReturns,PointsRuleField,GiftPicker,salePrint,labels}`; tier0 I1, tier2 (перечень единиц и видов строк), SPEC-02/03/04/09/11/15/19/27/35/39 — точечно, ADR-175.
+`server/migrations/0098_meters.sql`; `server/src/api/{catalog,product_units,analogs,sales,cancelled_lines,loyalty,gifts,receipts,receipt_drafts,deliveries,refs,acceptances,bot_drafts,assistant,notifications,oil_book,old_catalog}.rs`, `server/src/domain/{qty,money}.rs`; `web/src/lib/{units,format,types,unitChange,revisionCount,oldCatalog,umagCodes,receiptLines,receiptDrafts,stockIn,receiptFix,docFix,supplierReturn,defects,acceptances,discount,saleFix,debtDocs,cabinetExport,shiftReportExport,nextChange,stockSheet,exportCols,exportTable,pnl,purchasePrice,points,giftRule}.ts`, `web/src/pages/{Revision,ProductIntake,ReceiptNew,ReceiptView,StockInView,Cashier,SaleView,ShiftReport,Products,Stock,Income,TopProducts,Gifts,SupplierCard,Acceptance}.tsx`, `web/src/components/{ProductFormModal,ProductUnitModal,RevisionNewProduct,Umag,UmagCard,ProductPicker,UnknownCodeModal,NoReceiptReturn,DiscountModal,OfflineBar,SupplierReturns,PointsRuleField,GiftPicker,salePrint,labels}`; tier0 I1, tier2 (перечень единиц и видов строк), SPEC-02/03/04/09/11/15/19/27/35/39 — точечно, ADR-178.
 
 ## Проверка
 - Сквозной `server/tests/units_kg_m.rs`:
@@ -83,7 +83,7 @@
   - Умаг «Завести» кг/м → g/mm;
   - запреты ADR-139 (черновик ревизии, приёмка, брак, продажа без цены) → 409 и при смене без остатка;
   - `reset`: шт→кг без коэффициента и кг→м пишут `reset = true`, минимальный остаток 0, включённое правило-условие → 422, выключенное → `needs_fix`; товар-подарок в g/mm → 422;
-  - миграция 0096 на базе со сменой быстрой правки (шт→кг) проставляет ей `reset`, возврат старого чека после неё → 409;
+  - миграция 0098 на базе со сменой быстрой правки (шт→кг) проставляет ей `reset`, возврат старого чека после неё → 409;
   - чек со строкой 'piece' или 'weight' у mm-товара → 409, строка 'length' у g-товара → 409.
 - Дополнить `points_units.rs` (порог подарка и ставка баллов при шт→кг/м), `acceptance.rs` («1,25 из 2 м»), `invoice.rs` («12,5 кг», «25 м»), `umag.rs`, `http.rs` (итоги склада mm, цена владельца при cost_pending для mm, карточка поставщика за кг), тесты `qty.rs`, `money.rs`, `cancelled_lines.rs`, `oil_book.rs` (weight/length не «шт»), `notifications.rs` (1615, «м»), `acceptances.rs` (qty_words «1,25 из 2 м»), `bot_drafts.rs` (минимум «1,5» у mm → 1500), `analogs.rs` (unit в ответе).
 - Веб: `units.test.ts` (qtyText «1,25 м», parseQty, perWord, unitShort), а также `unitChange`, `revisionCount`, `acceptances`, `receiptLines`, `receiptDrafts`, `stockIn`, `receiptFix`, `supplierReturn`, `discount`, `saleFix`, `salePrint`, `stockSheet`, `exportCols`, `exportTable`, `oldCatalog`, `purchasePrice`, `pnl`, `points`, `giftRule`, `umagCodes` («г» → « за г»), `labels`/`labelText` (ценник «за кг»/«за м»), `defects`, `docFix`.

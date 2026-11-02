@@ -6,7 +6,7 @@
 //! Прошлые документы остаются в прежних единицах; `product_unit_changes` переводит их единицы
 //! в нынешние (возврат по старому чеку).
 //!
-//! Килограммы и метры (ADR-174, ADR-175): штуки ↔ кг/м — с коэффициентом «1 шт = X г/мм» и с
+//! Килограммы и метры (ADR-174, ADR-178): штуки ↔ кг/м — с коэффициентом «1 шт = X г/мм» и с
 //! остатком; без коэффициента и между разными размерностями (кг ↔ м, кг ↔ л, м ↔ л) — только
 //! без остатка, такая смена помечается `reset`: количества прошлых документов в нынешние единицы
 //! не переводятся (возврат по ним — 409).
@@ -36,7 +36,7 @@ pub fn routes() -> Router<AppState> {
 pub struct UnitReq {
     pub op_id: Uuid,
     /// `ml` — литрами (канистра и розлив), `piece` — штуками, `g` — килограммами (ADR-174),
-    /// `mm` — метрами (ADR-175).
+    /// `mm` — метрами (ADR-178).
     pub unit: String,
     /// Объём канистры, мл — для литров.
     #[serde(default)]
@@ -49,7 +49,7 @@ pub struct UnitReq {
     #[serde(default)]
     pub keep: Option<String>,
     /// «1 шт = X г» или «1 шт = X мм» (тысячные кг/м): штуки → кг/м и кг/м → штуки с остатком.
-    /// Без него смена между штуками и кг/м — только без остатка (ADR-175).
+    /// Без него смена между штуками и кг/м — только без остатка (ADR-178).
     #[serde(default)]
     pub piece_qty: Option<i64>,
 }
@@ -113,7 +113,7 @@ fn reduce(a: i128, b: i128) -> AppResult<(i64, i64)> {
 }
 
 /// Как пересчитать: новая единица, объём, множитель и делитель остатка, множитель и делитель цены.
-/// `reset` — смена без коэффициента между разными единицами (ADR-175): только без остатка,
+/// `reset` — смена без коэффициента между разными единицами (ADR-178): только без остатка,
 /// количества прошлых документов не переводятся, цена — то же число за новую единицу цены
 /// (канистра — за её литры).
 struct Plan {
@@ -221,7 +221,7 @@ fn plan(from: &str, from_c: Option<i64>, req: &UnitReq) -> AppResult<Plan> {
         ("piece", "piece", _) => Err(invalid("товар уже в штуках — менять нечего")),
         ("g", "g", _) => Err(invalid("товар уже в килограммах — менять нечего")),
         ("mm", "mm", _) => Err(invalid("товар уже в метрах — менять нечего")),
-        // Штуки ↔ кг/м с коэффициентом «1 шт = X г/мм» — как штуки ↔ литры (ADR-175): остаток
+        // Штуки ↔ кг/м с коэффициентом «1 шт = X г/мм» — как штуки ↔ литры (ADR-178): остаток
         // × X или ÷ X целым, цена штуки ↔ цена кг/м через X.
         ("piece", to @ ("g" | "mm"), _) if req.piece_qty.is_some() => {
             let x = check_piece_qty(req.piece_qty.unwrap_or_default(), to)?;
@@ -248,7 +248,7 @@ fn plan(from: &str, from_c: Option<i64>, req: &UnitReq) -> AppResult<Plan> {
             })
         }
         // Без коэффициента и между разными размерностями — только без остатка (`reset`,
-        // ADR-174, ADR-175). Цена — то же число за новую единицу цены; цена канистры — за её
+        // ADR-174, ADR-178). Цена — то же число за новую единицу цены; цена канистры — за её
         // литры (× 1000 / объём), и обратно.
         ("piece", "g", _) => Ok(reset_plan("g", None, 1, 1)),
         ("piece", "mm", _) => Ok(reset_plan("mm", None, 1, 1)),
@@ -375,7 +375,7 @@ pub async fn change_unit_tx(
     }
     let p = plan(&cur.unit, cur.container_ml, &req)?;
     blockers(&mut *conn, id, cur.category_id).await?;
-    // Подарком товар в кг или метрах быть не может (ADR-175): «1 г в подарок» — бессмыслица.
+    // Подарком товар в кг или метрах быть не может (ADR-178): «1 г в подарок» — бессмыслица.
     if matches!(p.unit, "g" | "mm") {
         let rule = sqlx::query_scalar!(
             r#"select t.name from gift_rule_items i
@@ -407,7 +407,7 @@ pub async fn change_unit_tx(
     // Остаток каждого филиала должен перейти целым числом — иначе ничего не меняем.
     let mut recount = Vec::new();
     // Без коэффициента разные единицы не пересчитываются друг в друга: только без остатка во
-    // всех филиалах (ADR-174, ADR-175).
+    // всех филиалах (ADR-174, ADR-178).
     if p.reset {
         for r in &rows {
             if r.stock_qty == 0 {
@@ -473,7 +473,7 @@ pub async fn change_unit_tx(
     let mut needs_fix: Vec<Uuid> = Vec::new();
     for g in &gifts {
         // Смена без коэффициента количество подарка не переводит: включённое правило — отказ,
-        // выключенное — «поправьте» (ADR-149, ADR-175).
+        // выключенное — «поправьте» (ADR-149, ADR-178).
         if p.reset {
             if g.active {
                 return Err(invalid(
@@ -518,7 +518,7 @@ pub async fn change_unit_tx(
     .await?;
     let mut threshold_log = Vec::new();
     for t in &thresholds {
-        // Порог в прежней единице без коэффициента не переводится (ADR-175).
+        // Порог в прежней единице без коэффициента не переводится (ADR-178).
         if p.reset {
             if t.active {
                 return Err(invalid(format!(
@@ -569,7 +569,7 @@ pub async fn change_unit_tx(
     // Баллы «за единицу» товара (ADR-140) — ставка за штуку, литр, кг или метр: в новую единицу
     // переводится обратно количеству, чтобы за тот же товар начислялось столько же; одно
     // округление `div_round` (I2), было → стало — в журнал. Смена без коэффициента — то же число
-    // за новую единицу (ADR-175).
+    // за новую единицу (ADR-178).
     let points = if cur.points_mode == "fixed" && cur.points_value > 0 && !p.reset {
         let to = points_rate(cur.points_value, &cur.unit, p.unit, p.mul, p.div)?;
         if to <= 0 {
@@ -650,7 +650,7 @@ pub async fn change_unit_tx(
     for (r, rc) in rows.iter().zip(&recount) {
         let (last_cost, last_qty) = per(r.last_cost_tyiyn, r.last_cost_qty)?;
         let (owner_cost, owner_qty) = per(r.owner_cost_tyiyn, r.owner_cost_qty)?;
-        // Минимальный остаток без коэффициента не переводится — обнуляется (ADR-175).
+        // Минимальный остаток без коэффициента не переводится — обнуляется (ADR-178).
         let min_stock = if p.reset {
             0
         } else {
@@ -793,7 +793,7 @@ pub async fn units_now(
     .await?;
     let mut q = qty;
     for c in changes {
-        // Смена без коэффициента (кг ↔ шт, кг ↔ м и т. п., ADR-175): прежние количества в
+        // Смена без коэффициента (кг ↔ шт, кг ↔ м и т. п., ADR-178): прежние количества в
         // нынешние единицы не переводятся.
         if c.reset {
             return Err(AppError::Conflict(
@@ -900,7 +900,7 @@ pub fn stale_line(name: &str, unit: &str, container_ml: Option<i64>) -> AppError
 }
 
 /// Строка чека в другой единице, чем товар (штуки у товара в метрах, «на вес» у метрового —
-/// касса не знала метров), — 409 «обновите строку» (ADR-175).
+/// касса не знала метров), — 409 «обновите строку» (ADR-178).
 pub fn wrong_kind(name: &str, unit: &str, container_ml: Option<i64>) -> AppError {
     AppError::Conflict(format!(
         "Товар «{name}» учитывается в {}, обновите строку",
@@ -1012,7 +1012,7 @@ mod tests {
         .unwrap();
         assert_eq!((p.mul, p.div), (1, 1));
         assert!(plan("ml", Some(4_000), &req("ml", Some(4_000), None, None)).is_err());
-        // Килограммы и метры без коэффициента (ADR-174, ADR-175) — только без остатка, `reset`;
+        // Килограммы и метры без коэффициента (ADR-174, ADR-178) — только без остатка, `reset`;
         // цена канистры 4 л → за кг (м).
         let p = plan("g", None, &req("piece", None, None, None)).unwrap();
         assert_eq!((p.unit, p.reset), ("piece", true));

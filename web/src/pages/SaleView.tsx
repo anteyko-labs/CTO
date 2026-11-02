@@ -12,7 +12,8 @@ import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { can } from '../lib/permissions'
 import { batteryShare, paymentLabel } from '../lib/battery'
-import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
+import { formatDateTime, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
+import { isMilliKind, salePriceSuffix, saleQtyText } from '../lib/units'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCashierMode } from '../lib/cashierMode'
 import { DEFAULT_CASHIER, loadCashierSettings } from '../lib/cashierLayout'
@@ -103,7 +104,7 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
     const left = l.qty - done.qty
     const text = qty[l.line_no]?.trim() ?? ''
     // Розлив — в литрах, вес — в килограммах (тысячные: мл и граммы), остальное — штуками.
-    const n = !text ? 0 : l.kind === 'pour' || l.kind === 'weight' ? parseLiters(text) : /^\d+$/.test(text) ? Number(text) : null
+    const n = !text ? 0 : isMilliKind(l.kind) ? parseLiters(text) : /^\d+$/.test(text) ? Number(text) : null
     const ok = n !== null && n >= 0 && n <= left
     return { l, left, n, ok, refund: ok && n ? refundOf(l, done, n) : 0 }
   })
@@ -163,12 +164,12 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
               <tr key={l.line_no}>
                 <td className="px-2 py-2">{l.name}</td>
                 <td className="px-2 py-2">{lineQtyText(l)}</td>
-                <td className="px-2 py-2">{l.kind === 'pour' ? formatLiters(left) : l.kind === 'weight' ? formatKg(left) : left}</td>
+                <td className="px-2 py-2">{isMilliKind(l.kind) ? saleQtyText(l.kind, left) : left}</td>
                 <td className="px-2 py-2">
                   <input
                     className={`w-24 ${ok ? '' : 'border-rose-400'}`}
-                    inputMode={l.kind === 'pour' || l.kind === 'weight' ? 'decimal' : 'numeric'}
-                    placeholder={l.kind === 'pour' ? 'литры' : l.kind === 'weight' ? 'кг' : '0'}
+                    inputMode={isMilliKind(l.kind) ? 'decimal' : 'numeric'}
+                    placeholder={l.kind === 'pour' ? 'литры' : l.kind === 'weight' ? 'кг' : l.kind === 'length' ? 'м' : '0'}
                     disabled={left <= 0}
                     value={qty[l.line_no] ?? ''}
                     onChange={(e) => {
@@ -496,7 +497,7 @@ export default function SaleView() {
               <td className="px-2 py-2">{lineQtyText(l)}</td>
               <td className="px-2 py-2">
                 {formatSom(l.unit_price_tyiyn)}
-                {l.kind === 'pour' && '/л'}
+                {salePriceSuffix(l.kind)}
               </td>
               <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(l.amount_tyiyn)}</td>
               {showCost && <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-500">{formatSom(l.cost_tyiyn ?? 0)}</td>}

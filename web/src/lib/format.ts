@@ -61,6 +61,11 @@ export function formatKg(g: number): string {
   return formatLiters(g).replace(/л$/, 'кг')
 }
 
+/** Длина для показа: 1250 мм → «1,25 м», −500 → «−0,5 м». */
+export function formatMeters(mm: number): string {
+  return formatLiters(mm).replace(/л$/, 'м')
+}
+
 /**
  * Остаток масла: «14,5 л = 3 кан. по 4 л + 2,5 л» — считаем литрами, тара в расшифровке.
  * Целые канистры и остаток в литрах в сумме дают ровно столько мл, сколько на складе (SPEC-27):

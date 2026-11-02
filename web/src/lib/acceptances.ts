@@ -1,7 +1,8 @@
 // Приёмка товара на планшете (SPEC-39, ADR-134): вид приёмки с сервера, отметки кассира по
 // строкам, показ и ввод количеств, хранение отметок на устройстве до проведения. Количество в
 // учёте — целые штуки, мл, граммы (инвариант 1); здесь только показ и ввод.
-import { formatKg, formatLiters, litersInput, parseLiters } from './format'
+import { formatKg, formatLiters, formatMeters, litersInput, parseLiters } from './format'
+import type { StockUnit } from './units'
 
 export type AcceptanceStatus = 'waiting' | 'accepted' | 'refused' | 'cancelled'
 export type Reason = 'missing' | 'damaged' | 'other'
@@ -20,7 +21,7 @@ export interface AcceptanceLine {
   name: string
   article: string
   barcodes: string[]
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   invoice_qty: number
   /** Сумма строки и новая цена — только с правом «Приход товара». */
@@ -111,22 +112,23 @@ export function inCans(l: Unit & { invoice_qty: number }): boolean {
   return l.unit === 'ml' && l.container_ml !== null && l.container_ml > 0 && l.invoice_qty % l.container_ml === 0
 }
 
-/** «20 шт», «5 кан. по 4 л», «3,5 л», «12 кг». */
+/** «20 шт», «5 кан. по 4 л», «3,5 л», «12 кг», «1,25 м». */
 export function qtyWords(l: Unit & { invoice_qty: number }, qty: number): string {
   if (l.unit === 'piece') return `${qty} шт`
   if (l.unit === 'g') return formatKg(qty)
+  if (l.unit === 'mm') return formatMeters(qty)
   if (inCans(l) && l.container_ml && qty % l.container_ml === 0) return `${qty / l.container_ml} кан. по ${formatLiters(l.container_ml)}`
   return formatLiters(qty)
 }
 
-/** Короткая запись количества для «18 из 20»: штуки, канистры или литры, кг — без единицы. */
+/** Короткая запись количества для «18 из 20»: штуки, канистры или литры, кг, м — без единицы. */
 function bare(l: Unit & { invoice_qty: number }, qty: number): string {
   if (l.unit === 'piece') return String(qty)
   if (inCans(l) && l.container_ml && qty % l.container_ml === 0) return String(qty / l.container_ml)
   return litersInput(qty)
 }
 
-/** Как вводится «Принято»: целые (штуки, канистры) или до 3 знаков (литры, кг). */
+/** Как вводится «Принято»: целые (штуки, канистры) или до 3 знаков (литры, кг, м). */
 export function inputKind(l: Unit & { invoice_qty: number }): 'int' | 'decimal' {
   return l.unit === 'piece' || inCans(l) ? 'int' : 'decimal'
 }
@@ -135,6 +137,7 @@ export function inputKind(l: Unit & { invoice_qty: number }): 'int' | 'decimal' 
 export function inputUnit(l: Unit & { invoice_qty: number }): string {
   if (l.unit === 'piece') return 'шт'
   if (l.unit === 'g') return 'кг'
+  if (l.unit === 'mm') return 'м'
   return inCans(l) ? 'кан.' : 'л'
 }
 
@@ -159,7 +162,7 @@ export function acceptedInput(l: Unit & { invoice_qty: number }, qty: number | n
   return litersInput(qty)
 }
 
-/** Одно касание сканером: штука или канистра; у литров и кг сканер не прибавляет. */
+/** Одно касание сканером: штука или канистра; у литров, кг и м сканер не прибавляет. */
 export function scanStep(l: Unit & { invoice_qty: number }): number | null {
   if (l.unit === 'piece') return 1
   if (l.unit === 'ml' && l.container_ml) return l.container_ml

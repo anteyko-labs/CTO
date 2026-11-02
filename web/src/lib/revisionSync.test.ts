@@ -151,6 +151,16 @@ describe('количество в единицах найденного това
     expect(qtyInUnits({ cans: 2, ml: 0 }, bulk)).toBeNull()
     expect(qtyInUnits({ cans: 2, ml: 0 }, weight)).toBeNull()
   })
+
+  it('кг — к кг, м — к м; кг к метрам и к штукам — нет (ADR-178)', () => {
+    const meters = { unit: 'mm', container_ml: null }
+    expect(qtyInUnits({ cans: 0, ml: 0, milli: { unit: 'g', qty: 2500 } }, weight)).toBe(2500)
+    expect(qtyInUnits({ cans: 0, ml: 0, milli: { unit: 'mm', qty: 1250 } }, meters)).toBe(1250)
+    expect(qtyInUnits({ cans: 0, ml: 0, milli: { unit: 'g', qty: 2500 } }, meters)).toBeNull()
+    expect(qtyInUnits({ cans: 0, ml: 0, milli: { unit: 'mm', qty: 1250 } }, piece)).toBeNull()
+    expect(qtyInUnits({ cans: 0, ml: 0, milli: { unit: 'mm', qty: 0 } }, piece)).toBe(0)
+    expect(qtyInUnits({ cans: 2, ml: 0 }, meters)).toBeNull()
+  })
 })
 
 describe('перечитывание после проведения', () => {

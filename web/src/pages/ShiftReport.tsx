@@ -8,7 +8,8 @@ import { ExportButton } from '../components/ExportButton'
 import { AfterCloseBlock, CashToBankButton, CashToBankModal, PayChangeModal, TransfersList, useCanFixPay } from '../components/PayChange'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get } from '../lib/api'
-import { bishkekDate, formatDate, formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
+import { bishkekDate, formatDate, formatDateTime, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
+import { saleQtyText } from '../lib/units'
 import { useAction, useLoad } from '../lib/hooks'
 import { ShiftBank } from '../components/ShiftBank'
 import { printShift } from '../components/shiftPrint'
@@ -65,13 +66,8 @@ function Row({ label, value, sign, sub, strong, tone, testId }: { label: ReactNo
   )
 }
 
-/** Количество строки словами: штуки, канистры, литры розлива, килограммы. */
-function qtyText(kind: string, qty: number): string {
-  if (kind === 'pour') return formatLiters(qty)
-  if (kind === 'weight') return formatKg(qty)
-  if (kind === 'container') return `${qty} кан.`
-  return `${qty} шт`
-}
+/** Количество строки словами: штуки, канистры, литры розлива, килограммы, метры. */
+const qtyText = (kind: string, qty: number): string => saleQtyText(kind, qty)
 
 /** Сумма со знаком и цветом: поступление зелёным, расход красным. */
 function Signed({ value }: { value: number }) {

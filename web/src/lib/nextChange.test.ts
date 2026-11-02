@@ -396,6 +396,11 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     expect(goodBook(goods[1])).toBe('Felix G12 5 кг · 3 шт')
     // Одна строка — как было.
     expect(goodBook(cartGoods([{ product: can4, kind: 'container', qtyText: '2' }], categories)[0])).toBe('Totachi 5W-30 4 л · 2 кан. × 4 л')
+    // На вес и в длину — кг и м, не «шт» (ADR-178).
+    const hose = { slot: 'oil' as const, name: 'Шланг', kind: 'length', qty: '1,5', containerMl: null }
+    expect(goodBook(hose)).toBe('Шланг · 1,5 м')
+    expect(goodShort({ ...hose, kind: 'weight' })).toBe('Шланг × 1,5 кг')
+    expect(goodBook({ ...hose, parts: [{ kind: 'length', qty: '1' }, { kind: 'length', qty: '0,5' }] })).toBe('Шланг · 1 м + 0,5 м')
     const rows = nextRows({ sources: cartSources([{ service: oil }]), goods, extra: [], edits: {}, mileage: '130000', unit: 'km', own: {} })
     const book = receiptBook({ brand: 'Toyota', model: 'Camry', plate: '01KG' }, '130000', 'km', rows, '2026-10-31', goods)
     expect(book.filled).toEqual([{ slot: 'oil', label: 'Totachi 5W-30 4 л · 4,5 л', product: 'Totachi 5W-30 4 л · 4,5 л', service_id: null, group: 'Замена масла в моторе' }])

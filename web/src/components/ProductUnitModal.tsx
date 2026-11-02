@@ -1,11 +1,13 @@
 // Единица и объём канистры товара (задача 002, П4; задача 003, Н10; ADR-139). Только владелец.
 // Без остатка — сразу; с остатком — списание и приход той же стоимостью одной операцией на сервере.
+// Кг и м (ADR-174, ADR-178): со штуками — по «1 шт = X кг/м»; кг ↔ м ↔ л — только без остатка.
 import { useState } from 'react'
 import { newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, litersInput, parseLiters } from '../lib/format'
 import { useAction } from '../lib/hooks'
 import type { Product } from '../lib/types'
-import { priceAfter, recount, stockText, unitPlan, unitText, zeroOnly, type StockUnit } from '../lib/unitChange'
+import { byPieceQty, priceAfter, recount, stockText, unitPlan, unitText, zeroOnly, type StockUnit } from '../lib/unitChange'
+import { parseQty, perWord, unitShort } from '../lib/units'
 import { Button, ErrorBox, Field, Modal, toast } from './ui'
 
 interface UnitOut {
@@ -27,23 +29,32 @@ export function ProductUnitModal({
   const [containerL, setContainerL] = useState(product.container_ml ? litersInput(product.container_ml) : '')
   const [pieceL, setPieceL] = useState(product.container_ml ? litersInput(product.container_ml) : '')
   const [keep, setKeep] = useState<'count' | 'volume'>('count')
+  /** «1 шт = X кг/м» строкой. */
+  const [pieceQtyText, setPieceQtyText] = useState('')
   const [opId] = useState(newOpId)
   const act = useAction()
 
   // «1 шт = N л» нужно, когда меняются литры и штуки.
-  const needsPiece = fromUnit !== unit && fromUnit !== 'g' && unit !== 'g'
-  // Килограммы и штуки (литры) — только без остатка (ADR-174).
-  const mustBeEmpty = zeroOnly(fromUnit, unit) && product.stock_qty !== 0
+  const needsPiece = (fromUnit === 'ml' && unit === 'piece') || (fromUnit === 'piece' && unit === 'ml')
+  // «1 шт = X кг/м» — штуки ↔ кг или м; без остатка можно не указывать.
+  const pieceQtyUnit = byPieceQty(fromUnit, unit) ? (unit === 'piece' ? fromUnit : unit) : null
+  const pieceQty = pieceQtyUnit && pieceQtyText.trim() ? parseQty(pieceQtyUnit, pieceQtyText) : null
+  const badPieceQty = pieceQtyUnit !== null && pieceQtyText.trim() !== '' && pieceQty === null
+  // Без коэффициента кг и м с другими единицами — только без остатка (ADR-174, ADR-178).
+  const mustBeEmpty = zeroOnly(fromUnit, unit, pieceQty !== null) && product.stock_qty !== 0
   const containerMl = unit === 'ml' ? parseLiters(containerL) : null
   const pieceMl = needsPiece ? parseLiters(pieceL) : null
-  const plan = unitPlan(fromUnit, product.container_ml, { unit, containerMl, pieceMl, keep })
+  const plan = unitPlan(fromUnit, product.container_ml, { unit, containerMl, pieceMl, pieceQty, keep })
   const to = typeof plan === 'string' ? null : recount(product.stock_qty, plan)
   const priceTo = typeof plan === 'string' ? null : priceAfter(product.sale_price_tyiyn, plan)
-  const problem =
-    typeof plan === 'string'
+  const problem = badPieceQty
+    ? `Сколько ${pieceQtyUnit ? unitShort(pieceQtyUnit) : ''} в одной штуке — число до 3 знаков после запятой`
+    : typeof plan === 'string'
       ? plan
       : mustBeEmpty
-        ? `Остаток ${stockText(product.stock_qty, fromUnit)}: килограммы и ${fromUnit === 'ml' || unit === 'ml' ? 'литры' : 'штуки'} друг в друга не пересчитываются. Обнулите остаток ревизией, потом меняйте единицу`
+        ? pieceQtyUnit
+          ? `Остаток ${stockText(product.stock_qty, fromUnit)}: укажите, сколько ${unitShort(pieceQtyUnit)} в одной штуке, — или обнулите остаток ревизией`
+          : `Остаток ${stockText(product.stock_qty, fromUnit)}: ${unitText(fromUnit, null)} и ${unitText(unit, null)} друг в друга не пересчитываются. Обнулите остаток ревизией, потом меняйте единицу`
         : to === null
         ? `Остаток ${stockText(product.stock_qty, fromUnit)} не переходит в целое число — продайте или спишите ревизией до целого либо выберите другой объём`
         : null
@@ -55,6 +66,7 @@ export function ProductUnitModal({
         unit,
         container_ml: containerMl,
         piece_ml: pieceMl,
+        ...(pieceQty !== null ? { piece_qty: pieceQty } : {}),
         keep: fromUnit === 'ml' && unit === 'ml' ? keep : undefined,
       })
       toast('Единица товара изменена')
@@ -69,11 +81,20 @@ export function ProductUnitModal({
         </div>
         <Field label="Учитывать">
           <select data-testid="unit-target" value={unit} onChange={(e) => setUnit(e.target.value as StockUnit)}>
-            <option value="ml">в литрах (канистра и розлив)</option>
             <option value="piece">в штуках</option>
-            <option value="g">в килограммах (только без остатка)</option>
+            <option value="ml">в литрах (канистра и розлив)</option>
+            <option value="g">в килограммах</option>
+            <option value="mm">в метрах</option>
           </select>
         </Field>
+        {pieceQtyUnit && (
+          <Field
+            label={`1 шт = сколько ${pieceQtyUnit === 'mm' ? 'метров' : 'килограммов'}`}
+            hint={product.stock_qty !== 0 ? 'Нужно: остаток пересчитается по нему' : 'Без остатка можно не указывать'}
+          >
+            <input data-testid="unit-piece-qty" inputMode="decimal" value={pieceQtyText} onChange={(e) => setPieceQtyText(e.target.value)} />
+          </Field>
+        )}
         {unit === 'ml' && (
           <Field label="Объём канистры, л">
             <input data-testid="unit-container" inputMode="decimal" value={containerL} onChange={(e) => setContainerL(e.target.value)} />
@@ -103,7 +124,7 @@ export function ProductUnitModal({
               </div>
               {priceTo !== null && priceTo !== product.sale_price_tyiyn && (
                 <div>
-                  Цена: {formatSom(product.sale_price_tyiyn)} → {formatSom(priceTo)} {unit === 'ml' ? 'за канистру' : unit === 'g' ? 'за кг' : 'за штуку'}
+                  Цена: {formatSom(product.sale_price_tyiyn)} → {formatSom(priceTo)} {unit === 'ml' ? 'за канистру' : unit === 'piece' ? 'за штуку' : perWord(unit)}
                 </div>
               )}
               {unit === 'ml' && containerMl && <div>Канистра — {formatLiters(containerMl)}</div>}
@@ -111,7 +132,8 @@ export function ProductUnitModal({
           )
         )}
         <div className="text-xs text-slate-500">
-          Остаток в других филиалах пересчитается так же. Прошлые чеки и приходы остаются в прежних единицах; приход до пересчёта
+          Остаток в других филиалах пересчитается так же; без пересчёта (кг, м и литры между собой) остаток должен быть 0 во всех
+          филиалах. Прошлые чеки и приходы остаются в прежних единицах; приход до пересчёта
           отменить будет нельзя — только ревизией. Кассы без сети обновятся при связи.
         </div>
         <ErrorBox error={act.error} />

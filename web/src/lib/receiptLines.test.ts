@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  firstCount,
+  nextCount,
   initialPrices,
   lastPer,
   lastText,
@@ -81,6 +83,9 @@ describe('строка прихода', () => {
   it('цена по накладной за канистру и штуку из проведённой строки', () => {
     expect(unitCost({ unit: 'ml', container_ml: 4000, qty: 8000, cost_tyiyn: 320_000 })).toBe(160_000)
     expect(unitCost({ unit: 'piece', container_ml: null, qty: 3, cost_tyiyn: 100_000 })).toBe(33_333)
+    // 2,5 м на 500 с — 200 с за м, а не за мм.
+    expect(unitCost({ unit: 'mm', container_ml: null, qty: 2500, cost_tyiyn: 50_000 })).toBe(20_000)
+    expect(unitCost({ unit: 'g', container_ml: null, qty: 12_500, cost_tyiyn: 125_000 })).toBe(10_000)
   })
 
   it('прошлая закупка: цена, день по Бишкеку и поставщик', () => {
@@ -135,6 +140,17 @@ describe('масло литрами и товар на вес (SPEC-36 §13)', (
     expect(lineCalc({ product: scrap, count: '1,2345', price: '100' })).toBe('укажите килограммы')
   })
 
+  it('в длину: м до 3 знаков, цена за м (ADR-178)', () => {
+    const hose = product({ unit: 'mm', sale_price_tyiyn: 20_000 })
+    // 3,5 м по 120 с за м = 420 с; по продаже 200 с за м = 700 с; этикетка одна.
+    expect(lineCalc({ product: hose, count: '3,5', price: '120' })).toEqual({ n: 1, qty: 3500, cost: 42_000, sale: 70_000, salePrice: 20_000, unitPrice: 12_000 })
+    expect(lineCalc({ product: hose, count: '3.5', price: '120' })).toMatchObject({ qty: 3500 })
+    expect(lineCalc({ product: hose, count: '0', price: '120' })).toBe('укажите метры')
+    expect(firstCount(hose, undefined)).toBe('1')
+    expect(nextCount(hose, undefined, '1')).toBe('2')
+    expect(nextCount(hose, undefined, '1,25')).toBe('2,25')
+  })
+
   it('режим «л»: цена прошлой закупки — за литр, наценка — к закупке канистры', () => {
     const l = initialPrices(oil, 4000)
     expect(l.price).toBe('450')
@@ -164,6 +180,7 @@ describe('масло литрами и товар на вес (SPEC-36 §13)', (
   it('прошлая закупка — с единицей', () => {
     expect(lastPer(oil)).toBe('за канистру')
     expect(lastPer(product({ unit: 'g' }))).toBe('за кг')
+    expect(lastPer(product({ unit: 'mm' }))).toBe('за м')
     expect(lastPer(product({}))).toBeUndefined()
     expect(nb(lastText({ receipt_id: 'r', number: 1, price_tyiyn: 180_000, created_at: '2026-10-12T05:00:00Z', supplier_name: null }, 'за канистру'))).toBe(
       'в прошлый раз: 1 800 с за канистру, 12.10',

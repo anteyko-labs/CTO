@@ -64,7 +64,7 @@ import {
 import { invoiceEntry, type PriceEntry } from '../lib/purchasePrice'
 import { useOilPriceModes } from '../lib/stockSettings'
 import { canisterPourPrice } from '../lib/money'
-import { kgInput, perLiter } from '../lib/units'
+import { isKgM, milliInput, perLiter, perWord } from '../lib/units'
 import { missingWithFocus } from '../lib/forms'
 import { useFocusAfterRender } from '../lib/focus'
 import { useUser } from '../lib/auth'
@@ -207,13 +207,13 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       .catch(() => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last: null } : l))))
 
   /** Строка прихода из строки накладной: количество и цена накладной, цена продажи — текущая. */
-  const draftLine = (p: Product, count: number | null, each: number | null, hint: Line['hint'], measure?: 'l' | 'kg'): Line => {
+  const draftLine = (p: Product, count: number | null, each: number | null, hint: Line['hint'], measure?: 'l' | 'kg' | 'm'): Line => {
     // Литры, не делящиеся на канистры, — строка в режиме «л» с ценой литра (SPEC-36 §13).
     const mode: QtyMode | undefined = measure === 'l' ? 'l' : isOil(p) ? 'can' : undefined
     const tare = literTare(p, mode)
     const prices = initialPrices(p, tare)
     const priced = each === null ? prices : withCost(prices, somInput(each), tare)
-    const text = count === null ? '' : measure === 'l' ? litersInput(count) : measure === 'kg' ? kgInput(count) : String(count)
+    const text = count === null ? '' : measure === 'l' ? litersInput(count) : measure === 'kg' || measure === 'm' ? milliInput(count) : String(count)
     return { key: randomId(), product: p, count: text, ...(mode ? { mode } : {}), ...priced, hint }
   }
 
@@ -289,7 +289,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       updateLine(l.key, { hint: l.hint && { ...l.hint, dup: false } })
       return
     }
-    const measure = base.mode === 'l' || base.product.unit === 'g' ? 'milli' : 'whole'
+    const measure = base.mode === 'l' || isKgM(base.product.unit) ? 'milli' : 'whole'
     const sum = (base.mode ?? '') === (l.mode ?? '') ? addCounts(base.count, l.count, measure) : null
     if (sum === null) {
       draftAction.setError(`Не сложить «${l.product.name}»: разные единицы или количество не заполнено — исправьте или оставьте отдельно`)
@@ -913,7 +913,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             <Table head={['Товар', 'Количество', stockIn ? 'Цена закупки' : 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма', 'По продаже', '']}>
               {lines.map((l, i) => {
                 const oil = isOil(l.product)
-                const weight = l.product.unit === 'g'
+                // На вес и в длину: кг (м) и цена за кг (м) — ADR-178.
+                const weight = isKgM(l.product.unit)
                 // Строка масла в литрах: цена — за литр, наценка — к закупке канистры.
                 const tare = literTare(l.product, l.mode)
                 const hints = literHints(l)
@@ -981,7 +982,9 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                       )}
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
                         {weight
-                          ? 'Кг'
+                          ? l.product.unit === 'mm'
+                            ? 'М'
+                            : 'Кг'
                           : tare
                             ? 'Литров'
                             : oil
@@ -1004,7 +1007,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {tare ? 'Цена за литр, с' : oil ? 'Цена канистры, с' : weight ? 'Цена за кг, с' : 'Цена за шт, с'}
+                        {tare ? 'Цена за литр, с' : oil ? 'Цена канистры, с' : weight ? `Цена ${perWord(l.product.unit)}, с` : 'Цена за шт, с'}
                         <input
                           id={`line-${i + 1}-price`}
                           className={`w-28 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
@@ -1061,7 +1064,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {oil ? 'Продажа канистры, с' : weight ? 'Продажа за кг, с' : 'Продажа за шт, с'}
+                        {oil ? 'Продажа канистры, с' : weight ? `Продажа ${perWord(l.product.unit)}, с` : 'Продажа за шт, с'}
                         <input
                           id={`line-${i + 1}-sale`}
                           aria-label="Цена продажи"

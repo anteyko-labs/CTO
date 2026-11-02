@@ -239,7 +239,7 @@ async fn line_rules(
                 ),
                 None => points::pick(None, None, common),
             };
-            // Баллы «за единицу» — за литр, кг, метр или штуку (ADR-140, ADR-175).
+            // Баллы «за единицу» — за литр, кг, метр или штуку (ADR-140, ADR-178).
             let per_unit = found.map_or(1, |r| crate::api::catalog::price_unit(&r.unit, None));
             (
                 points::LineIn {

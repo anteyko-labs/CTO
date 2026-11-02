@@ -20,10 +20,11 @@ import {
 } from './shiftReport'
 import type { Cell, Sheet, SheetRow } from './xlsxWrite'
 
-/** Количество строки чека по её виду числом и единица: розлив — л, вес — кг, канистры, штуки. */
+/** Количество строки чека по её виду числом и единица: розлив — л, вес — кг, длина — м, канистры, штуки. */
 export function kindQty(kind: string, qty: number): { qty: Cell; unit: string } {
   if (kind === 'pour') return { qty: xl.liters(qty), unit: 'л' }
   if (kind === 'weight') return { qty: { qty, scale: 3 }, unit: 'кг' }
+  if (kind === 'length') return { qty: { qty, scale: 3 }, unit: 'м' }
   if (kind === 'container') return { qty: xl.int(qty), unit: 'кан.' }
   return { qty: xl.int(qty), unit: 'шт' }
 }

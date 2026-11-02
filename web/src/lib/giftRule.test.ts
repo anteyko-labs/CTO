@@ -25,6 +25,9 @@ describe('правило подарка', () => {
     expect(giftMinText(rule({}))).toBe('3,5')
     expect(giftMinText(rule({ trigger_unit: 'piece', min_units: 2 }))).toBe('2')
     expect(giftMinText(rule({ min_units: 0 }))).toBe('')
+    // Условие в кг и м — порог тысячными (ADR-178).
+    expect(giftMinText(rule({ trigger_unit: 'g', min_units: 2500 }))).toBe('2,5')
+    expect(giftMinText(rule({ trigger_unit: 'mm', min_units: 1500 }))).toBe('1,5')
   })
 
   it('количество подарков сохраняется при правке', () => {

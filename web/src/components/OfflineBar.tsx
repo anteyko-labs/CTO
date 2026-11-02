@@ -18,7 +18,8 @@ import {
   type SnapshotMeta,
 } from '../lib/offline'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatKg, formatLiters, formatSom } from '../lib/format'
+import { formatDateTime, formatSom } from '../lib/format'
+import { isMilliKind, saleQtyText } from '../lib/units'
 import { useServerOnline } from '../lib/hooks'
 import { printSale } from './salePrint'
 import { Badge, Button, Modal, Table } from './ui'
@@ -34,7 +35,7 @@ const STATUS: Record<OutboxItem['status'], string> = {
 function linesText(i: OutboxItem): string {
   const lines = i.receipt?.lines ?? []
   if (lines.length === 0) return ''
-  return lines.map((l) => `${l.name} ${l.kind === 'pour' ? formatLiters(l.qty) : l.kind === 'weight' ? formatKg(l.qty) : `×${l.qty}`}`).join(', ')
+  return lines.map((l) => `${l.name} ${isMilliKind(l.kind) ? saleQtyText(l.kind, l.qty) : `×${l.qty}`}`).join(', ')
 }
 
 /** Состояние связи и очередь чеков: видно, что ещё не ушло на сервер и что сервер отклонил (SPEC-09). */

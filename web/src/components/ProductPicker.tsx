@@ -4,7 +4,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
 import { productTitle } from '../lib/battery'
-import { formatKg, formatOilStock, formatSom } from '../lib/format'
+import { formatOilStock, formatSom } from '../lib/format'
+import { qtyText } from '../lib/units'
 import { useDebounced } from '../lib/hooks'
 import { isShortCode, resolveEnter, resultsMatch, searchRank } from '../lib/pickerResults'
 import { useKeyboardTop } from '../lib/cashierMode'
@@ -400,6 +401,5 @@ export function ProductPicker({
 
 /** Остаток товара текстом. */
 export function stockText(p: Pick<Product, 'unit' | 'container_ml' | 'stock_qty'>): string {
-  if (p.unit === 'g') return formatKg(p.stock_qty)
-  return p.unit === 'ml' && p.container_ml ? formatOilStock(p.stock_qty, p.container_ml) : `${p.stock_qty} шт`
+  return p.unit === 'ml' && p.container_ml ? formatOilStock(p.stock_qty, p.container_ml) : qtyText(p.unit, p.stock_qty)
 }

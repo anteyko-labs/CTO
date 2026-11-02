@@ -21,9 +21,9 @@ import { FixButton } from '../components/Correction'
 import { ExportButton } from '../components/ExportButton'
 import { cappedWarning, colsIf, fetchAllPages, listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 
-/** За что последняя цена: канистра масла, килограмм или штука. */
+/** За что последняя цена: канистра масла, килограмм, метр или штука. */
 const perText = (r: { unit: string; container_ml: number | null }): string =>
-  r.unit === 'ml' && r.container_ml ? ` / ${unitQty(r.container_ml, 'ml')}` : r.unit === 'g' ? ' / кг' : ' / шт'
+  r.unit === 'ml' && r.container_ml ? ` / ${unitQty(r.container_ml, 'ml')}` : r.unit === 'g' ? ' / кг' : r.unit === 'mm' ? ' / м' : ' / шт'
 
 /** Статус накладной в долг по списку приходов; null — оплачена сразу или отменена. */
 function invoiceStatus(d: ReceiptListItem): InvoiceStatus | null {

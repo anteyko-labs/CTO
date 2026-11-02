@@ -1591,7 +1591,7 @@ pub async fn purchase_price_tx(
     if p.archived {
         return Err(invalid("товар в архиве: укажите цену у основной карточки"));
     }
-    // Те же единицы, что у цены последнего прихода в карточке: штука, канистра, кг, м (ADR-175).
+    // Те же единицы, что у цены последнего прихода в карточке: штука, канистра, кг, м (ADR-178).
     let per = crate::api::catalog::price_unit(&p.unit, p.container_ml);
     ops::lock_pool(&mut *conn, branch_id, product_id).await?;
     // Закупок не было — цена владельца становится «последней закупочной»: следующие продажи

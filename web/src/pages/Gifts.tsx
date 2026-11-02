@@ -5,16 +5,17 @@ import { ExportButton } from '../components/ExportButton'
 import { listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table } from '../components/ui'
 import { get, post, patch, qs } from '../lib/api'
-import { formatLiters, formatSom, parseLiters, todayBishkek } from '../lib/format'
+import { formatSom, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { GiftRule, Product } from '../lib/types'
+import type { GiftRule, Product, StockUnit } from '../lib/types'
+import { isKgM, parseQty, qtyText, unitShort } from '../lib/units'
 import { giftMinText, giftQtys, giftRuleStatus } from '../lib/giftRule'
 
 interface GiftReportRow {
   product_id: string
   name: string
-  unit: 'piece' | 'ml'
+  unit: StockUnit
   qty: number
   checks: number
   cost_tyiyn: number
@@ -62,7 +63,7 @@ function GiftReport() {
             {rows.map((r) => (
               <tr key={r.product_id}>
                 <td className="px-2 py-2 font-medium">{r.name}</td>
-                <td className="whitespace-nowrap px-2 py-2">{r.unit === 'ml' ? formatLiters(r.qty) : `${r.qty} шт`}</td>
+                <td className="whitespace-nowrap px-2 py-2">{qtyText(r.unit, r.qty)}</td>
                 <td className="px-2 py-2">{r.checks}</td>
                 <td className="px-2 py-2 md:text-right">
                   <Money value={r.cost_tyiyn} />
@@ -88,13 +89,17 @@ export default function Gifts() {
   const save = useAction()
   const toggle = useAction()
 
-  // Порог «от 3 л» у масла вводится литрами и хранится в мл, у остального — штуками.
-  const oil = trigger?.unit === 'ml'
-  const minUnits = !minText.trim() ? 0 : oil ? parseLiters(minText) : /^\d+$/.test(minText.trim()) ? Number(minText) : null
+  // Порог «от 3 л» у масла вводится литрами и хранится в мл, «от 2,5 кг»/«от 1,5 м» — тысячными
+  // (г, мм), у остального — штуками (ADR-178).
+  const triggerUnit: StockUnit = trigger?.unit ?? 'piece'
+  const minUnits = !minText.trim() ? 0 : parseQty(triggerUnit, minText)
+  // Подарком товар в кг или м быть не может (задача 006): сервер тоже отказывает.
+  const kgMGift = items.find((p) => isKgM(p.unit))
   const notFilled = missingWithFocus(
     [minUnits !== null, 'порог числом'],
     [Boolean(trigger), 'товар, к которому дарим'],
     [items.length > 0, 'хотя бы один подарок'],
+    [!kgMGift, `подарок не в кг и не в метрах (уберите «${kgMGift?.name ?? ''}»)`],
   )
 
   const create = () =>
@@ -148,8 +153,13 @@ export default function Gifts() {
             <ProductPicker autoFocus={false} placeholder="Найдите товар" onPick={setTrigger} />
           )}
         </Field>
-        <Field label={oil ? 'От скольки литров' : 'От скольки штук'} hint="Пусто — с любого количества">
-          <input inputMode="decimal" value={minText} onChange={(e) => setMinText(e.target.value)} placeholder={oil ? 'например, 3' : 'например, 2'} />
+        <Field label={triggerUnit === 'ml' ? 'От скольки литров' : triggerUnit === 'piece' ? 'От скольки штук' : `От скольки ${unitShort(triggerUnit)}`} hint="Пусто — с любого количества">
+          <input
+            inputMode="decimal"
+            value={minText}
+            onChange={(e) => setMinText(e.target.value)}
+            placeholder={triggerUnit === 'piece' ? 'например, 2' : 'например, 3'}
+          />
         </Field>
         <Field label="Можно подарить" required>
           <ProductPicker
@@ -204,7 +214,7 @@ export default function Gifts() {
                   {r.trigger_name}
                   {r.min_units > 0 && (
                     <span className="ml-1 font-normal text-slate-500">
-                      от {r.trigger_unit === 'ml' ? formatLiters(r.min_units) : `${r.min_units} шт.`}
+                      от {qtyText(r.trigger_unit, r.min_units)}
                     </span>
                   )}
                 </td>

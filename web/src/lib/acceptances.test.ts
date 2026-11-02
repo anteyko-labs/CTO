@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  inputUnit,
   acceptBody,
   acceptProblems,
   acceptedInput,
@@ -42,6 +43,7 @@ const line = (p: Partial<AcceptanceLine>): AcceptanceLine => ({
 const oil = line({ line_no: 2, product_id: 'p2', name: 'Shell 4 л', unit: 'ml', container_ml: 4000, invoice_qty: 20_000, barcodes: ['870'] })
 const loose = line({ line_no: 3, product_id: 'p3', name: 'Масло в розлив', unit: 'ml', container_ml: 4000, invoice_qty: 3500, barcodes: [] })
 const kg = line({ line_no: 4, product_id: 'p4', name: 'Аккумулятор лом', unit: 'g', invoice_qty: 12_500, barcodes: [] })
+const meters = line({ line_no: 5, product_id: 'p5', name: 'Шланг', unit: 'mm', invoice_qty: 2000, barcodes: [] })
 
 describe('показ и ввод количества', () => {
   it('штуки, канистры, литры, кг', () => {
@@ -49,6 +51,16 @@ describe('показ и ввод количества', () => {
     expect(nb(qtyWords(oil, 20_000))).toBe('5 кан. по 4 л')
     expect(nb(qtyWords(loose, 3500))).toBe('3,5 л')
     expect(nb(qtyWords(kg, 12_500))).toBe('12,5 кг')
+    expect(nb(qtyWords(meters, 1250))).toBe('1,25 м')
+  })
+  it('метры: «Принято, м», до 3 знаков, «1,25 из 2» (ADR-178)', () => {
+    expect(inputUnit(meters)).toBe('м')
+    expect(inputKind(meters)).toBe('decimal')
+    expect(parseAccepted(meters, '1,25')).toBe(1250)
+    expect(parseAccepted(meters, '1.5')).toBe(1500)
+    expect(parseAccepted(meters, '1,2345')).toBeNull()
+    expect(acceptedInput(meters, 1250)).toBe('1,25')
+    expect(diffText(meters, { qty: 1250 })).toBe('1,25 из 2')
   })
   it('канистры и штуки — целые, литры и кг — до 3 знаков', () => {
     expect(inputKind(line({}))).toBe('int')
@@ -68,6 +80,7 @@ describe('показ и ввод количества', () => {
     expect(scanStep(line({}))).toBe(1)
     expect(scanStep(oil)).toBe(4000)
     expect(scanStep(kg)).toBeNull()
+    expect(scanStep(meters)).toBeNull()
     expect(lineByCode([line({}), oil], '870')?.line_no).toBe(2)
     expect(lineByCode([line({}), oil], 'W712/75')?.line_no).toBe(1)
     expect(lineByCode([line({}), oil], 'нет')).toBeNull()

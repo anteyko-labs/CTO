@@ -7,6 +7,7 @@ import { get, newOpId, post, randomId } from '../lib/api'
 import { productTitle } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { isMilliKind } from '../lib/units'
 import { pourAmount, pourPricePerL } from '../lib/money'
 import { defaultLineKind } from '../lib/oilKind'
 import { PAYMENT_LABELS, type Employee, type Party, type Product, type Sale, type SaleLineKind, type Shift } from '../lib/types'
@@ -27,19 +28,19 @@ interface Line {
   sumText: string
 }
 
-/** Количество строки в её единицах: штуки, канистры, мл розлива или граммы. */
+/** Количество строки в её единицах: штуки, канистры, мл розлива, граммы или мм. */
 function lineQty(l: Line): number | null {
-  if (l.kind === 'pour' || l.kind === 'weight') {
+  if (isMilliKind(l.kind)) {
     const v = parseLiters(l.qtyText)
     return v && v > 0 ? v : null
   }
   return /^\d+$/.test(l.qtyText.trim()) && Number(l.qtyText) > 0 ? Number(l.qtyText) : null
 }
 
-/** Сумма по текущей цене продажи: канистры и штуки — по цене, розлив — от цены канистры, вес — за кг. */
+/** Сумма по текущей цене продажи: канистры и штуки — по цене, розлив — от цены канистры, вес — за кг, длина — за м. */
 function defaultSum(product: Pick<Product, 'unit' | 'container_ml' | 'sale_price_tyiyn'>, kind: SaleLineKind, qty: number): number {
   if (kind === 'pour') return pourAmount(qty, pourPricePerL(product) ?? 0)
-  if (kind === 'weight') return pourAmount(qty, product.sale_price_tyiyn)
+  if (kind === 'weight' || kind === 'length') return pourAmount(qty, product.sale_price_tyiyn)
   return qty * product.sale_price_tyiyn
 }
 
@@ -69,9 +70,9 @@ export function NoReceiptReturn({ onClose, touch = false, barrelOverL = 150 }: {
       const same = ls.find((l) => l.product.id === p.id && l.kind === kind && (kind === 'piece' || kind === 'container'))
       if (same)
         return ls.map((l) =>
-          l === same ? { ...l, qtyText: kind === 'weight' ? litersInput((lineQty(l) ?? 0) + 1000) : String((lineQty(l) ?? 0) + 1) } : l,
+          l === same ? { ...l, qtyText: isMilliKind(kind) ? litersInput((lineQty(l) ?? 0) + 1000) : String((lineQty(l) ?? 0) + 1) } : l,
         )
-      return [...ls, { key: randomId(), product: p, kind, qtyText: kind === 'weight' || kind === 'pour' ? '' : '1', sumText: '' }]
+      return [...ls, { key: randomId(), product: p, kind, qtyText: isMilliKind(kind) ? '' : '1', sumText: '' }]
     })
   const update = (key: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 
@@ -156,11 +157,11 @@ export function NoReceiptReturn({ onClose, touch = false, barrelOverL = 150 }: {
                       </div>
                     )}
                   </div>
-                  <Field label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}>
+                  <Field label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'length' ? 'Длина, м' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}>
                     <input
                       aria-label="Количество"
                       className={`w-24 ${big}`}
-                      inputMode={l.kind === 'pour' || l.kind === 'weight' ? 'decimal' : 'numeric'}
+                      inputMode={isMilliKind(l.kind) ? 'decimal' : 'numeric'}
                       value={l.qtyText}
                       onChange={(e) => update(l.key, { qtyText: e.target.value })}
                     />

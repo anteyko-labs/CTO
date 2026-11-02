@@ -8,10 +8,11 @@ import { linkCode } from '../lib/linkCode'
 import type { Product } from '../lib/types'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Modal } from './ui'
 import { stockText } from './ProductPicker'
+import { perWord } from '../lib/units'
 
-/** Цена продажи в строке найденного: за канистру, кг или штуку (себестоимости нет, I13). */
+/** Цена продажи в строке найденного: за канистру, кг, м или штуку (себестоимости нет, I13). */
 function priceText(p: Product): string {
-  const per = p.unit === 'g' ? ' за кг' : p.unit === 'ml' && p.container_ml ? ' за кан.' : p.unit === 'ml' ? ' за л' : ''
+  const per = p.unit === 'piece' ? '' : ` ${perWord(p.unit, p.container_ml)}`
   return `${formatSom(p.sale_price_tyiyn)}${per}`
 }
 

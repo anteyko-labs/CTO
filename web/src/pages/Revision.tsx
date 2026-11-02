@@ -15,8 +15,8 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, Pa
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { OilCountInput, type OilCount } from '../components/OilCountInput'
-import { formatDateTime, formatSom, litersInput, parseLiters, plural } from '../lib/format'
-import { countText, kgInput, oilFields, parseKg, parseOil, viscosityFromName, viscosityKey } from '../lib/units'
+import { formatDateTime, formatSom, plural } from '../lib/format'
+import { countText, oilFields, parseOil, parseQty, qtyInputText, unitShort, viscosityFromName, viscosityKey, type StockUnit } from '../lib/units'
 import { errorText, useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
@@ -84,7 +84,7 @@ interface Line {
   name: string
   article: string
   barcodes: string[]
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   expected_qty: number
   counted_qty: number | null
@@ -140,17 +140,11 @@ const STATUS: Record<Head['status'], [string, 'amber' | 'green' | 'slate']> = {
 /** Масло в таре: вводится «кан. + л» (SPEC-36 §13). */
 const oilTare = (l: Pick<Line, 'unit' | 'container_ml'>): number | null => (l.unit === 'ml' && l.container_ml ? l.container_ml : null)
 
-/** Поле пересчёта: штуки целым числом, масло без тары литрами, на вес — кг; все дробные — до 3 знаков. */
-function parseCount(l: Line, text: string): number | null {
-  const t = text.trim()
-  if (!t) return null
-  if (l.unit === 'ml') return parseLiters(t)
-  if (l.unit === 'g') return parseKg(t)
-  return /^\d+$/.test(t) ? Number(t) : null
-}
+/** Поле пересчёта: штуки целым числом, масло без тары литрами, на вес — кг, в длину — м; дробные — до 3 знаков. */
+const parseCount = (l: Line, text: string): number | null => parseQty(l.unit, text)
 
-/** Посчитанное в поле: литры или кг — с запятой; граммы в поле не показываются (ошибка ×1000). */
-const countInput = (l: Line, q: number): string => (l.unit === 'ml' ? litersInput(q) : l.unit === 'g' ? kgInput(q) : String(q))
+/** Посчитанное в поле: литры, кг или м — с запятой; граммы и мм в поле не показываются (ошибка ×1000). */
+const countInput = (l: Line, q: number): string => qtyInputText(l.unit, q)
 
 /** Строки ревизии перечитываются раз в 5 с и при возврате на вкладку: каждый видит общий итог. */
 const REFRESH_MS = 5_000
@@ -863,7 +857,7 @@ function Draft({
                 </span>
               )}
               {codesOf('need_qty') && (
-                <span>Сканы без связи не учтены — товар на вес или масло без тары, впишите количество в строке; коды: {codesOf('need_qty')}.</span>
+                <span>Сканы без связи не учтены — товар на вес, в метрах или масло без тары, впишите количество в строке; коды: {codesOf('need_qty')}.</span>
               )}
               {lostNotes.map((t) => (
                 <span key={t}>{t}</span>
@@ -1127,8 +1121,8 @@ function Draft({
                             data-count={l.product_id}
                             className="w-24"
                             inputMode={l.unit === 'piece' ? 'numeric' : 'decimal'}
-                            placeholder={`${mode === 'add' ? '+ ' : ''}${l.unit === 'ml' ? 'л' : l.unit === 'g' ? 'кг' : 'шт'}`}
-                            aria-label={l.unit === 'ml' ? 'Пересчитано, л' : l.unit === 'g' ? 'Пересчитано, кг' : 'Пересчитано, шт'}
+                            placeholder={`${mode === 'add' ? '+ ' : ''}${unitShort(l.unit)}`}
+                            aria-label={`Пересчитано, ${unitShort(l.unit)}`}
                             value={edit ?? (mode === 'add' || l.counted_qty === null ? '' : countInput(l, l.counted_qty))}
                             onChange={(e) => putEdit(l, e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}

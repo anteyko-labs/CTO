@@ -170,7 +170,7 @@ async fn create(
     )
     .execute(&mut *tx)
     .await?;
-    // Подарком товар в кг или метрах быть не может (ADR-175): «1 г в подарок» — бессмыслица.
+    // Подарком товар в кг или метрах быть не может (ADR-178): «1 г в подарок» — бессмыслица.
     if let Some(name) = sqlx::query_scalar!(
         "select name from products where id = any($1) and unit in ('g', 'mm') order by name limit 1",
         &keep

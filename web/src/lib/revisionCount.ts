@@ -347,19 +347,25 @@ export function patchIfNewer<L extends VersionedLine>(line: L, version: number |
   return version === undefined ? next : { ...next, version }
 }
 
-/** Найденное на полке: целые штуки (у масла — канистры) и литры початой тары, мл. */
+/** Найденное на полке: целые штуки (у масла — канистры) и литры початой тары, мл; у кг и м — `milli`. */
 export interface ShelfInput {
   cans: number
   ml: number
+  /** Товар на вес или в длину: введено в кг (г) или м (мм) — ADR-178. */
+  milli?: { unit: 'g' | 'mm'; qty: number }
 }
 
 /**
  * Найденное — в единицах товара, который в ту же минуту завёл другой (у него могут быть другие
  * единицы и тара): штуки — штуками, канистры — по таре этого товара, масло без тары — литрами.
- * Несовместимо (литры к штучному, штуки к маслу без тары или к весовому) — `null`: молча не
- * прибавляем, человек впишет найденное в единицах товара.
+ * кг — к кг, м — к м. Несовместимо (литры к штучному, штуки к маслу без тары или к весовому, кг к
+ * метрам) — `null`: молча не прибавляем, человек впишет найденное в единицах товара. Ноль — ноль.
  */
 export function qtyInUnits(input: ShelfInput, p: { unit: string; container_ml: number | null }): number | null {
+  if (input.milli) {
+    if (input.milli.qty === 0) return 0
+    return p.unit === input.milli.unit ? input.milli.qty : null
+  }
   if (p.unit === 'piece') return input.ml > 0 ? null : input.cans
   if (p.unit === 'ml' && p.container_ml) return input.cans * p.container_ml + input.ml
   if (p.unit === 'ml') return input.cans > 0 ? null : input.ml

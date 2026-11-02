@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError, type Page } from './api'
-import { cappedWarning, EXPORT_MAX_ROWS, fetchAllPages, fileName, periodText, tableSheet, xl } from './exportTable'
+import { cappedWarning, EXPORT_MAX_ROWS, fetchAllPages, fileName, periodText, tableSheet, unitName, xl } from './exportTable'
 
 /** Подставной список на сервере: `n` строк, страницы по limit/offset, как paging.rs. */
 function fakeServer(n: number, failAt?: number) {
@@ -55,6 +55,9 @@ describe('выгрузка таблиц', () => {
     expect(xl.money(1)).toEqual({ money: 1 })
     expect(xl.units(4500, 'ml')).toEqual({ qty: 4500, scale: 3 })
     expect(xl.units(3, 'piece')).toEqual({ int: 3 })
+    expect(xl.units(1250, 'mm')).toEqual({ qty: 1250, scale: 3 })
+    expect(xl.units(2500, 'g')).toEqual({ qty: 2500, scale: 3 })
+    expect(['piece', 'ml', 'g', 'mm'].map((u) => unitName(u as 'piece'))).toEqual(['шт', 'л', 'кг', 'м'])
     expect(xl.liters(946)).toEqual({ qty: 946, scale: 3 })
     expect(xl.date('2026-10-31T05:00:00Z')).toEqual({ date: '2026-10-31' })
     expect(xl.date(null)).toBeNull()

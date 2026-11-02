@@ -109,6 +109,17 @@ describe('Остатки', () => {
   })
 })
 
+describe('Остатки в метрах (ADR-178)', () => {
+  it('подытог только метрами — числом с тремя знаками, итог склада складывает мм', () => {
+    const hose = { ...oil, id: 'h', name: 'Шланг', unit: 'mm', container_ml: null, stock_qty: 1250, min_stock: 0 } as ProductRow
+    const g: CategoryTotal = { category_id: 'c2', name: 'Шланги', kind: 'other', count: 1, pieces: 0, ml: 0, grams: 0, mm: 1250, container_ml: null }
+    const s = stockSheet({ groups: [{ total: g, rows: [hose] }], total: { count: 1 }, owner: false })
+    expect(cells(s.rows[0]).slice(3, 5)).toEqual([{ qty: 1250, scale: 3 }, 'м'])
+    expect(cells(s.rows[1])[3]).toEqual({ qty: 1250, scale: 3 })
+    expect(cells(s.rows[2])[3]).toEqual({ qty: 1250, scale: 3 })
+  })
+})
+
 describe('Продаваемые товары', () => {
   const r: TopProduct & { rank: number } = { rank: 1, product_id: 'p', name: 'Фильтр', unit: 'piece', container_ml: null, category_id: 'c', qty: 7, amount_tyiyn: 70_000, checks: 5, profit_tyiyn: 20_000 }
   it('прибыль — только когда её показывает экран', () => {
@@ -216,6 +227,7 @@ describe('Отчёт смены', () => {
   it('количество строки по виду: розлив — литры, вес — кг, канистры, штуки', () => {
     expect(kindQty('pour', 1500)).toEqual({ qty: { qty: 1500, scale: 3 }, unit: 'л' })
     expect(kindQty('weight', 2350)).toEqual({ qty: { qty: 2350, scale: 3 }, unit: 'кг' })
+    expect(kindQty('length', 1250)).toEqual({ qty: { qty: 1250, scale: 3 }, unit: 'м' })
     expect(kindQty('container', 2)).toEqual({ qty: { int: 2 }, unit: 'кан.' })
     expect(kindQty('piece', 3)).toEqual({ qty: { int: 3 }, unit: 'шт' })
   })

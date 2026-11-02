@@ -1,11 +1,12 @@
 // Строка нового прихода: количество, сумма по закупке и по цене продажи; подсказка прошлой закупки
 // (SPEC-03, SPEC-27). Масло — канистрами или литрами (режим «кан. | л», SPEC-36 §13, ADR-123), на вес —
-// килограммами. Только целые тыйыны, мл и граммы; деление — одно, с округлением (divRound).
+// килограммами, в длину — метрами (ADR-178). Только целые тыйыны, мл, граммы и мм; деление — одно, с
+// округлением (divRound).
 import { formatLiters, formatSom, litersInput, parseLiters, parsePermille, parseSom, somInput } from './format'
 import { divRound, markupPermille, saleFromMarkup } from './money'
 import type { PriceEntry } from './purchasePrice'
 import type { LastReceipt, Product } from './types'
-import { byThousandths, kgInput, oilCountText, parseKg, perCan, perLiter } from './units'
+import { byThousandths, isKgM, milliInput, oilCountText, parseMilli, perCan, perLiter, priceUnits } from './units'
 
 export const isOil = (p: Pick<Product, 'unit' | 'container_ml'>): p is Product & { container_ml: number } =>
   p.unit === 'ml' && Boolean(p.container_ml)
@@ -71,21 +72,21 @@ export interface LineInput {
  * оприходование сервер считает от цены канистры, поэтому и здесь — от неё (одно округление).
  * Канистрами, но вводили цену за литр (`literPrice`, ADR-150): в приходе сумма = divRound(цена за л ×
  * мл, 1000) — одно округление, без округлённой цены канистры; в оприходовании — от цены канистры.
- * На вес: кг до 3 знаков, цена за кг, сумма = divRound(цена × г, 1000). `salePrice` — новая цена
- * продажи строки (SPEC-28 §1), за штуку, канистру или кг; пусто — текущая цена товара.
+ * На вес и в длину: кг (м) до 3 знаков, цена за кг (м), сумма = divRound(цена × г (мм), 1000). `salePrice` —
+ * новая цена продажи строки (SPEC-28 §1), за штуку, канистру, кг или м; пусто — текущая цена товара.
  */
 export function lineCalc(l: LineInput, stockIn = false): LineCalc | string {
   const p = l.product
   const liters = inLiters(p, l.mode ?? defaultMode(stockIn))
-  const weight = p.unit === 'g'
+  const weight = isKgM(p.unit)
   let qty: number | null
-  if (weight) qty = positive(parseKg(l.count))
+  if (weight) qty = positive(parseMilli(l.count))
   else if (liters) qty = positive(parseLiters(l.count))
   else {
     const n = parseCount(l.count)
     qty = n === null ? null : isOil(p) ? n * p.container_ml : n
   }
-  if (qty === null) return weight ? 'укажите килограммы' : liters ? 'укажите литры' : isOil(p) ? 'укажите число канистр' : 'укажите количество'
+  if (qty === null) return weight ? (p.unit === 'mm' ? 'укажите метры' : 'укажите килограммы') : liters ? 'укажите литры' : isOil(p) ? 'укажите число канистр' : 'укажите количество'
   const price = parseSom(l.price)
   if (price === null) return 'укажите цену'
   const salePrice = l.salePrice === undefined || l.salePrice.trim() === '' ? p.sale_price_tyiyn : parseSom(l.salePrice)
@@ -122,14 +123,14 @@ export function lineCalc(l: LineInput, stockIn = false): LineCalc | string {
   return { n, qty, cost, sale, salePrice, unitPrice }
 }
 
-/** Поле количества новой строки: штука, канистра (в литрах — её объём), килограмм. */
+/** Поле количества новой строки: штука, канистра (в литрах — её объём), килограмм или метр. */
 export function firstCount(p: Pick<Product, 'unit' | 'container_ml'>, mode: QtyMode | undefined): string {
   return inLiters(p, mode) ? litersInput(p.container_ml ?? 0) : '1'
 }
 
-/** Повторный скан: ещё штука, канистра или килограмм; неразобранное — заново с одной. */
+/** Повторный скан: ещё штука, канистра, килограмм или метр; неразобранное — заново с одной. */
 export function nextCount(p: Pick<Product, 'unit' | 'container_ml'>, mode: QtyMode | undefined, count: string): string {
-  if (p.unit === 'g') return kgInput((positive(parseKg(count)) ?? 0) + 1000)
+  if (isKgM(p.unit)) return milliInput((positive(parseMilli(count)) ?? 0) + 1000)
   if (inLiters(p, mode)) {
     const c = p.container_ml ?? 0
     return litersInput((positive(parseLiters(count)) ?? 0) + c)
@@ -283,9 +284,9 @@ export function lastText(r: LastReceipt, per?: string, containerMl?: number | nu
   return ['в прошлый раз: ' + formatSom(r.price_tyiyn) + (per ? ` ${per}` : '') + liter, d, r.supplier_name].filter(Boolean).join(', ')
 }
 
-/** Единица прошлой закупки рядом с ценой: у масла — канистра, на вес — кг (SPEC-36 §13). */
+/** Единица прошлой закупки рядом с ценой: у масла — канистра, на вес — кг, в длину — м (SPEC-36 §13). */
 export const lastPer = (p: Pick<Product, 'unit' | 'container_ml'>): string | undefined =>
-  isOil(p) ? 'за канистру' : p.unit === 'g' ? 'за кг' : undefined
+  isOil(p) ? 'за канистру' : p.unit === 'g' ? 'за кг' : p.unit === 'mm' ? 'за м' : undefined
 
 /** Насколько цена по накладной может отойти от прошлой закупки без предупреждения, %. */
 export const PRICE_JUMP_PERCENT = 30
@@ -304,11 +305,11 @@ export function priceJumpText(price: string, last: Pick<LastReceipt, 'price_tyiy
 }
 
 /**
- * Цена по накладной за единицу цены товара (штуку, канистру, килограмм) из проведённой строки:
+ * Цена по накладной за единицу цены товара (штуку, канистру, килограмм, метр) из проведённой строки:
  * сумма строки × единица / количество, до тыйына. Для колонок «наценка» и «цена продажи» накладной.
  */
-export function unitCost(l: { unit: string; container_ml: number | null; qty: number; cost_tyiyn: number }): number | null {
-  const per = l.unit === 'ml' && l.container_ml ? l.container_ml : l.unit === 'ml' || l.unit === 'g' ? 1000 : 1
+export function unitCost(l: { unit: Product['unit']; container_ml: number | null; qty: number; cost_tyiyn: number }): number | null {
+  const per = priceUnits(l.unit, l.container_ml)
   const n = l.cost_tyiyn * per
   return l.qty > 0 && Number.isSafeInteger(n) ? divRound(n, l.qty) : null
 }

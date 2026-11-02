@@ -44,6 +44,34 @@ describe('единица и объём канистры', () => {
     expect(stockText(1250, 'g')).toBe(formatKg(1250))
   })
 
+  it('штуки ↔ кг/м по «1 шт = X кг/м», как на сервере (ADR-178)', () => {
+    // 1 шт = 0,5 кг: 3 шт → 1,5 кг; цена 400 с за шт → 800 с за кг.
+    const toKg = plan(unitPlan('piece', null, { unit: 'g', containerMl: null, pieceMl: null, pieceQty: 500, keep: 'count' }))
+    expect(recount(3, toKg)).toBe(1500)
+    expect(priceAfter(40_000, toKg)).toBe(80_000)
+    expect(toKg.reset).toBeUndefined()
+    // 1 шт = 2,5 м: 5 м → 2 шт; 10 м не делится — null; цена 100 с за м → 250 с за шт.
+    const toPiece = plan(unitPlan('mm', null, { unit: 'piece', containerMl: null, pieceMl: null, pieceQty: 2500, keep: 'count' }))
+    expect(recount(5000, toPiece)).toBe(2)
+    expect(recount(6000, toPiece)).toBeNull()
+    expect(priceAfter(10_000, toPiece)).toBe(25_000)
+    expect(zeroOnly('piece', 'mm', true)).toBe(false)
+    expect(zeroOnly('piece', 'mm')).toBe(true)
+    expect(zeroOnly('g', 'mm', true)).toBe(true)
+    expect(unitPlan('piece', null, { unit: 'mm', containerMl: null, pieceMl: null, pieceQty: 0, keep: 'count' })).toMatch(/метров/)
+  })
+
+  it('кг ↔ м ↔ л — только без остатка, цена канистры → за кг/м', () => {
+    const gm = plan(unitPlan('g', null, { unit: 'mm', containerMl: null, pieceMl: null, keep: 'count' }))
+    expect(gm.reset).toBe(true)
+    expect(priceAfter(30_000, gm)).toBe(30_000)
+    const oilM = plan(unitPlan('ml', 4000, { unit: 'mm', containerMl: null, pieceMl: null, keep: 'count' }))
+    expect(priceAfter(200_000, oilM)).toBe(50_000)
+    expect(unitPlan('mm', null, { unit: 'mm', containerMl: null, pieceMl: null, keep: 'count' })).toMatch(/уже в метрах/)
+    expect(stockText(1250, 'mm')).toBe('1,25\u00a0м')
+    expect(unitText('mm', null)).toBe('метры')
+  })
+
   it('отказы — словами', () => {
     expect(unitPlan('ml', 4000, { unit: 'ml', containerMl: 4000, pieceMl: null, keep: 'count' })).toMatch(/тот же/)
     expect(unitPlan('piece', null, { unit: 'piece', containerMl: null, pieceMl: null, keep: 'count' })).toMatch(/уже в штуках/)

@@ -529,7 +529,7 @@ function EditLine({ line: l, mark, onClose, onSave }: { line: AcceptanceLine; ma
               placeholder="Название или штрихкод товара"
               onPick={(p) => {
                 if (p.unit !== l.unit) {
-                  setError('Выберите товар той же единицы учёта (штуки, литры, кг)')
+                  setError('Выберите товар той же единицы учёта (штуки, литры, кг, метры)')
                   return
                 }
                 setError(null)

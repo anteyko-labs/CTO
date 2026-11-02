@@ -22,6 +22,7 @@ import { PointsRuleField } from './PointsRuleField'
 import { ProductUnitModal } from './ProductUnitModal'
 import { parsePointsRule, pointsChanged, pointsDraft, type PointsDraft } from '../lib/points'
 import { unitText } from '../lib/unitChange'
+import { isKgM, isMilli, parseQty, perWord, unitShort, type StockUnit } from '../lib/units'
 import { ProductCostBlock } from './ProductCostBlock'
 import { PurchasePriceInput } from './PurchasePriceInput'
 
@@ -44,7 +45,8 @@ function initialForm(
   presetCategoryId?: string,
   preset?: CardPreset,
 ): Form {
-  const oil = p?.unit === 'ml' || p?.unit === 'g'
+  // Литры, кг и м — тысячными (ADR-178).
+  const oil = p ? isMilli(p.unit) : false
   const toLiters = litersInput
   return {
     category_id: p?.category_id ?? (preset?.categoryId || presetCategoryId) ?? '',
@@ -128,12 +130,15 @@ export function ProductFormModal({
   )
   // Единица — у товара (задача 002, П4): новый товар — по виду категории, пока не выбрали другую;
   // у заведённого — его единица, меняется окном «Единица и объём канистры» (только владелец).
-  // Килограммы — у любого товара (ADR-174): из строки Умага «кг» — сразу в килограммах.
-  const [unitChoice, setUnitChoice] = useState<'ml' | 'piece' | 'g' | null>(preset?.unit ?? null)
+  // Килограммы и метры — у любого товара (ADR-174, ADR-178): из строки Умага «кг»/«м» — сразу в них.
+  const [unitChoice, setUnitChoice] = useState<StockUnit | null>(preset?.unit ?? null)
   const [unitOpen, setUnitOpen] = useState(false)
-  const unitNow = product ? product.unit : (unitChoice ?? (category?.kind === 'oil' ? 'ml' : 'piece'))
+  const unitNow: StockUnit = product ? product.unit : (unitChoice ?? (category?.kind === 'oil' ? 'ml' : 'piece'))
   const isOil = unitNow === 'ml'
-  const isKg = unitNow === 'g'
+  /** Кг или м: количество и цена — за 1000 г (мм). */
+  const isKgMUnit = isKgM(unitNow)
+  /** Минимальный остаток — тысячными у л, кг, м. */
+  const milliMin = isMilli(unitNow)
   const isFilter = category?.kind === 'filter'
   // Баллы товара (задача 002, П1): меняет владелец.
   const [points, setPoints] = useState<PointsDraft>(() => pointsDraft(product?.points_mode, product?.points_value))
@@ -204,7 +209,7 @@ export function ProductFormModal({
   const parsed = () => {
     const sale = parseSom(form.sale_price || '0')
     const container = isOil ? parseLiters(form.container_l) : null
-    const min = isOil || isKg ? parseLiters(form.min_stock || '0') : /^\d+$/.test(form.min_stock.trim() || '0') ? Number(form.min_stock || 0) : null
+    const min = parseQty(unitNow, form.min_stock.trim() || '0')
     if (sale === null) throw new Error('Неверная цена продажи')
     if (isOil && (!container || container <= 0)) throw new Error('Укажите объём канистры в литрах')
     if (min === null) throw new Error('Неверный минимальный остаток')
@@ -611,19 +616,16 @@ export function ProductFormModal({
           </div>
         )}
         {!editing && category && (
-          <Field label="Учитывать" hint="Масло — в литрах; что продаётся только целиком — в штуках; на вес — в килограммах">
-            <select
-              data-testid="product-unit"
-              value={unitNow}
-              onChange={(e) => setUnitChoice(e.target.value as 'ml' | 'piece' | 'g')}
-            >
-              <option value="ml">в литрах (канистра и розлив)</option>
+          <Field label="Учитывать" hint="Масло — в литрах; что продаётся только целиком — в штуках; на вес — в кг; провод, шланг — в метрах">
+            <select data-testid="product-unit" value={unitNow} onChange={(e) => setUnitChoice(e.target.value as StockUnit)}>
               <option value="piece">в штуках</option>
+              <option value="ml">в литрах (канистра и розлив)</option>
               <option value="g">в килограммах (цена за кг)</option>
+              <option value="mm">в метрах (цена за м)</option>
             </select>
           </Field>
         )}
-        {editing && product && (
+        {editing && product && !product.system_role && (
           <Field
             label="Учитывается"
             hint={owner ? 'Единицу и объём канистры меняет владелец: остаток пересчитается' : 'Единицу меняет владелец'}
@@ -673,7 +675,7 @@ export function ProductFormModal({
           </Field>
         ))}
         <Field
-          label={isOil ? 'Цена канистры, с' : isKg ? 'Цена продажи за кг, с' : 'Цена продажи, с'}
+          label={isOil ? 'Цена канистры, с' : isKgMUnit ? `Цена продажи ${perWord(unitNow)}, с` : 'Цена продажи, с'}
           required
           hint={
             branchPrices ? (
@@ -710,15 +712,15 @@ export function ProductFormModal({
             entry={cost}
             shown={costPer}
             containerMl={costTare}
-            unitWord={isOil ? 'за канистру' : isKg ? 'за кг' : 'за шт'}
+            unitWord={isOil ? 'за канистру' : perWord(unitNow)}
             sale={shownSale}
             hint="Необязательно: по ней продажа без остатка возьмёт себестоимость; с первым приходом — средняя"
             onChange={setCost}
             onShown={setCostShown}
           />
         )}
-        <Field label={isOil ? 'Минимальный остаток, л' : isKg ? 'Минимальный остаток, кг' : 'Минимальный остаток, шт'}>
-          <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
+        <Field label={`Минимальный остаток, ${unitShort(unitNow)}`}>
+          <input inputMode={milliMin ? 'decimal' : 'numeric'} value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
         <PointsRuleField
           inheritLabel="как в категории"

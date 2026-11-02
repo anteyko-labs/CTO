@@ -538,7 +538,7 @@ async fn prepare_line(
             div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
             crate::domain::money::canister_pour_price(p.sale_price, c).unwrap_or(0),
         ),
-        // На вес: граммы × цена за кг (ADR-048); в метрах — миллиметры × цена за м (ADR-175).
+        // На вес: граммы × цена за кг (ADR-048); в метрах — миллиметры × цена за м (ADR-178).
         ("weight", "g", _) | ("length", "mm", _) => (
             l.qty,
             div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
@@ -561,7 +561,7 @@ async fn prepare_line(
                 ));
             }
             // Строка штуками у товара в кг/м или «на вес» у метрового (старая касса не знает
-            // метров, ADR-175) — 409 «обновите строку»: количество в другой единице.
+            // метров, ADR-178) — 409 «обновите строку»: количество в другой единице.
             let measured = matches!(p.unit.as_str(), "g" | "mm")
                 || matches!(l.kind.as_str(), "weight" | "length");
             if !offline && measured {

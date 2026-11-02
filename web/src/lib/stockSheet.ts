@@ -1,8 +1,8 @@
 // «Склад → Остатки» (SPEC-36 §14, ADR-125): строки по категориям, подытоги групп и лист остатков на
 // дату. Подытоги и суммы считает сервер (`category_totals`); здесь — только показ и печать.
-import { formatDateTime, formatKg, formatLiters, formatSomExact } from './format'
+import { formatDateTime, formatKg, formatLiters, formatMeters, formatSomExact } from './format'
 import type { CategoryTotal, ProductRow } from './types'
-import { oilCountText, qtyText, viscosityFromName } from './units'
+import { isKgM, oilCountText, perWord, qtyText, viscosityFromName } from './units'
 
 export interface StockGroup {
   total: CategoryTotal
@@ -20,7 +20,7 @@ export function groupRows(items: readonly ProductRow[], totals: readonly Categor
   return totals.map((t) => ({ total: t, rows: by.get(t.category_id) ?? [] }))
 }
 
-/** Остаток строки: масло в таре — «34,5 л · 8 кан. + 2,5 л», вес — кг, остальное — штуки. */
+/** Остаток строки: масло в таре — «34,5 л · 8 кан. + 2,5 л», вес — кг, длина — м, остальное — штуки. */
 export function rowQty(p: Pick<ProductRow, 'unit' | 'container_ml' | 'stock_qty'>): string {
   if (p.unit === 'ml' && p.container_ml) {
     const cans = oilCountText(p.stock_qty, p.container_ml)
@@ -30,20 +30,24 @@ export function rowQty(p: Pick<ProductRow, 'unit' | 'container_ml' | 'stock_qty'
   return qtyText(p.unit, p.stock_qty)
 }
 
-/** Количество группы: штуки, масло литрами (одна тара — и «кан. + л»), вес в кг. */
-export function groupQty(t: Pick<CategoryTotal, 'pieces' | 'ml' | 'grams' | 'container_ml'>): string {
+/** Подытог для сложения: штуки, мл, граммы, мм (у прежнего ответа сервера мм нет) и тара. */
+export type QtyTotal = Pick<CategoryTotal, 'pieces' | 'ml' | 'grams' | 'mm' | 'container_ml'>
+
+/** Количество группы: штуки, масло литрами (одна тара — и «кан. + л»), вес в кг, длина в м. */
+export function groupQty(t: QtyTotal): string {
   const parts: string[] = []
   if (t.pieces !== 0) parts.push(`${t.pieces} шт`)
   if (t.ml !== 0) parts.push(t.container_ml ? rowQty({ unit: 'ml', container_ml: t.container_ml, stock_qty: t.ml }) : formatLiters(t.ml))
   if (t.grams !== 0) parts.push(formatKg(t.grams))
+  if ((t.mm ?? 0) !== 0) parts.push(formatMeters(t.mm ?? 0))
   return parts.join(' · ') || '0'
 }
 
 /** Итог склада — сумма подытогов (целые числа, без тары: она у групп разная). */
-export function stockTotal(totals: readonly CategoryTotal[]): Pick<CategoryTotal, 'pieces' | 'ml' | 'grams' | 'container_ml'> {
+export function stockTotal(totals: readonly CategoryTotal[]): QtyTotal & { mm: number } {
   return totals.reduce(
-    (a, t) => ({ pieces: a.pieces + t.pieces, ml: a.ml + t.ml, grams: a.grams + t.grams, container_ml: null }),
-    { pieces: 0, ml: 0, grams: 0, container_ml: null as number | null },
+    (a, t) => ({ pieces: a.pieces + t.pieces, ml: a.ml + t.ml, grams: a.grams + t.grams, mm: a.mm + (t.mm ?? 0), container_ml: null }),
+    { pieces: 0, ml: 0, grams: 0, mm: 0, container_ml: null as number | null },
   )
 }
 
@@ -56,10 +60,10 @@ export function rowViscosity(p: Pick<ProductRow, 'attrs' | 'name' | 'category_ki
   return guess ? { text: guess, fromName: true } : null
 }
 
-/** За что цена: канистра, килограмм, штука. */
+/** За что цена: канистра, килограмм, метр, штука. */
 export function pricePer(p: Pick<ProductRow, 'unit' | 'container_ml'>): string {
   if (p.unit === 'ml' && p.container_ml) return `за ${formatLiters(p.container_ml)}`
-  if (p.unit === 'g') return 'за кг'
+  if (isKgM(p.unit)) return perWord(p.unit)
   if (p.unit === 'ml') return 'за л'
   return ''
 }

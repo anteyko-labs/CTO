@@ -101,5 +101,13 @@ describe('себестоимость в карточке (задача 003, Н7)
   it('цена с литром: «1 800 с за канистру 4 л · 450 с за л», штука — без литра', () => {
     expect(nb(priceWithLiter(180_000, oil))).toBe('1 800 с за канистру 4 л · 450 с за л')
     expect(nb(priceWithLiter(35_000, { unit: 'piece', container_ml: null }))).toBe('350 с за шт')
+    expect(nb(priceWithLiter(12_000, { unit: 'mm', container_ml: null }))).toBe('120 с за м')
+    expect(nb(priceWithLiter(12_000, { unit: 'g', container_ml: null }))).toBe('120 с за кг')
+  })
+
+  it('кг и м без остатка: наценка к последней закупке за кг (м) — как её отдал сервер (задача 006)', () => {
+    // Последняя закупка 100 с за м, продажа 150 с за м — наценка 50 %, а не ×1000.
+    const s = costSummary({ unit: 'mm', container_ml: null, sale_price_tyiyn: 15_000, stock_qty: 0, stock_value_tyiyn: 0, last_purchase_price_tyiyn: 10_000 })
+    expect(nb(s.markup ?? '')).toBe('цена продажи 150 с — наценка 50,0 % к последней закупке')
   })
 })

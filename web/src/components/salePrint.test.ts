@@ -100,6 +100,17 @@ describe('строки товарного чека (ADR-130)', () => {
     expect(t).not.toContain('усл.')
     expect(t).toContain(`Фильтр W712 1 шт × ${som(70000)} ${som(70000)}`)
   })
+
+  it('строка в метрах — «1,5 м × …/м», на вес — «/кг» (ADR-178)', () => {
+    const lines = [
+      l({ name: 'Шланг', kind: 'length', qty: 1500, unit_price_tyiyn: 20000, amount_tyiyn: 30000 }),
+      l({ name: 'Солидол', kind: 'weight', qty: 2500, unit_price_tyiyn: 10000, amount_tyiyn: 25000 }),
+    ]
+    const t = plain(saleHtml(sale({ lines } as unknown as Partial<Sale>), null))
+    const som = (x: number) => plain(formatSomExact(x))
+    expect(t).toContain(`Шланг 1,5 м × ${som(20000)}/м ${som(30000)}`)
+    expect(t).toContain(`Солидол 2,5 кг × ${som(10000)}/кг ${som(25000)}`)
+  })
 })
 
 describe('строка «Скидка» в печатном чеке (задача 003 Н3)', () => {

@@ -1,9 +1,10 @@
 // Позиция списка старой программы → поля новой карточки товара (SPEC-20, SPEC-29 §1): масло —
-// объём тары из названия, цена и закупка за литр пересчитываются за канистру.
+// объём тары из названия, цена и закупка за литр пересчитываются за канистру; строки «кг» и «м» —
+// товар в килограммах и метрах, цена и закупка за кг (м) как есть (ADR-174, ADR-178).
 import { litersInput, somInput } from './format'
 import { divRound } from './money'
 import type { Category, OldCatalogHit } from './types'
-import { isMeasureCode, isMeasureUnit, productCodes, umagCodes } from './umagCodes'
+import { isMeasureCode, isMeasureUnit, measureOf, productCodes, productUnitOf, umagCodes } from './umagCodes'
 import { containerFromName } from './xlsx'
 
 export interface CardPreset {
@@ -16,12 +17,12 @@ export interface CardPreset {
   /** Цена продажи и закупка в сомах строкой — за штуку или канистру. */
   price: string
   cost: string
-  /** Строка Умага «кг»/«килограмм» — товар в килограммах, цена и закупка за кг (ADR-174). */
-  unit?: 'g'
+  /** Строка Умага «кг» или «м» — товар в килограммах (метрах), цена и закупка за кг (м) (ADR-174, ADR-178). */
+  unit?: 'g' | 'mm'
 }
 
 /** Единица «килограмм» в старой программе: «кг», «килограмм». */
-export const isKgUnit = (unit: string): boolean => /^(кг|килограмм[а-я]*)\.?$/.test(unit.trim().toLowerCase())
+export const isKgUnit = (unit: string): boolean => measureOf(unit) === 'kg'
 
 /** Единица «литр» в старой программе: «л», «литр», «Литр». */
 export const isLiterUnit = (unit: string): boolean => /литр|^л\.?$|л$/i.test(unit.trim())
@@ -35,6 +36,12 @@ function cardBarcode(h: OldCatalogHit, scanned: string): string {
   if (!isMeasureUnit(h.unit)) return scanned || h.barcode
   if (scanned && !isMeasureCode(scanned, h.unit)) return scanned
   return productCodes(h.codes ?? umagCodes(h), h.unit)[0] ?? ''
+}
+
+/** Единица карточки — сервера (`product_unit`), у прежнего ответа — по колонке единицы; только кг и м. */
+function kgOrMeters(h: OldCatalogHit): { unit?: 'g' | 'mm' } {
+  const u = h.product_unit ?? productUnitOf(h.unit)
+  return u === 'g' || u === 'mm' ? { unit: u } : {}
 }
 
 /**
@@ -65,6 +72,6 @@ export function presetFromHit(h: OldCatalogHit, categories: Category[], sticky =
     liters: ml ? litersInput(ml) : '',
     price: h.price_tyiyn && !unknownTare ? somInput(per(h.price_tyiyn)) : '',
     cost: h.cost_tyiyn && !unknownTare ? somInput(per(h.cost_tyiyn)) : '',
-    ...(isKgUnit(h.unit) ? { unit: 'g' as const } : {}),
+    ...kgOrMeters(h),
   }
 }

@@ -3,6 +3,8 @@
 // похожие на код. «Доп. код» в выгрузке — свободный текст («SHELLHELIX CITY 5W30 1L», «0888602305  U»),
 // а слово или обрывок, ставший кодом товара, на кассе находил не тот товар.
 
+import type { StockUnit } from './units'
+
 const CODE_CHARS = /^[0-9A-Za-z-]+$/
 const DIGITS = /^\d+$/
 
@@ -73,23 +75,36 @@ export function sameCode(a: string, b: string): boolean {
   return nx !== '' && nx === y.replace(/^0+/, '')
 }
 
-/** Единица меры строки Умага: литр, кг, метр; штучная — `null`. */
-function measureOf(unit: string): 'l' | 'kg' | 'm' | null {
+/**
+ * Единица меры строки Умага: литр, кг, грамм, метр; штучная — `null`. «г/гр/грамм» — грамм: цена
+ * у Умага за грамм, а не за кг (задача 006, К8).
+ */
+export function measureOf(unit: string): 'l' | 'kg' | 'g' | 'm' | null {
   if (!isMeasureUnit(unit)) return null
   const u = unit.trim().toLowerCase()
   if (u.startsWith('л')) return 'l'
   if (u.startsWith('м')) return 'm'
-  return 'kg'
+  if (u.startsWith('к')) return 'kg'
+  return 'g'
 }
 
-/** Цена строки меры в Умаге — за единицу меры: « за л», « за кг», « за м»; у штучной — пусто. */
+/**
+ * Единица карточки учёта по колонке единицы Умага — как `old_catalog::product_unit` на сервере:
+ * кг → граммы, м → миллиметры, л → мл; «г» и прочее — штуки (ADR-178).
+ */
+export function productUnitOf(unit: string): StockUnit {
+  const m = measureOf(unit)
+  return m === 'kg' ? 'g' : m === 'm' ? 'mm' : m === 'l' ? 'ml' : 'piece'
+}
+
+/** Цена строки меры в Умаге — за единицу меры: « за л», « за кг», « за г», « за м»; у штучной — пусто. */
 export function umagPer(unit: string): string {
   const m = measureOf(unit)
-  return m === 'l' ? ' за л' : m === 'kg' ? ' за кг' : m === 'm' ? ' за м' : ''
+  return m === 'l' ? ' за л' : m === 'kg' ? ' за кг' : m === 'g' ? ' за г' : m === 'm' ? ' за м' : ''
 }
 
-/** Что продавал код меры: «литр», «килограмм», «метр». */
+/** Что продавал код меры: «литр», «килограмм», «грамм», «метр». */
 export function umagUnitWord(unit: string): string {
   const m = measureOf(unit)
-  return m === 'l' ? 'литр' : m === 'm' ? 'метр' : m === 'kg' ? 'килограмм' : 'штуку'
+  return m === 'l' ? 'литр' : m === 'm' ? 'метр' : m === 'kg' ? 'килограмм' : m === 'g' ? 'грамм' : 'штуку'
 }

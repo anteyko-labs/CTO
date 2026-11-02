@@ -284,8 +284,17 @@ function partBook(kind: string, qty: string, containerMl: number | null): string
     const ml = parseLiters(qty)
     return ml !== null ? liters(ml) : `${qty} л`
   }
+  // На вес и в длину — кг и м, не «шт» (ADR-178).
+  if (kind === 'weight' || kind === 'length') {
+    const q = parseLiters(qty)
+    const unit = kind === 'weight' ? 'кг' : 'м'
+    return q !== null ? liters(q).replace(/л$/, unit) : `${qty} ${unit}`
+  }
   return `${qty} шт`
 }
+
+/** Короткая единица строки на вес и в длину: «кг», «м»; иначе null. */
+const kgM = (kind: string): string | null => (kind === 'weight' ? 'кг' : kind === 'length' ? 'м' : null)
 
 /** Итог по строкам одного товара (как `oil_book::merged_qty_text`): масло — литрами, штуки — штуками;
  *  `split` — с разбивкой «4,5 л (1 кан. × 4 л + 0,5 л)». Одна строка — null. */
@@ -298,7 +307,7 @@ function mergedQty(g: CartGood, style: QtyStyle): string | null {
   const mls = parts.map(ml)
   let total: string
   if (mls.every((m) => m !== null && Number.isSafeInteger(m))) total = liters(mls.reduce<number>((a, m) => a + (m ?? 0), 0))
-  else if (parts.every((p) => p.kind !== 'container' && p.kind !== 'pour')) total = `${parts.reduce((a, p) => a + (Number(p.qty) || 0), 0)} шт`
+  else if (parts.every((p) => p.kind !== 'container' && p.kind !== 'pour' && !kgM(p.kind))) total = `${parts.reduce((a, p) => a + (Number(p.qty) || 0), 0)} шт`
   else return each.join(' + ')
   return style === 'split' ? `${total} (${each.join(' + ')})` : total
 }
@@ -308,7 +317,7 @@ function mergedQty(g: CartGood, style: QtyStyle): string | null {
 export function goodShort(g: CartGood): string {
   const merged = mergedQty(g, 'total')
   if (merged) return `${g.name} × ${merged.replace(/ шт$/, '')}`
-  const qty = g.kind === 'container' ? `${g.qty} кан.` : g.kind === 'pour' ? `${g.qty} л` : g.qty
+  const qty = g.kind === 'container' ? `${g.qty} кан.` : g.kind === 'pour' ? `${g.qty} л` : kgM(g.kind) ? `${g.qty} ${kgM(g.kind)}` : g.qty
   return `${g.name} × ${qty}`
 }
 
@@ -318,7 +327,13 @@ export function goodBook(g: CartGood, style: QtyStyle = 'total'): string {
   const merged = mergedQty(g, style)
   if (merged) return `${g.name} · ${merged}`
   const qty =
-    g.kind === 'container' && g.containerMl ? `${g.qty} кан. × ${liters(g.containerMl)}` : g.kind === 'pour' ? `${g.qty} л` : `${g.qty} шт`
+    g.kind === 'container' && g.containerMl
+      ? `${g.qty} кан. × ${liters(g.containerMl)}`
+      : g.kind === 'pour'
+        ? `${g.qty} л`
+        : kgM(g.kind)
+          ? `${g.qty} ${kgM(g.kind)}`
+          : `${g.qty} шт`
   return `${g.name} · ${qty}`
 }
 

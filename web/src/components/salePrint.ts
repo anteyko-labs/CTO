@@ -1,5 +1,6 @@
 // Печать товарного чека через диалог печати браузера (HTML-шаблон, лента 58–80 мм).
-import { formatDateTime, formatKg, formatLiters, formatSomExact } from '../lib/format'
+import { formatDateTime, formatSomExact } from '../lib/format'
+import { salePriceSuffix, saleQtyText } from '../lib/units'
 import { paymentLabel } from '../lib/battery'
 import { printInFrame } from '../lib/printFrame'
 import { lineSum } from '../lib/discount'
@@ -13,18 +14,7 @@ const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 
 export function lineQtyText(l: Pick<SaleLine, 'kind' | 'qty' | 'container_ml'>): string {
-  switch (l.kind) {
-    case 'pour':
-      return formatLiters(l.qty)
-    case 'container':
-      return `${l.qty} кан.${l.container_ml ? ` × ${formatLiters(l.container_ml)}` : ''}`
-    case 'weight':
-      return formatKg(l.qty)
-    case 'service':
-      return `${l.qty} усл.`
-    default:
-      return `${l.qty} шт`
-  }
+  return saleQtyText(l.kind, l.qty, l.container_ml)
 }
 
 /** Скидка чека для печати (задача 003 Н3): на сколько строки дешевле прайса, без подарков. */
@@ -52,7 +42,7 @@ export function saleHtml(sale: Sale, change: number | null, opts: { bookBlock?: 
             l.qty > 1 ? `<tr><td class="muted" colspan="2">${l.qty} × ${esc(formatSomExact(l.unit_price_tyiyn))}</td></tr>` : ''
           }`
         : `<tr><td colspan="2">${esc(l.name)}</td></tr>
-      <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSomExact(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
+      <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSomExact(l.unit_price_tyiyn))}${salePriceSuffix(l.kind)}</td>
       <td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`,
     )
     .join('') + held

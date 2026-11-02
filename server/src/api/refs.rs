@@ -1773,7 +1773,7 @@ async fn supplier_supplies(
     .await?
     .into_iter()
     .map(|r| {
-        // За единицу цены: штуку, канистру, кг или м (ADR-175).
+        // За единицу цены: штуку, канистру, кг или м (ADR-178).
         let per = crate::api::catalog::price_unit(&r.unit, r.container_ml);
         SupplyRow {
             product_id: r.product_id,
