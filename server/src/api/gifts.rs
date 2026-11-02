@@ -29,7 +29,8 @@ struct GiftRuleOut {
     id: Uuid,
     trigger_product_id: Uuid,
     trigger_name: String,
-    /// Товар-условие — масло: порог в миллилитрах, иначе в штуках.
+    /// Единица товара-условия: порог у масла в миллилитрах, у кг — в граммах, у метров — в
+    /// миллиметрах, иначе в штуках.
     trigger_unit: String,
     min_units: i64,
     active: bool,
@@ -102,7 +103,8 @@ struct ItemReq {
 #[derive(Deserialize)]
 struct RuleReq {
     trigger_product_id: Uuid,
-    /// С какого количества товара-условия дарим: мл у масла, штуки у остального.
+    /// С какого количества товара-условия дарим: мл у масла, г у кг, мм у метров, штуки у
+    /// остального.
     #[serde(default)]
     min_units: i64,
     items: Vec<ItemReq>,
@@ -168,6 +170,18 @@ async fn create(
     )
     .execute(&mut *tx)
     .await?;
+    // Подарком товар в кг или метрах быть не может (ADR-175): «1 г в подарок» — бессмыслица.
+    if let Some(name) = sqlx::query_scalar!(
+        "select name from products where id = any($1) and unit in ('g', 'mm') order by name limit 1",
+        &keep
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        return Err(invalid(format!(
+            "«{name}» учитывается в килограммах или метрах — подарком такой товар быть не может"
+        )));
+    }
     for it in &req.items {
         let qty = it.gift_qty.unwrap_or(1);
         if qty <= 0 {

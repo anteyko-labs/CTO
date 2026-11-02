@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.name from gift_rule_items i\n               join gift_rules r on r.id = i.rule_id\n               join products t on t.id = r.trigger_product_id\n               where i.gift_product_id = $1 order by t.name limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "90dd7d35c9fae143da26353ea7964f2ac5562c1ea16830e1672e7e48c16774aa"
+}

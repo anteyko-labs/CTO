@@ -675,12 +675,9 @@ pub async fn post_receipt_tx(
         let cost = i128::from(l.cost_tyiyn);
         // Сравнение без деления: цена × количество против стоимости в тех же единицах.
         // Розлив за литр считается от цены канистры (ADR-074) — отдельной проверки ему не нужно.
-        let dearer_price = match (p.unit.as_str(), p.container_ml) {
-            ("ml", Some(c)) => i128::from(p.sale) * qty < cost * i128::from(c),
-            // На вес: количество в граммах, цена продажи за кг (SPEC-36 §13).
-            ("g", _) => i128::from(p.sale) * qty < cost * 1000,
-            _ => i128::from(p.sale) * qty < cost,
-        };
+        // На вес и в метрах: количество в граммах (мм), цена продажи за кг (м) (SPEC-36 §13).
+        let per = crate::api::catalog::price_unit(&p.unit, p.container_ml);
+        let dearer_price = i128::from(p.sale) * qty < cost * i128::from(per);
         if dearer_price && !dearer.contains(&p.name) {
             dearer.push(p.name);
         }
@@ -1204,11 +1201,7 @@ pub async fn last_receipt_of(
     let Some(r) = r else {
         return Ok(None);
     };
-    let per = match (r.unit.as_str(), r.container_ml) {
-        ("ml", Some(c)) if c > 0 => c,
-        ("g", _) => 1000,
-        _ => 1,
-    };
+    let per = crate::api::catalog::price_unit(&r.unit, r.container_ml);
     let price = crate::domain::money::div_round(
         i128::from(r.cost_tyiyn) * i128::from(per),
         i128::from(r.qty),
@@ -1598,12 +1591,8 @@ pub async fn purchase_price_tx(
     if p.archived {
         return Err(invalid("товар в архиве: укажите цену у основной карточки"));
     }
-    // Те же единицы, что у цены последнего прихода в карточке: штука, канистра; на вес — килограмм.
-    let per = match (p.unit.as_str(), p.container_ml) {
-        ("g", _) => 1000,
-        (_, Some(c)) => c,
-        _ => 1,
-    };
+    // Те же единицы, что у цены последнего прихода в карточке: штука, канистра, кг, м (ADR-175).
+    let per = crate::api::catalog::price_unit(&p.unit, p.container_ml);
     ops::lock_pool(&mut *conn, branch_id, product_id).await?;
     // Закупок не было — цена владельца становится «последней закупочной»: следующие продажи
     // при нехватке остатка возьмут себестоимость по ней (SPEC-03). Цену прихода не перебиваем.

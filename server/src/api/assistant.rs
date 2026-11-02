@@ -1939,10 +1939,12 @@ async fn products_text(
         format!("Найдено товаров: {}", list.len())
     }];
     for p in list {
-        // Масло — литрами и канистрами, на вес — килограммами (SPEC-27 §4), не миллилитрами.
+        // Масло — литрами и канистрами, на вес — килограммами, в метрах — метрами (SPEC-27 §4),
+        // не миллилитрами.
         let per = match (p.unit.as_str(), p.container_ml) {
             (_, Some(ml)) => format!(" за канистру {}", crate::domain::qty::liters(ml)),
             ("g", None) => " за кг".into(),
+            ("mm", None) => " за м".into(),
             ("ml", None) => " за литр".into(),
             _ => " за шт".into(),
         };

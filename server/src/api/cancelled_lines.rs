@@ -89,7 +89,7 @@ fn device_time(at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<Utc> {
 /// Сумма строки: розлив и вес — за литр и килограмм, остальное — за штуку (как в чеке).
 fn line_amount(kind: &str, qty: i64, price: i64) -> Option<i64> {
     match kind {
-        "pour" | "weight" => div_round(i128::from(qty) * i128::from(price), 1000),
+        "pour" | "weight" | "length" => div_round(i128::from(qty) * i128::from(price), 1000),
         _ => mul(qty, price),
     }
 }
@@ -129,7 +129,7 @@ pub async fn record(
     for l in lines {
         if !matches!(
             l.kind.as_str(),
-            "piece" | "container" | "pour" | "weight" | "service"
+            "piece" | "container" | "pour" | "weight" | "length" | "service"
         ) || l.qty <= 0
             || l.qty > 1_000_000_000
             || l.unit_price_tyiyn < 0
@@ -345,6 +345,8 @@ mod tests {
         // Розлив: 1,5 л × 600 с за литр.
         assert_eq!(line_amount("pour", 1_500, 60_000), Some(90_000));
         assert_eq!(line_amount("weight", 333, 100), Some(33));
+        // 1,25 м по 120 с за метр — 150 с.
+        assert_eq!(line_amount("length", 1_250, 12_000), Some(15_000));
     }
 
     #[test]

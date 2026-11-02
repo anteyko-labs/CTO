@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, unit, container_ml, archived, system_role from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "archived",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "system_role",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "7f414c23c09a3d3c701f91bb64f6d8618a75f05b4c07746d7f3ab9c15e199c44"
+}

@@ -501,14 +501,9 @@ pub struct VehicleBook {
     pub client_notes: Vec<ClientNote>,
 }
 
-/// Количество строки для книжки: «1 кан. × 4 л», «1,5 л», «2 шт».
+/// Количество строки для книжки: «1 кан. × 4 л», «1,5 л», «2,5 кг», «1,25 м», «2 шт».
 fn qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
-    let liters = crate::domain::qty::liters;
-    match (kind, container_ml) {
-        ("container", Some(c)) => format!("{qty} кан. × {}", liters(c)),
-        ("pour", _) => liters(qty),
-        _ => format!("{qty} шт"),
-    }
+    crate::domain::qty::sale_qty_text(kind, qty, container_ml)
 }
 
 /// Одна строка чека товара книжки: вид, количество (канистры, мл розлива или штуки) и канистра.
@@ -527,22 +522,24 @@ pub fn merged_qty_text(parts: &[QtyPart], style: &str) -> String {
     if let [one] = parts {
         return each(one);
     }
-    let ml = |p: &QtyPart| match (p.kind.as_str(), p.container_ml) {
-        ("container", Some(c)) => Some(p.qty.saturating_mul(c)),
-        ("pour", _) => Some(p.qty),
-        _ => None,
+    // Единица учёта строки и количество в ней: мл, граммы, миллиметры или штуки.
+    let units = |p: &QtyPart| match (p.kind.as_str(), p.container_ml) {
+        ("container", Some(c)) => ("ml", p.qty.saturating_mul(c)),
+        ("pour", _) => ("ml", p.qty),
+        ("weight", _) => ("g", p.qty),
+        ("length", _) => ("mm", p.qty),
+        _ => ("piece", p.qty),
     };
-    let total = if parts.iter().all(|p| ml(p).is_some()) {
-        crate::domain::qty::liters(parts.iter().filter_map(ml).fold(0i64, i64::saturating_add))
-    } else if parts.iter().all(|p| ml(p).is_none()) {
-        format!(
-            "{} шт",
-            parts.iter().map(|p| p.qty).fold(0i64, i64::saturating_add)
-        )
-    } else {
-        // Литров со штуками у одного товара не бывает — строки как есть.
+    let unit = parts.first().map_or("ml", |p| units(p).0);
+    if parts.iter().any(|p| units(p).0 != unit) {
+        // Разных единиц у одного товара не бывает (кроме смены единицы) — строки как есть.
         return parts.iter().map(each).collect::<Vec<_>>().join(" + ");
-    };
+    }
+    let sum = parts
+        .iter()
+        .map(|p| units(p).1)
+        .fold(0i64, i64::saturating_add);
+    let total = crate::domain::qty::qty_text(sum, unit);
     if style == "split" {
         let split = parts.iter().map(each).collect::<Vec<_>>().join(" + ");
         return format!("{total} ({split})");
@@ -2418,6 +2415,24 @@ mod tests {
         assert_eq!(
             line_next_text(&l),
             "следующая замена по сроку до 05.01.2027"
+        );
+    }
+
+    #[test]
+    fn weight_and_length_are_not_pieces() {
+        let part = |kind: &str, qty| QtyPart {
+            kind: kind.into(),
+            qty,
+            container_ml: None,
+        };
+        assert_eq!(merged_qty_text(&[part("weight", 2_500)], "total"), "2,5 кг");
+        assert_eq!(
+            merged_qty_text(&[part("length", 1_250), part("length", 750)], "total"),
+            "2 м"
+        );
+        assert_eq!(
+            merged_qty_text(&[part("piece", 1), part("piece", 2)], "split"),
+            "3 шт (1 шт + 2 шт)"
         );
     }
 }

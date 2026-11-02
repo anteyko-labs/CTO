@@ -263,6 +263,7 @@ mod tests {
         assert_eq!(pour_price_per_l("ml", Some(4000), 200_000), Some(50_000));
         assert_eq!(pour_price_per_l("piece", None, 50_000), None);
         assert_eq!(pour_price_per_l("g", None, 50_000), None);
+        assert_eq!(pour_price_per_l("mm", None, 50_000), None);
     }
 
     #[test]

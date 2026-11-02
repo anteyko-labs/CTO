@@ -172,13 +172,9 @@ async fn deliveries(
     ))
 }
 
-/// Единиц в цене: штука, канистра масла, килограмм.
+/// Единиц в цене: штука, канистра масла, килограмм, метр — общее правило каталога.
 fn price_per(unit: &str, container_ml: Option<i64>) -> i64 {
-    match (unit, container_ml) {
-        ("g", _) => 1000,
-        ("ml", Some(c)) if c > 0 => c,
-        _ => 1,
-    }
+    crate::api::catalog::price_unit(unit, container_ml)
 }
 
 #[derive(Default)]

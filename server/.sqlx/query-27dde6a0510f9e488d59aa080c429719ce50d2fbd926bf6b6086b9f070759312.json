@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select category_id, unit, archived, merged_into, points_mode, points_value from products where id = $1 for update",
+  "query": "select category_id, unit, archived, merged_into, points_mode, points_value, system_role from products where id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,11 @@
         "ordinal": 5,
         "name": "points_value",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "system_role",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -45,8 +50,9 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "d5c570122891ca089e57872c22c098c33dc20cfacc28d10f3ca693aaf6557bff"
+  "hash": "27dde6a0510f9e488d59aa080c429719ce50d2fbd926bf6b6086b9f070759312"
 }

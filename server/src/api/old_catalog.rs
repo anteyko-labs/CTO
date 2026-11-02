@@ -499,6 +499,8 @@ struct Hit {
     cost_tyiyn: Option<i64>,
     price_tyiyn: i64,
     unit: String,
+    /// Единица карточки, которую заводят из строки ([`product_unit`]): `g`, `mm`, `ml`, `piece`.
+    product_unit: &'static str,
     supplier: String,
     category: String,
     /// Совпал код — это та самая позиция.
@@ -576,6 +578,7 @@ async fn load_hits(
                     article: r.article,
                     cost_tyiyn: cost.then_some(r.cost_tyiyn),
                     price_tyiyn: r.price_tyiyn,
+                    product_unit: product_unit(&r.unit),
                     unit: r.unit,
                     supplier: r.supplier,
                     category: r.category,
@@ -1836,9 +1839,31 @@ pub struct ProductUmag {
     /// добавили бы всю тару (ADR-113).
     pub measure_codes: Vec<String>,
     pub unit: String,
+    /// Единица карточки по единице строки ([`product_unit`]).
+    #[serde(default)]
+    pub product_unit: String,
     pub price_tyiyn: i64,
     /// Закупка в Умаге — только владельцу (ADR-008).
     pub cost_tyiyn: Option<i64>,
+}
+
+/// Единица учёта карточки, заведённой из строки Умага, по колонке единицы (задача 006, К8,
+/// ADR-175): «кг», «килограмм» — `g`; «м», «метр» — `mm`; «л», «литр» — `ml` (объём канистры
+/// берут из названия, без него — как раньше); остальное, в том числе «г», «гр», «грамм» (цена у
+/// Умага за грамм), — `piece`. Цена и закупка строки кг/м — за кг/м, как у нас. Правило кодов
+/// меры (`umag_by_measure`, ADR-113) это не меняет: коды меры товару не переходят.
+pub fn product_unit(unit: &str) -> &'static str {
+    let u = unit.trim().to_lowercase();
+    let u = u.trim_end_matches('.');
+    match u {
+        "кг" => "g",
+        "м" => "mm",
+        "л" | "лт" => "ml",
+        _ if u.starts_with("килограмм") => "g",
+        _ if u.starts_with("метр") => "mm",
+        _ if u.starts_with("литр") => "ml",
+        _ => "piece",
+    }
 }
 
 /// Строки Умага филиала, связанные с товаром, — первая по порядку и остальные: у товара их
@@ -1871,6 +1896,7 @@ pub(crate) async fn product_umag(
             barcode: r.barcode,
             codes: r.codes,
             measure_codes: r.measure,
+            product_unit: product_unit(&r.unit).to_string(),
             unit: r.unit,
             price_tyiyn: r.price_tyiyn,
             cost_tyiyn: user.is_owner().then_some(r.cost_tyiyn),
@@ -1881,6 +1907,21 @@ pub(crate) async fn product_umag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_unit_from_umag_unit() {
+        assert_eq!(product_unit("кг"), "g");
+        assert_eq!(product_unit(" Килограмм "), "g");
+        assert_eq!(product_unit("м."), "mm");
+        assert_eq!(product_unit("метр"), "mm");
+        assert_eq!(product_unit("л"), "ml");
+        assert_eq!(product_unit("литр"), "ml");
+        // Граммы — штуки: цена у Умага за грамм (задача 006, «Решено»).
+        assert_eq!(product_unit("гр"), "piece");
+        assert_eq!(product_unit("мл"), "piece");
+        assert_eq!(product_unit("шт"), "piece");
+        assert_eq!(product_unit(""), "piece");
+    }
 
     #[test]
     fn marks_from_names() {
