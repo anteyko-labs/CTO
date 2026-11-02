@@ -1408,6 +1408,19 @@ struct DebtDocs {
     /// `month`, `last_month`, `year`.
     #[serde(default)]
     act_period: Option<String>,
+    /// Другие документы точки (задача 017): договоры, которые владелец правит и печатает сам.
+    /// `None` — ещё не сохраняли, экран показывает шаблоны по умолчанию.
+    #[serde(default)]
+    extra: Option<Vec<ExtraDoc>>,
+}
+
+/// Документ точки: название и текст с подстановками реквизитов.
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct ExtraDoc {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    text: String,
 }
 
 async fn get_debt_docs(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Value>> {
@@ -1527,6 +1540,20 @@ async fn put_debt_docs(
         .any(|t| t.chars().count() > 20_000);
     if too_long {
         return Err(invalid("текст шаблона не длиннее 20 000 знаков"));
+    }
+    if let Some(extra) = &req.extra {
+        if extra.len() > 30 {
+            return Err(invalid("других документов не больше 30"));
+        }
+        if extra
+            .iter()
+            .any(|d| d.title.trim().is_empty() || d.title.chars().count() > 200)
+        {
+            return Err(invalid("у документа нужно название до 200 знаков"));
+        }
+        if extra.iter().any(|d| d.text.chars().count() > 40_000) {
+            return Err(invalid("текст документа не длиннее 40 000 знаков"));
+        }
     }
     if req
         .act_period

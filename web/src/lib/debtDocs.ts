@@ -23,6 +23,8 @@ export interface DebtDocSettings {
   act_period?: ActPeriod | null
   /** Подпись руководителя задана в настройках (задача 008). */
   has_owner_signature?: boolean
+  /** Другие документы точки (задача 017); `null` — ещё не сохраняли, берутся шаблоны по умолчанию. */
+  extra?: { title: string; text: string }[] | null
 }
 
 /** Картинка с сервера как `data:` — встаёт в документ, который печатается из фрейма. Нет — `null`. */

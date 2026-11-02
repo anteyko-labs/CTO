@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, Card, CardTitle, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
 import { del, get, put } from '../lib/api'
 import { SignaturePad } from '../components/SignaturePad'
-import { ACT_PERIODS, DEFAULT_COMPANY, DEFAULT_PERSON, PLACEHOLDERS, renderTemplate, somInWords, type ActPeriod, type DebtDocSettings, type Seller } from '../lib/debtDocs'
+import { DEFAULT_EXTRA, EXTRA_PLACEHOLDERS, extraDocHtml, printExtraDoc, type ExtraDoc } from '../lib/extraDocs'
+import { ACT_PERIODS, DEFAULT_COMPANY, DEFAULT_PERSON, PLACEHOLDERS, pngDataUrl, renderTemplate, somInWords, type ActPeriod, type DebtDocSettings, type Seller } from '../lib/debtDocs'
 import { formatSomExact, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 
@@ -218,6 +219,122 @@ function OwnerSignatureCard({ has, onChanged }: { has: boolean; onChanged: () =>
   )
 }
 
+/** Другие документы точки (задача 017): договоры с реквизитами точки и подписью руководителя —
+ *  правятся здесь и печатаются отсюда в двух экземплярах. */
+function ExtraDocsCard({
+  docs,
+  seller,
+  hasSignature,
+  onChange,
+}: {
+  docs: ExtraDoc[]
+  seller: Seller
+  hasSignature: boolean
+  onChange: (d: ExtraDoc[]) => void
+}) {
+  const [open, setOpen] = useState<number | null>(null)
+  const [preview, setPreview] = useState(false)
+  const [sig, setSig] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    if (hasSignature) void pngDataUrl('/settings/debt-docs/signature').then((p) => alive && setSig(p))
+    else setSig(null)
+    return () => {
+      alive = false
+    }
+  }, [hasSignature])
+  const set = (i: number, patch: Partial<ExtraDoc>) => onChange(docs.map((d, j) => (j === i ? { ...d, ...patch } : d)))
+  const add = () => {
+    onChange([...docs, { title: 'Новый документ', text: '' }])
+    setOpen(docs.length)
+    setPreview(false)
+  }
+  const remove = (i: number) => {
+    if (!window.confirm(`Удалить «${docs[i].title}»? Удаление сохранится кнопкой «Сохранить».`)) return
+    onChange(docs.filter((_, j) => j !== i))
+    setOpen(null)
+  }
+  return (
+    <Card className="flex flex-col gap-3" data-testid="extra-docs">
+      <CardTitle
+        actions={
+          <Button variant="secondary" onClick={add}>
+            Добавить документ
+          </Button>
+        }
+      >
+        Другие документы
+        <span className="block text-xs font-normal text-slate-500">
+          Договоры точки: реквизиты и подпись руководителя ставятся сами, данные второй стороны впишите в текст или от руки. «Печать» — два экземпляра, каждый с
+          нового листа.
+        </span>
+      </CardTitle>
+      {docs.length === 0 && <div className="text-sm text-slate-500">Документов нет — «Добавить документ».</div>}
+      {docs.map((d, i) => (
+        <div key={i} className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="mr-auto text-left font-medium text-sky-700 hover:underline" onClick={() => setOpen(open === i ? null : i)}>
+              {open === i ? '▾' : '▸'} {d.title || 'Без названия'}
+            </button>
+            <Button variant="secondary" onClick={() => printExtraDoc(d, seller, sig)}>
+              Печать
+            </Button>
+            <Button variant="secondary" onClick={() => remove(i)}>
+              Удалить
+            </Button>
+          </div>
+          {open === i && (
+            <>
+              <Field label="Название">
+                <input value={d.title} onChange={(e) => set(i, { title: e.target.value })} />
+              </Field>
+              <div className="flex flex-wrap gap-2 text-sm">
+                <Button variant={preview ? 'secondary' : 'primary'} onClick={() => setPreview(false)}>
+                  Текст
+                </Button>
+                <Button variant={preview ? 'primary' : 'secondary'} onClick={() => setPreview(true)}>
+                  Предпросмотр
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    set(i, {
+                      text: DEFAULT_EXTRA.find((x) => x.title === d.title)?.text ?? d.text,
+                    })
+                  }
+                  disabled={!DEFAULT_EXTRA.some((x) => x.title === d.title)}
+                >
+                  Вернуть исходный текст
+                </Button>
+              </div>
+              {preview ? (
+                <div
+                  className="overflow-x-auto rounded-md border border-slate-300 p-6 font-serif text-sm leading-relaxed whitespace-pre-wrap shadow-inner [&_.sig]:inline-block [&_.sig]:w-40 [&_.sig_img]:h-12"
+                  style={{ background: '#fff', color: '#000' }}
+                  // Текст экранируется в renderTemplate; подпись — проверенная картинка data:image/png.
+                  dangerouslySetInnerHTML={{
+                    __html: extraDocHtml(d.text, seller, sig),
+                  }}
+                />
+              ) : (
+                <>
+                  <div className="text-xs text-slate-500">
+                    Подстановки:{' '}
+                    {EXTRA_PLACEHOLDERS.map(([k, h]) => (
+                      <code key={k} title={h} className="mr-1 rounded bg-slate-100 px-1">{`{{${k}}}`}</code>
+                    ))}
+                  </div>
+                  <textarea className="min-h-[420px] font-mono text-xs" value={d.text} onChange={(e) => set(i, { text: e.target.value })} />
+                </>
+              )}
+            </>
+          )}
+        </div>
+      ))}
+    </Card>
+  )
+}
+
 export default function DebtDocsSettings() {
   const loaded = useLoad(() => get<DebtDocSettings>('/settings/debt-docs'), [])
   const [form, setForm] = useState<DebtDocSettings | null>(null)
@@ -231,6 +348,7 @@ export default function DebtDocsSettings() {
         person: loaded.data.person || DEFAULT_PERSON,
         company: loaded.data.company || DEFAULT_COMPANY,
         act_period: loaded.data.act_period ?? 'all',
+        extra: loaded.data.extra ?? DEFAULT_EXTRA,
       })
     }
   }, [loaded.data, form])
@@ -244,6 +362,7 @@ export default function DebtDocsSettings() {
         person: form.person === DEFAULT_PERSON ? null : form.person,
         company: form.company === DEFAULT_COMPANY ? null : form.company,
         act_period: form.act_period ?? 'all',
+        extra: form.extra ?? DEFAULT_EXTRA,
       })
       toast('Сохранено')
     })
@@ -252,7 +371,7 @@ export default function DebtDocsSettings() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Документы о долге" />
+      <PageHeader title="Документы" />
       <Card className="flex flex-col gap-3">
         <h2 className="text-base font-semibold">Реквизиты точки</h2>
         <div className="text-xs text-slate-500">Печатаются в расписке, накладной и акте сверки. Пустое поле печатается линией, чтобы вписать от руки.</div>
@@ -262,7 +381,12 @@ export default function DebtDocsSettings() {
               <input
                 value={form.seller[key]}
                 placeholder={placeholder}
-                onChange={(e) => setForm({ ...form, seller: { ...form.seller, [key]: e.target.value } })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    seller: { ...form.seller, [key]: e.target.value },
+                  })
+                }
               />
             </Field>
           ))}
@@ -288,6 +412,13 @@ export default function DebtDocsSettings() {
         seller={form.seller}
         company
         onChange={(v) => setForm({ ...form, company: v })}
+      />
+
+      <ExtraDocsCard
+        docs={form.extra ?? DEFAULT_EXTRA}
+        seller={form.seller}
+        hasSignature={Boolean(loaded.data?.has_owner_signature)}
+        onChange={(extra) => setForm({ ...form, extra })}
       />
 
       <Card className="flex flex-col gap-3">
