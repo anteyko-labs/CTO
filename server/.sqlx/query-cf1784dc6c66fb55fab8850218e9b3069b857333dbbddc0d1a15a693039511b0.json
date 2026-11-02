@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, unit, container_ml, category_id, merged_into, sale_price_tyiyn,\n                  points_mode, points_value\n           from products where id = $1 for update",
+  "query": "select name, unit, container_ml, category_id, merged_into, sale_price_tyiyn,\n                  points_mode, points_value, system_role\n           from products where id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,11 @@
         "ordinal": 7,
         "name": "points_value",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "system_role",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -57,8 +62,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "ed82bf89b7e984ee13cf5e6c3ed2aff435d43f2f6ef92e824a455731ea7f56c6"
+  "hash": "cf1784dc6c66fb55fab8850218e9b3069b857333dbbddc0d1a15a693039511b0"
 }

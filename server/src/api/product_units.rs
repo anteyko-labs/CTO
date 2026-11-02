@@ -30,7 +30,7 @@ pub fn routes() -> Router<AppState> {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct UnitReq {
     pub op_id: Uuid,
-    /// `ml` — литрами (канистра и розлив), `piece` — штуками.
+    /// `ml` — литрами (канистра и розлив), `piece` — штуками, `g` — килограммами (ADR-174).
     pub unit: String,
     /// Объём канистры, мл — для литров.
     #[serde(default)]
@@ -173,8 +173,46 @@ fn plan(from: &str, from_c: Option<i64>, req: &UnitReq) -> AppResult<Plan> {
             })
         }
         ("piece", "piece", _) => Err(invalid("товар уже в штуках — менять нечего")),
-        ("g", _, _) | (_, "g", _) => Err(invalid("весовой товар (кг) не пересчитывается")),
-        _ => Err(invalid("единица товара — литры или штуки")),
+        ("g", "g", _) => Err(invalid("товар уже в килограммах — менять нечего")),
+        // Килограммы (ADR-174) — только без остатка (`zero_only`): штука и литр не равны
+        // килограмму, пересчитывать нечем. Цена переходит как «1 шт = 1 кг», «1 л = 1 кг»:
+        // цена штуки — цена кг, цена канистры — за её литры; владелец поправит её в карточке.
+        ("piece", "g", _) => Ok(Plan {
+            unit: "g",
+            container_ml: None,
+            mul: 1000,
+            div: 1,
+            price_mul: 1,
+            price_div: 1,
+        }),
+        ("ml", "g", Some(c)) => Ok(Plan {
+            unit: "g",
+            container_ml: None,
+            mul: 1,
+            div: 1,
+            price_mul: 1000,
+            price_div: c,
+        }),
+        ("g", "piece", _) => Ok(Plan {
+            unit: "piece",
+            container_ml: None,
+            mul: 1,
+            div: 1000,
+            price_mul: 1,
+            price_div: 1,
+        }),
+        ("g", "ml", _) => {
+            let c = check_ml(req.container_ml, "объём канистры")?;
+            Ok(Plan {
+                unit: "ml",
+                container_ml: Some(c),
+                mul: 1,
+                div: 1,
+                price_mul: c,
+                price_div: 1000,
+            })
+        }
+        _ => Err(invalid("единица товара — литры, штуки или килограммы")),
     }
 }
 
@@ -266,7 +304,7 @@ pub async fn change_unit_tx(
     }
     let cur = sqlx::query!(
         r#"select name, unit, container_ml, category_id, merged_into, sale_price_tyiyn,
-                  points_mode, points_value
+                  points_mode, points_value, system_role
            from products where id = $1 for update"#,
         id
     )
@@ -276,6 +314,12 @@ pub async fn change_unit_tx(
     if cur.merged_into.is_some() {
         return Err(invalid(
             "карточка влита в другую: меняйте единицу у основной",
+        ));
+    }
+    // Карточка лома аккумуляторов — всегда в граммах (ADR-048, ADR-174).
+    if cur.system_role.is_some() {
+        return Err(invalid(
+            "это служебная карточка лома аккумуляторов: её единица не меняется",
         ));
     }
     let p = plan(&cur.unit, cur.container_ml, &req)?;
@@ -292,6 +336,23 @@ pub async fn change_unit_tx(
     .await?;
     // Остаток каждого филиала должен перейти целым числом — иначе ничего не меняем.
     let mut recount = Vec::new();
+    // Килограммы и штуки (литры) не пересчитываются друг в друга: только без остатка (ADR-174).
+    let zero_only = (cur.unit == "g") != (p.unit == "g");
+    for r in &rows {
+        if zero_only && r.stock_qty != 0 {
+            return Err(invalid(format!(
+                "остаток в филиале «{}» — {}: килограммы и {} друг в друга не пересчитываются. \
+                 Обнулите остаток ревизией, потом меняйте единицу",
+                r.branch_name,
+                stock_text(r.stock_qty, &cur.unit, cur.container_ml),
+                if cur.unit == "piece" || p.unit == "piece" {
+                    "штуки"
+                } else {
+                    "литры"
+                }
+            )));
+        }
+    }
     for r in &rows {
         let to = exact(r.stock_qty, p.mul, p.div).ok_or_else(|| {
             let stock = stock_text(r.stock_qty, &cur.unit, cur.container_ml);
@@ -648,6 +709,7 @@ fn unit_words(unit: &str, container_ml: Option<i64>) -> String {
     match (unit, container_ml) {
         ("ml", Some(c)) => format!("литрах (канистра {})", crate::domain::qty::liters(c)),
         ("ml", None) => "литрах".into(),
+        ("g", _) => "килограммах".into(),
         _ => "штуках".into(),
     }
 }
@@ -793,7 +855,15 @@ mod tests {
         .unwrap();
         assert_eq!((p.mul, p.div), (1, 1));
         assert!(plan("ml", Some(4_000), &req("ml", Some(4_000), None, None)).is_err());
-        assert!(plan("g", None, &req("piece", None, None, None)).is_err());
+        // Килограммы (ADR-174): «1 шт = 1 кг», «1 л = 1 кг»; цена канистры 4 л → за кг.
+        let p = plan("g", None, &req("piece", None, None, None)).unwrap();
+        assert_eq!((p.unit, p.mul, p.div), ("piece", 1, 1_000));
+        let p = plan("piece", None, &req("g", None, None, None)).unwrap();
+        assert_eq!((p.unit, p.mul, p.div), ("g", 1_000, 1));
+        let p = plan("ml", Some(4_000), &req("g", None, None, None)).unwrap();
+        assert_eq!((p.price_mul, p.price_div), (1_000, 4_000));
+        assert!(plan("g", None, &req("ml", None, None, None)).is_err());
+        assert!(plan("g", None, &req("g", None, None, None)).is_err());
         assert!(plan("ml", Some(4_000), &req("piece", None, None, None)).is_err());
     }
 

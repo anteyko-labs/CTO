@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { get, newOpId, post, randomId } from '../lib/api'
 import { productTitle } from '../lib/battery'
-import { formatSom, parseLiters, parseSom } from '../lib/format'
+import { formatSom, litersInput, parseLiters, parseSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
 import { PAYMENT_LABELS, type Employee, type Party, type Product, type Sale, type SaleLineKind, type Shift } from '../lib/types'
@@ -66,7 +66,10 @@ export function NoReceiptReturn({ onClose, touch = false }: { onClose: () => voi
     setLines((ls) => {
       const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
       const same = ls.find((l) => l.product.id === p.id && l.kind === kind && (kind === 'piece' || kind === 'container'))
-      if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(l) ?? 0) + 1) } : l))
+      if (same)
+        return ls.map((l) =>
+          l === same ? { ...l, qtyText: kind === 'weight' ? litersInput((lineQty(l) ?? 0) + 1000) : String((lineQty(l) ?? 0) + 1) } : l,
+        )
       return [...ls, { key: randomId(), product: p, kind, qtyText: kind === 'weight' ? '' : '1', sumText: '' }]
     })
   const update = (key: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
