@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update label_jobs set status = 'queued', taken_at = null, station_id = null\n           where branch_id = $1 and status = 'printing' and taken_at < now() - interval '2 minutes'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0e9e666f59232a073dc7899655ffe452c79e1ee2c351400212c356dc4690f978"
+}

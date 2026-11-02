@@ -1341,6 +1341,14 @@ struct LabelSettings {
     /// Характеристики: вязкость и объём масла, тип фильтра, ёмкость и ток аккумулятора.
     #[serde(default = "yes")]
     show_spec: bool,
+    /// Кнопка по умолчанию на телефоне: `station` — «На складе», `here` — «Здесь» (задача 006 Н5).
+    /// По умолчанию «На складе» — прямая просьба владельца (I21).
+    #[serde(default = "station")]
+    remote_default: String,
+}
+
+fn station() -> String {
+    "station".into()
 }
 
 fn yes() -> bool {
@@ -1357,6 +1365,7 @@ impl Default for LabelSettings {
             show_article: false,
             show_brand: true,
             show_spec: true,
+            remote_default: station(),
         }
     }
 }
@@ -1476,6 +1485,9 @@ async fn put_labels(
 ) -> AppResult<Json<Value>> {
     if !(10..=200).contains(&req.width_mm) || !(10..=200).contains(&req.height_mm) {
         return Err(invalid("размер этикетки от 10 до 200 мм"));
+    }
+    if !matches!(req.remote_default.as_str(), "station" | "here") {
+        return Err(invalid("кнопка по умолчанию — «Здесь» или «На складе»"));
     }
     let value = json!(req);
     let mut tx = state.pool.begin().await?;

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into label_stations (id, branch_id, user_id) values ($1, $2, $3)\n           on conflict (id) do update set last_seen = now(), user_id = excluded.user_id\n           where label_stations.branch_id = excluded.branch_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88b58369c38bb6b234164974c2ddb3e635b080b3778e57767ced068faa11354b"
+}

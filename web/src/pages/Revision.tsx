@@ -10,7 +10,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
-import { printLabels } from '../components/labels'
+import { sendLabels } from '../components/labelTarget'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -653,7 +653,7 @@ function Draft({
         toast(`Выдан код ${r.code}`)
       }
       const product = await get<Product>(`/products/${l.product_id}`)
-      await printLabels([{ product, copies: 1 }])
+      await sendLabels([{ product, copies: 1 }])
     })
 
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */

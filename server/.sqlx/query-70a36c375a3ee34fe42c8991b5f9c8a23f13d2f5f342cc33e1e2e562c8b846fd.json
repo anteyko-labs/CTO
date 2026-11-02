@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name from users where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "70a36c375a3ee34fe42c8991b5f9c8a23f13d2f5f342cc33e1e2e562c8b846fd"
+}

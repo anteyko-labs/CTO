@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update label_jobs set status = 'failed', error = 'устарело', done_at = now()\n           where branch_id = $1 and status = 'queued' and created_at < now() - interval '24 hours'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d964cef6a3110739c7920dda60f6ffa67cff1bef29f267f97d818288f5bc0727"
+}

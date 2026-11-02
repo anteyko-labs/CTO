@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ReceiptAcceptance } from '../components/Acceptances'
 import { CorrectionLinks, FixButton } from '../components/Correction'
-import { printLabels } from '../components/labels'
+import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
 import { ReceiptPhotos } from '../components/ReceiptPhotos'
 import { ExportButton } from '../components/ExportButton'
 import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
@@ -75,7 +75,7 @@ export default function ReceiptView() {
         if (copies <= 0) continue
         items.push({ product: await get<Product>(`/products/${l.product_id}`), copies })
       }
-      const n = await printLabels(items)
+      const n = await sendLabels(items)
       if (n === 0) throw new Error('Нет этикеток для печати: у товаров нет штрихкодов')
     })
   }
@@ -111,6 +111,7 @@ export default function ReceiptView() {
                 }),
               ]}
             />
+            {!isReversal && <LabelTargetSwitch />}
             {!isReversal && (
               <Button variant="secondary" disabled={labels.busy} onClick={doPrint}>
                 Печать этикеток

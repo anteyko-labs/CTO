@@ -17,7 +17,7 @@ import { searchUmag, umagStep } from '../lib/umagLink'
 import { countText, parseKg, parseOil, viscosityFromName } from '../lib/units'
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
-import { printLabels } from './labels'
+import { LabelTargetSwitch, sendLabels } from './labelTarget'
 import { PurchasePriceInput } from './PurchasePriceInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
@@ -313,8 +313,9 @@ export function RevisionNewProduct({
             дальше сканировать товар.
           </p>
           <ErrorBox error={act.error} />
+          <LabelTargetSwitch />
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" disabled={act.busy} onClick={() => void act.run(async () => void (await printLabels([{ product: made, copies: 1 }])))}>
+            <Button variant="secondary" disabled={act.busy} onClick={() => void act.run(async () => void (await sendLabels([{ product: made, copies: 1 }])))}>
               Напечатать этикетку
             </Button>
             <Button onClick={onDone}>Готово</Button>

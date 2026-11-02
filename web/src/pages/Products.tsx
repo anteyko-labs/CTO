@@ -12,7 +12,7 @@ import { DefectMarkModal, DefectsTab } from '../components/Defects'
 import { ExportButton } from '../components/ExportButton'
 import { productCols } from '../lib/exportCols'
 import { cappedWarning, fetchAllProducts, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
-import { printLabels } from '../components/labels'
+import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { PurchasePriceModal } from '../components/PurchasePriceModal'
@@ -212,7 +212,7 @@ export default function Products() {
         if (!/^\d+$/.test(copies) || Number(copies) < 1) throw new Error(`Неверное число копий: ${s.product.name}`)
         return { product: s.product, copies: Number(copies) }
       })
-      const count = await printLabels(items)
+      const count = await sendLabels(items)
       if (count === 0) setMessage('Нет этикеток для печати: у выбранных товаров нет штрихкода')
     })
 
@@ -526,6 +526,9 @@ export default function Products() {
               или нажмите «Создать свой».
             </div>
           )}
+          <div className="mb-3">
+            <LabelTargetSwitch />
+          </div>
           <div className="flex flex-wrap gap-2">
             <Button disabled={busy} onClick={() => void print()}>
               Печать этикеток

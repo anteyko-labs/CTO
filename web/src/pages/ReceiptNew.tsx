@@ -13,7 +13,7 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
-import { printLabels } from '../components/labels'
+import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText, type PickHow } from '../components/ProductPicker'
@@ -402,7 +402,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     const copies = typeof c === 'string' ? 1 : c.n
     // На этикетке — цена, которую товар получит этим приходом (проверка 20.10.2026).
     const product = typeof c === 'string' ? l.product : { ...l.product, sale_price_tyiyn: c.salePrice }
-    void labels.run(() => printLabels([{ product, copies }]))
+    void labels.run(() => sendLabels([{ product, copies }]))
   }
 
   const updateLine = (key: string, patch: Partial<Line>) =>
@@ -564,7 +564,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       }
       if (print) {
         try {
-          await printLabels(copies)
+          await sendLabels(copies)
         } catch (err) {
           console.error(err)
         }
@@ -597,7 +597,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         : (await post<StockIn>('/stock-ins', { op_id: opId, ...doc })).id
       if (print) {
         try {
-          await printLabels(copies)
+          await sendLabels(copies)
         } catch (err) {
           console.error(err)
         }
@@ -1138,6 +1138,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-4">
                 <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
+                <LabelTargetSwitch />
                 {!stockIn && (
                 <div className="flex flex-wrap items-center gap-3 text-sm" role="radiogroup" aria-label="Расчёт с поставщиком">
                   {(

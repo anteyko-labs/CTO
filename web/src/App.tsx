@@ -12,6 +12,7 @@ import { OfflineBar } from './components/OfflineBar'
 import { OfflineBookPrints } from './components/OfflineBookPrints'
 import { BranchSwitch } from './components/BranchSwitch'
 import { setBranchLabel } from './lib/branch'
+import { LabelJobPlate } from './components/labelTarget'
 import { UpdateBanner } from './components/UpdateBanner'
 import { BotHint } from './components/BotHint'
 import { startUpdates } from './lib/updates'
@@ -38,6 +39,7 @@ const Employees = lazyPage(() => import('./pages/Employees'))
 const Expenses = lazyPage(() => import('./pages/Expenses'))
 const Gifts = lazyPage(() => import('./pages/Gifts'))
 const LabelSettingsPage = lazyPage(() => import('./pages/LabelSettings'))
+const LabelStation = lazyPage(() => import('./pages/LabelStation'))
 const Notifications = lazyPage(() => import('./pages/Notifications'))
 const Profit = lazyPage(() => import('./pages/Profit'))
 const OwnerDashboard = lazyPage(() => import('./pages/Owner').then((m) => ({ default: m.OwnerDashboard })))
@@ -423,6 +425,7 @@ function Shell() {
           {can(user, 'view_suppliers') && <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />}
           <Route path="/settings" element={<SettingsHub />} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />
+          <Route path="/label-station" element={<LabelStation />} />
           {owner && <Route path="/users" element={<Users />} />}
           {owner && <Route path="/settings/branches" element={<Branches />} />}
           {/* Профиль и смена своего пароля — у любого входа; «Мой заработок» — у входа с сотрудником (задача 005 Н1). */}
@@ -431,6 +434,7 @@ function Shell() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </Suspense>
+        <LabelJobPlate />
         </PageBoundary>
         </div>
       </main>

@@ -46,6 +46,7 @@ interface Form {
   show_article: boolean
   show_brand: boolean
   show_spec: boolean
+  remote_default: 'here' | 'station'
 }
 
 const toForm = (s: LabelSettings): Form => ({
@@ -56,6 +57,7 @@ const toForm = (s: LabelSettings): Form => ({
   show_article: s.show_article,
   show_brand: s.show_brand !== false,
   show_spec: s.show_spec !== false,
+  remote_default: s.remote_default === 'here' ? 'here' : 'station',
 })
 
 function parseMm(v: string): number | null {
@@ -76,6 +78,7 @@ function toSettings(f: Form): LabelSettings | null {
     show_article: f.show_article,
     show_brand: f.show_brand,
     show_spec: f.show_spec,
+    remote_default: f.remote_default,
   }
 }
 
@@ -159,6 +162,23 @@ function Editor({ initial }: { initial: LabelSettings }) {
             />
             <Checkbox label="Цена" checked={form.show_price} onChange={(v) => update({ show_price: v })} />
             <Checkbox label="Артикул" checked={form.show_article} onChange={(v) => update({ show_article: v })} />
+          </div>
+          <div role="radiogroup" aria-label="Кнопка по умолчанию на телефоне">
+            <div className="mb-2 text-sm font-medium text-slate-700">Кнопка по умолчанию на телефоне</div>
+            <div className="flex flex-wrap gap-4 text-sm">
+              {(
+                [
+                  ['station', 'На складе'],
+                  ['here', 'Здесь'],
+                ] as const
+              ).map(([v, t]) => (
+                <label key={v} className="flex items-center gap-2">
+                  <input type="radio" name="remote_default" checked={form.remote_default === v} onChange={() => update({ remote_default: v })} />
+                  {t}
+                </label>
+              ))}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">«На складе» — этикетка уходит на принтер склада (станция этикеток); на компьютере по умолчанию — «Здесь».</div>
           </div>
           <ErrorBox error={error} />
           {saved && <div className="text-sm text-emerald-700">Сохранено</div>}

@@ -251,6 +251,8 @@ export interface LabelSettings {
   show_brand?: boolean
   /** Характеристики: вязкость и объём масла, тип фильтра, ёмкость и ток аккумулятора. */
   show_spec?: boolean
+  /** Кнопка по умолчанию на телефоне: «На складе» или «Здесь» (задача 006 Н5). */
+  remote_default?: 'here' | 'station'
 }
 
 export interface ReceiptLine {
