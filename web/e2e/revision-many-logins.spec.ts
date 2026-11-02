@@ -149,6 +149,16 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
   await zero.fill('0')
   await zero.press('Enter')
   await expect(total(aziz, missing.id)).toHaveText(text('моё 0 шт'), { timeout: 15_000 })
+  // Крестик: строку считал только Азиз — она уходит из его списка и у владельца не посчитана.
+  aziz.once('dialog', (d) => void d.accept())
+  await aziz.locator(`[data-remove="${missing.id}"]`).click()
+  await expect(total(aziz, missing.id)).toHaveCount(0, { timeout: 15_000 })
+  await expect(aziz.getByRole('row', { name: new RegExp(`Свеча нет на полке ${RUN}`) })).toHaveCount(0)
+  // Снова «не нашли» — для проверки владельца ниже.
+  await findToCount(aziz, `Свеча нет на полке ${RUN}`)
+  await aziz.locator(`[data-count="${missing.id}"]`).fill('0')
+  await aziz.locator(`[data-count="${missing.id}"]`).press('Enter')
+  await expect(total(aziz, missing.id)).toHaveText(text('моё 0 шт'), { timeout: 15_000 })
   await openRevision(page, category)
   await expect(total(page, missing.id)).toHaveText(text('итого 0 шт'), { timeout: 15_000 })
   await cancelDraft(page.request, cat.id)

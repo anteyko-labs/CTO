@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from revision_line_adds\n                         where revision_id = $1 and product_id = $2\n                           and (user_id <> $3 or mode = 'set')\n                           and seq >= coalesce((select max(seq) from revision_line_adds\n                                                where revision_id = $1 and product_id = $2 and mode <> 'add'), 0)\n                           and mode <> 'clear') as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b4d946ce131237f65d60fb3a0c8e72ea497728cf4159425c895a37c09115d529"
+}

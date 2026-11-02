@@ -37,7 +37,7 @@ export function addIsEmpty(qty: number | null, counted: number | null): boolean 
 /** Своя запись — сразу в журнал на экране: прибавки одного человека подряд — одной записью. */
 export function appendCount(log: CountEntry[], e: CountEntry): CountEntry[] {
   const last = log[log.length - 1]
-  if (last && e.mode === 'add' && last.mode === 'add' && sameWriter(last, e)) return [...log.slice(0, -1), { ...last, qty: last.qty + e.qty }]
+  if (last && e.mode === 'add' && last.mode === 'add' && sameWriter(last, e) && e.qty >= 0 && last.qty >= 0) return [...log.slice(0, -1), { ...last, qty: last.qty + e.qty }]
   return [...log, e]
 }
 
@@ -53,8 +53,14 @@ export function mineOf(log: CountEntry[], userId: string): number | null {
       break
     }
   let n: number | null = null
-  for (const e of log.slice(from)) if (e.mode === 'add' && e.user_id === userId) n = (n ?? 0) + e.qty
-  return n
+  let fixedDown = false
+  for (const e of log.slice(from))
+    if (e.mode === 'add' && e.user_id === userId) {
+      n = (n ?? 0) + e.qty
+      if (e.qty < 0) fixedDown = true
+    }
+  // Своё убрали крестиком («= моё 0» после прибавок) — строки у человека больше нет.
+  return n === 0 && fixedDown ? null : n
 }
 
 /**

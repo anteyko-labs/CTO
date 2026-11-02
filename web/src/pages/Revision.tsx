@@ -433,7 +433,7 @@ function Draft({
     const total = res.counted_qty
     // «= моё» сервер записал прибавкой разницы со своим числом строки — так же и в журнал на экране.
     const entryOf = (x: Line): CountEntry =>
-      qty === null
+      qty === null || (mode === 'mine' && total === null)
         ? { by: me.full_name, user_id: me.id, mode: 'clear', qty: 0 }
         : mode === 'mine'
           ? { by: me.full_name, user_id: me.id, mode: 'add', qty: qty - (mineOf(x.counted_log ?? [], me.id) ?? 0) }
@@ -639,6 +639,17 @@ function Draft({
 
   /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
+  /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
+  const removeMine = (l: Line) => {
+    if (!window.confirm(`Убрать «${l.name}» из своего пересчёта?`)) return
+    setOpened((o) => {
+      const n = new Set(o)
+      n.delete(l.product_id)
+      return n
+    })
+    save(l, 0, 'mine', ops.take(l.product_id, inputKey('mine', 0)))
+  }
+
   const commit = (l: Line, qty: number | null) => {
     const id = l.product_id
     const mode = modeOf(l)
@@ -1088,6 +1099,18 @@ function Draft({
                         {l.counted_qty !== null && (
                           <div className="text-xs font-medium text-slate-700" data-total={l.product_id}>
                             {ownView ? 'моё' : 'итого'} {countText(l, l.counted_qty)}
+                            {ownView && (
+                              <button
+                                type="button"
+                                className="ml-2 rounded px-1.5 text-base leading-none text-rose-600 hover:bg-rose-50"
+                                title="Убрать из своего пересчёта"
+                                aria-label={`Убрать ${l.name}`}
+                                data-remove={l.product_id}
+                                onClick={() => removeMine(l)}
+                              >
+                                ×
+                              </button>
+                            )}
                           </div>
                         )}
                         {unsentLines.has(l.product_id) && (
@@ -1575,7 +1598,7 @@ function Revision() {
             Ревизий ещё не было. Выберите, что пересчитываем, и начните — пересчёт идёт сканером.
           </Empty>
         ) : (
-          <Table head={['№', 'Что', 'Начал', 'Пересчитано', 'Статус', '']}>
+          <Table head={['№', 'Что', 'Дата', 'Пересчитано', 'Статус', '']}>
             {listPager.shown.map((h) => {
               const d = (drafts.data ?? []).find((x) => x?.head.id === h.id)
               const who = d ? countedBy(d.lines) : []
@@ -1584,7 +1607,7 @@ function Revision() {
                 <td className="px-2 py-2 font-medium">{h.number}</td>
                 <td className="px-2 py-2">{h.category_name ?? 'Весь склад'}</td>
                 <td className="whitespace-nowrap px-2 py-2">
-                  {h.user_name}, {formatDateTime(h.created_at)}
+                  {formatDateTime(h.created_at)}
                 </td>
                 <td className="px-2 py-2">
                   {h.counted}
@@ -1654,7 +1677,6 @@ function revisionCols(money: boolean, normBp: number): ExportCol<Line>[] {
 const REVISION_LIST_COLS: ExportCol<Head>[] = [
   { label: '№', value: (h) => xl.int(h.number) },
   { label: 'Что', value: (h) => h.category_name ?? 'Весь склад' },
-  { label: 'Начал', value: (h) => h.user_name },
   { label: 'Когда', value: (h) => xl.dateTime(h.created_at) },
   { label: 'Проведена', value: (h) => xl.dateTime(h.posted_at) },
   { label: 'Пересчитано', value: (h) => xl.int(h.counted) },

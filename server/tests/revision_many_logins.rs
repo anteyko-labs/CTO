@@ -541,3 +541,34 @@ async fn mine_fixes_own_count_and_keeps_others(pool: PgPool) {
         .await;
     assert_eq!(after["counted_qty"], json!(9));
 }
+
+/// Крестик у своей строки (задача 007, «= моё 0»): строку считал только он — она уходит совсем
+/// (не «посчитано 0», иначе проведение списало бы остаток); считали и другие — убирается только своё.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cross_removes_own_line_without_zeroing(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item) = w.draft("Свеча пробита по ошибке").await;
+    let uri = format!("/api/v1/revisions/{rid}/lines");
+    let (aziz, aleksey) = (&w.people[0], &w.people[1]);
+    let body = |qty: i64, mode: &str| json!({ "product_id": item, "counted_qty": qty, "mode": mode, "op_id": Uuid::now_v7() });
+    w.ok(aziz, "PUT", &uri, body(2, "add")).await;
+    let gone = w.ok(aziz, "PUT", &uri, body(0, "mine")).await;
+    assert_eq!(gone["counted_qty"], Value::Null);
+    let rev = w.get(&w.owner, &format!("/api/v1/revisions/{rid}")).await;
+    let line = rev["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["product_id"] == json!(item))
+        .cloned();
+    // Остатка нет и строку никто не считал — её нет в ревизии; есть — не посчитана.
+    assert!(
+        line.as_ref().is_none_or(|l| l["counted_qty"].is_null()),
+        "{line:?}"
+    );
+    // Теперь двое: Азиз убирает своё — у строки остаётся число Алексея.
+    w.ok(aziz, "PUT", &uri, body(3, "add")).await;
+    w.ok(aleksey, "PUT", &uri, body(4, "add")).await;
+    let left = w.ok(aziz, "PUT", &uri, body(0, "mine")).await;
+    assert_eq!(left["counted_qty"], json!(4));
+}

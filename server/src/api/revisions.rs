@@ -119,7 +119,12 @@ async fn count_log(
         let log = &mut line.entries;
         match log.last_mut() {
             Some(last)
-                if r.mode == "add" && last.mode == "add" && last.user_id == Some(r.user_id) =>
+                // Исправление «= моё» вниз — отдельной записью: экран по ней видит, что своё убрано.
+                if r.mode == "add"
+                    && last.mode == "add"
+                    && last.user_id == Some(r.user_id)
+                    && r.qty >= 0
+                    && last.qty >= 0 =>
             {
                 last.qty = last.qty.saturating_add(r.qty);
             }
@@ -662,6 +667,28 @@ async fn my_count(
     .await?)
 }
 
+/// Строку после последнего «= итог»/«убрал» считали другие входы или кто-то записал «= итог».
+async fn others_counted(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists(select 1 from revision_line_adds
+                         where revision_id = $1 and product_id = $2
+                           and (user_id <> $3 or mode = 'set')
+                           and seq >= coalesce((select max(seq) from revision_line_adds
+                                                where revision_id = $1 and product_id = $2 and mode <> 'add'), 0)
+                           and mode <> 'clear') as "v!""#,
+        id,
+        product_id,
+        ctx.user.id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// Посчитано по строке сейчас; строки нет — `None` (не путать с посчитанным 0).
 async fn counted_now(
     conn: &mut PgConnection,
@@ -808,16 +835,38 @@ async fn put_line(
     if counted > 1_000_000_000 {
         return Err(invalid("пересчитано слишком много"));
     }
+    // «= моё 0» (крестик у своей строки, задача 007): строку больше никто не считал — убираем её
+    // совсем, а не «посчитано 0», иначе проведение списало бы весь остаток как недостачу.
+    let removed = req.mode == CountMode::Mine
+        && req.counted_qty == 0
+        && counted == 0
+        && !others_counted(&mut tx, &ctx, id, req.product_id).await?;
+    if removed {
+        sqlx::query!(
+            "delete from revision_lines where revision_id = $1 and product_id = $2",
+            id,
+            req.product_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     let version = log_count(
         &mut tx,
         &ctx,
         id,
         req.product_id,
-        if add { "add" } else { "set" },
-        qty,
+        if removed {
+            "clear"
+        } else if add {
+            "add"
+        } else {
+            "set"
+        },
+        if removed { 0 } else { qty },
         req.op_id,
     )
     .await?;
+    let counted: Option<i64> = (!removed).then_some(counted);
     let out = json!({ "ok": true, "counted_qty": counted, "version": version });
     if let Some(op_id) = req.op_id {
         ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
