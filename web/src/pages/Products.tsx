@@ -14,6 +14,7 @@ import { productCols } from '../lib/exportCols'
 import { cappedWarning, fetchAllProducts, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { LabelSizeButtons, sendToStation } from '../components/labelTarget'
 import type { LabelSize } from '../lib/labelJob'
+import type { PricePer } from '../lib/labelText'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { PurchasePriceModal } from '../components/PurchasePriceModal'
@@ -206,7 +207,7 @@ export default function Products() {
   }))
   const noBarcode = selectedList.filter((s) => s.product.barcodes.length === 0)
 
-  const print = (size: LabelSize) =>
+  const print = (size: LabelSize, per: PricePer) =>
     run(async () => {
       setMessage(null)
       const items = selectedList.map((s) => {
@@ -214,7 +215,7 @@ export default function Products() {
         if (!/^\d+$/.test(copies) || Number(copies) < 1) throw new Error(`Неверное число копий: ${s.product.name}`)
         return { product: s.product, copies: Number(copies) }
       })
-      const count = await sendToStation(items, size)
+      const count = await sendToStation(items, size, per)
       if (count === 0) setMessage('Нет этикеток для печати: у выбранных товаров нет штрихкода')
     })
 
@@ -534,7 +535,7 @@ export default function Products() {
             </div>
           )}
           <div className="flex flex-wrap gap-2">
-            <LabelSizeButtons variant="primary" disabled={busy} onPrint={(size) => void print(size)} />
+            <LabelSizeButtons variant="primary" disabled={busy} onPrint={(size, per) => void print(size, per)} />
             <Button variant="secondary" onClick={() => setSelected({})}>
               Снять выбор
             </Button>

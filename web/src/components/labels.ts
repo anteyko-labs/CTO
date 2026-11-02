@@ -1,6 +1,6 @@
 // Этикетки со штрихкодом: HTML для станции этикеток склада (SPEC-02, ADR-010, задача 014).
 import JsBarcode from 'jsbarcode'
-import { labelPrice, labelText } from '../lib/labelText'
+import { labelPrice, labelText, type PricePer } from '../lib/labelText'
 import type { LabelSettings, Product } from '../lib/types'
 
 export interface LabelItem {
@@ -37,8 +37,8 @@ function barcodeSvg(code: string, heightMm: number): string {
   return svg.outerHTML
 }
 
-/** HTML страницы печати: по одной этикетке на страницу заданного размера. */
-export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
+/** HTML страницы печати: по одной этикетке на страницу заданного размера; цена — `per` (задача 021). */
+export function labelsHtml(items: LabelItem[], s: LabelSettings, per: PricePer = 'piece'): string {
   const labels: string[] = []
   for (const { product, copies } of items) {
     const code = product.barcodes[0]
@@ -50,7 +50,9 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     const name = t.name ? `<div class="name">${escapeHtml(t.name)}</div>` : ''
     const spec = t.spec ? `<div class="spec">${escapeHtml(t.spec)}</div>` : ''
     const article = s.show_article && product.article ? `<div class="small">${escapeHtml(product.article)}</div>` : ''
-    const price = s.show_price ? `<div class="price">Цена: ${escapeHtml(labelPrice(product))}</div>` : ''
+    const price = s.show_price ? `<div class="price">Цена: ${escapeHtml(labelPrice(product, per))}</div>` : ''
+    // На маленькой — коротко и без «Цена:»: «500 с/л» влезает в 30 мм (задача 021).
+    const short = escapeHtml(labelPrice(product, per, true))
     // Маленькая этикетка (до 25 мм в высоту): штрихкоду — не меньше 9 мм, текст ужимается в
     // строку названия и строку «бренд · характеристики — цена» (проверка 20.10.2026).
     const compact = s.height_mm <= 25
@@ -59,9 +61,9 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     const bare = !t.name && !meta
     const html = compact
       ? bare
-        ? `<div class="label"><div class="code">${svg}</div>${s.show_price ? `<div class="price big">Цена: ${escapeHtml(labelPrice(product))}</div>` : ''}</div>`
+        ? `<div class="label"><div class="code">${svg}</div>${s.show_price ? `<div class="price big">${short}</div>` : ''}</div>`
         : `<div class="label">${t.name ? `<div class="name one">${escapeHtml(t.name)}</div>` : ''}<div class="code">${svg}</div>` +
-          `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">Цена: ${escapeHtml(labelPrice(product))}</span>` : ''}</div></div>`
+          `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">${short}</span>` : ''}</div></div>`
       : `<div class="label">${brand}${name}${spec}${article}<div class="code">${svg}</div>${price}</div>`
     for (let i = 0; i < copies; i++) {
       labels.push(html)

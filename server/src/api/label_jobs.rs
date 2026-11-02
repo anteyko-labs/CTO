@@ -1,6 +1,7 @@
 //! Станция этикеток (задача 006, ADR-177): телефон ставит задание в очередь филиала, страница
 //! станции на ПК склада забирает его по одному и печатает на принтер по умолчанию. Задача 014: у задания и станции —
-//! размер (`big`/`small`), каждая станция берёт только свои.
+//! размер (`big`/`small`), каждая станция берёт только свои. Задача 021: у задания — за что цена
+//! на этикетке (`piece`/`liter`/`meter`), станция печатает по нему.
 //! Этикетки — без права (SPEC-01): любой вошедший филиала; чужой филиал задание не видит (I16).
 
 use axum::extract::{Path, Query, State};
@@ -12,7 +13,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::catalog::{ProductOut, product_by_id};
-use crate::api::refs::{LabelSizeQuery, label_size};
+use crate::api::refs::{LabelSizeQuery, label_price_per, label_size};
 use crate::auth::{Ctx, CurrentUser};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops;
@@ -46,6 +47,10 @@ struct CreateReq {
     /// `big` — прежний принтер, `small` — 30×20 мм (задача 014); без поля — `big`.
     #[serde(default)]
     size: Option<String>,
+    /// Цена на этикетке: `piece` — за шт, `liter` — за литр, `meter` — за метр (задача 021);
+    /// без поля — `piece`.
+    #[serde(default)]
+    price_per: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -98,6 +103,7 @@ async fn create_job(
         return Err(invalid("нет этикеток для печати"));
     }
     let size = label_size(req.size.as_deref())?;
+    let price_per = label_price_per(req.price_per.as_deref())?;
     if req.items.len() > 200 {
         return Err(invalid("слишком много товаров в одном задании"));
     }
@@ -124,15 +130,16 @@ async fn create_job(
     let id = ops::new_id();
     let items = json!(req.items);
     sqlx::query!(
-        r#"insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size)
-           values ($1, $2, $3, $4, $5, $6, $7)"#,
+        r#"insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size, price_per)
+           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
         id,
         ctx.user.branch_id,
         req.op_id,
         items,
         copies,
         ctx.user.id,
-        size
+        size,
+        price_per
     )
     .execute(&mut *tx)
     .await?;
@@ -142,7 +149,7 @@ async fn create_job(
         KIND,
         "label_job",
         Some(id),
-        json!({ "copies": total, "items": items, "size": size }),
+        json!({ "copies": total, "items": items, "size": size, "price_per": price_per }),
     )
     .await?;
     let out = Created {
@@ -296,6 +303,8 @@ struct Taken {
     id: Uuid,
     copies: i32,
     created_by_name: String,
+    /// За что цена на этикетке (задача 021).
+    price_per: String,
     items: Vec<TakeItem>,
 }
 
@@ -315,7 +324,7 @@ async fn take_job(
                        where branch_id = $1 and size = $3 and status = 'queued'
                        order by created_at limit 1
                        for update skip locked)
-           returning id, items, copies, created_by"#,
+           returning id, items, copies, created_by, price_per"#,
         user.branch_id,
         req.station_id,
         size
@@ -346,6 +355,7 @@ async fn take_job(
         id: row.id,
         copies: row.copies,
         created_by_name,
+        price_per: row.price_per,
         items,
     } })))
 }

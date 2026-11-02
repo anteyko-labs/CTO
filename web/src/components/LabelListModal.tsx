@@ -5,6 +5,7 @@ import { useState } from 'react'
 import type { Product } from '../lib/types'
 import { useAction } from '../lib/hooks'
 import type { LabelSize } from '../lib/labelJob'
+import type { PricePer } from '../lib/labelText'
 import { LabelSizeButtons, sendToStation } from './labelTarget'
 import { Button, ErrorBox, Modal, Table } from './ui'
 
@@ -19,10 +20,10 @@ export function LabelListModal({ items, onClose }: { items: LabelListItem[]; onC
   const nums = counts.map((c) => (c === '' ? 0 : Number(c)))
   const bad = nums.some((n) => !Number.isInteger(n) || n < 0 || n > 500)
   const total = nums.reduce((a, n) => a + (Number.isFinite(n) ? n : 0), 0)
-  const print = (size: LabelSize) =>
+  const print = (size: LabelSize, per: PricePer) =>
     void act.run(async () => {
       const list = items.map((i, k) => ({ product: i.product, copies: nums[k] })).filter((i) => i.copies > 0)
-      const n = await sendToStation(list, size)
+      const n = await sendToStation(list, size, per)
       if (n === 0) throw new Error('Нет этикеток для печати: у товаров нет штрихкодов')
       onClose()
     })

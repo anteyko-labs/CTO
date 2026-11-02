@@ -46,12 +46,31 @@ describe('образец для предпросмотра этикетки', ()
   })
 })
 
-describe('цена на этикетке (ADR-178)', () => {
-  it('кг и м — с единицей, масло и штуки — только цена', () => {
-    const nb = (x: string) => x.replace(/\u00a0/g, ' ')
+describe('цена на этикетке (ADR-178, задача 021)', () => {
+  const nb = (x: string) => x.replace(/\u00a0/g, ' ')
+  const oil = { unit: 'ml' as const, container_ml: 4000, sale_price_tyiyn: 200_000, pour_price_per_l_tyiyn: 50_000 }
+  it('по умолчанию «за шт»: подпись у любой единицы', () => {
     expect(nb(labelPrice({ unit: 'g', sale_price_tyiyn: 30_000 }))).toBe('300 с за кг')
     expect(nb(labelPrice({ unit: 'mm', sale_price_tyiyn: 12_000 }))).toBe('120 с за м')
-    expect(nb(labelPrice({ unit: 'piece', sale_price_tyiyn: 12_000 }))).toBe('120 с')
-    expect(nb(labelPrice({ unit: 'ml', sale_price_tyiyn: 200_000 }))).toBe('2 000 с')
+    expect(nb(labelPrice({ unit: 'piece', sale_price_tyiyn: 12_000 }))).toBe('120 с за шт')
+    expect(nb(labelPrice(oil))).toBe('2 000 с за шт')
+  })
+  it('масло: за канистру или за литр; коротко — «500 с/л»', () => {
+    expect(nb(labelPrice(oil, 'piece'))).toBe('2 000 с за шт')
+    expect(nb(labelPrice(oil, 'liter'))).toBe('500 с за л')
+    expect(nb(labelPrice(oil, 'liter', true))).toBe('500 с/л')
+    expect(nb(labelPrice(oil, 'piece', true))).toBe('2 000 с/шт')
+  })
+  it('цена литра без ответа сервера — от канистры, до тыйына, как на кассе', () => {
+    expect(nb(labelPrice({ unit: 'ml', container_ml: 4000, sale_price_tyiyn: 199_999 }, 'liter'))).toBe('500 с за л')
+    expect(nb(labelPrice({ unit: 'ml', container_ml: 3000, sale_price_tyiyn: 100_000 }, 'liter'))).toBe('333,33 с за л')
+  })
+  it('выбор не подходит товару — по его единице', () => {
+    expect(nb(labelPrice({ unit: 'piece', sale_price_tyiyn: 12_000 }, 'liter'))).toBe('120 с за шт')
+    expect(nb(labelPrice({ unit: 'piece', sale_price_tyiyn: 12_000 }, 'meter'))).toBe('120 с за шт')
+    expect(nb(labelPrice(oil, 'meter'))).toBe('2 000 с за шт')
+    expect(nb(labelPrice({ unit: 'mm', sale_price_tyiyn: 12_000 }, 'piece'))).toBe('120 с за м')
+    expect(nb(labelPrice({ unit: 'mm', sale_price_tyiyn: 12_000 }, 'liter', true))).toBe('120 с/м')
+    expect(nb(labelPrice({ unit: 'g', sale_price_tyiyn: 30_000 }, 'meter'))).toBe('300 с за кг')
   })
 })

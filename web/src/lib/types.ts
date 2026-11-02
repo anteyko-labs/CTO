@@ -258,6 +258,8 @@ export interface LabelSettings {
   show_spec?: boolean
   /** Кнопка по умолчанию на телефоне: «На складе» или «Здесь» (задача 006 Н5). */
   remote_default?: 'here' | 'station'
+  /** Цена на этикетке по умолчанию при печати — общая для обоих принтеров (задача 021). */
+  price_per_default?: 'piece' | 'liter' | 'meter'
 }
 
 export interface ReceiptLine {

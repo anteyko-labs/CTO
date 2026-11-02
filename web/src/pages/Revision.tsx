@@ -10,8 +10,9 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
-import { sendToStation } from '../components/labelTarget'
+import { PricePerSwitch, sendToStation, usePricePer } from '../components/labelTarget'
 import type { LabelSize } from '../lib/labelJob'
+import type { PricePer } from '../lib/labelText'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -646,7 +647,8 @@ function Draft({
   const askLabels = (l: Line, size: LabelSize) =>
     // По умолчанию — сколько штук посчитано (на вес и масло — одна).
     setLabelFor({ line: l, size, copies: String(l.unit === 'piece' && l.counted_qty && l.counted_qty > 0 ? Math.min(l.counted_qty, 500) : 1) })
-  const issueCode = (l: Line, copies: number, size: LabelSize) =>
+  const [labelPer, setLabelPer] = usePricePer()
+  const issueCode = (l: Line, copies: number, size: LabelSize, per: PricePer) =>
     void act.run(async () => {
       if (l.barcodes.length === 0) {
         const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
@@ -655,7 +657,7 @@ function Draft({
       }
       const product = await get<Product>(`/products/${l.product_id}`)
       // Этикетка — на складской принтер (станция этикеток, задача 006).
-      await sendToStation([{ product, copies }], size)
+      await sendToStation([{ product, copies }], size, per)
     })
 
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
@@ -1343,6 +1345,7 @@ function Draft({
                 onChange={(e) => setLabelFor({ ...labelFor, copies: e.target.value.replace(/\D/g, '') })}
               />
             </Field>
+            <PricePerSwitch value={labelPer} onChange={setLabelPer} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setLabelFor(null)}>
                 Отмена
@@ -1353,7 +1356,7 @@ function Draft({
                   const n = Number(labelFor.copies)
                   const { line, size } = labelFor
                   setLabelFor(null)
-                  issueCode(line, n, size)
+                  issueCode(line, n, size, labelPer)
                 }}
               >
                 Печатать{Number(labelFor.copies) >= 1 ? ` (${Number(labelFor.copies)})` : ''}

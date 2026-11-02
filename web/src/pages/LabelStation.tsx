@@ -7,6 +7,7 @@ import { labelsHtml, type LabelItem } from '../components/labels'
 import { Button, Card, CardTitle, ErrorBox, PageHeader } from '../components/ui'
 import { get, post, uuidv7 } from '../lib/api'
 import { sizeFromSearch, STATION_TICK_MS, stationId, type LabelJob } from '../lib/labelJob'
+import { isPricePer } from '../lib/labelText'
 import { printAsPage } from '../lib/printFrame'
 import type { LabelSettings, Product } from '../lib/types'
 
@@ -14,6 +15,8 @@ interface Taken {
   id: string
   copies: number
   created_by_name: string
+  /** За что цена на этикетке — выбрано при печати (задача 021). */
+  price_per?: string
   items: LabelItem[]
 }
 
@@ -69,7 +72,7 @@ export default function LabelStation() {
             const settings = await get<LabelSettings>(settingsUrl)
             const items = job.items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
             if (items.length === 0) throw new Error('у товаров нет штрихкода')
-            printAsPage(labelsHtml(items, settings))
+            printAsPage(labelsHtml(items, settings, isPricePer(job.price_per) ? job.price_per : 'piece'))
             await post(`/label-jobs/${job.id}/done`, { station_id: station.current })
             setLast(`${job.created_by_name}: ${job.copies} шт.`)
           } catch (e) {
@@ -98,7 +101,7 @@ export default function LabelStation() {
   const test = async () => {
     try {
       const settings = await get<LabelSettings>(settingsUrl)
-      printAsPage(labelsHtml([{ product: SAMPLE, copies: 1 }], settings))
+      printAsPage(labelsHtml([{ product: SAMPLE, copies: 1 }], settings, settings.price_per_default))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }

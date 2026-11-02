@@ -2,6 +2,7 @@
 // вязкость и объём тары, у фильтра тип, у аккумулятора ёмкость и пусковой ток.
 import { productTitle } from './battery'
 import { formatLiters, formatSom } from './format'
+import { pourPricePerL } from './money'
 import type { LabelSettings, Product } from './types'
 
 export interface LabelText {
@@ -12,10 +13,24 @@ export interface LabelText {
 
 type LabelProduct = Pick<Product, 'name' | 'brand' | 'attrs' | 'unit' | 'container_ml'> & { category_kind?: string }
 
-/** Цена на этикетке: у товара в кг и м — «300 с за кг», «120 с за м»; масло и штуки — только цена. */
-export function labelPrice(p: Pick<Product, 'unit' | 'sale_price_tyiyn'>): string {
-  const per = p.unit === 'g' ? ' за кг' : p.unit === 'mm' ? ' за м' : ''
-  return `${formatSom(p.sale_price_tyiyn)}${per}`
+/** За что цена на этикетке — выбор при печати (задача 021). */
+export type PricePer = 'piece' | 'liter' | 'meter'
+
+export const PRICE_PER: Record<PricePer, string> = { piece: 'за шт', liter: 'за литр', meter: 'за метр' }
+
+export const isPricePer = (v: unknown): v is PricePer => v === 'piece' || v === 'liter' || v === 'meter'
+
+type PricedProduct = Pick<Product, 'unit' | 'sale_price_tyiyn'> & Partial<Pick<Product, 'container_ml' | 'pour_price_per_l_tyiyn'>>
+
+/**
+ * Цена на этикетке по выбору (задача 021): масло — за канистру («за шт») или за литр (цена литра,
+ * как на кассе при розливе, ADR-074); товар в метрах — за метр, в кг — за кг, штучный — за шт.
+ * Выбор не подходит товару — цена и подпись по его единице. Коротко — «500 с/л» (маленькая этикетка).
+ */
+export function labelPrice(p: PricedProduct, per: PricePer = 'piece', short = false): string {
+  const liter = per === 'liter' ? (p.pour_price_per_l_tyiyn ?? pourPricePerL({ ...p, container_ml: p.container_ml ?? null })) : null
+  const [price, unit] = p.unit === 'g' ? [p.sale_price_tyiyn, 'кг'] : p.unit === 'mm' ? [p.sale_price_tyiyn, 'м'] : liter != null ? [liter, 'л'] : [p.sale_price_tyiyn, 'шт']
+  return short ? `${formatSom(price)}/${unit}` : `${formatSom(price)} за ${unit}`
 }
 
 /** Характеристики строкой: «5W-30 · 4 л», «масляный», «60 А·ч · 540 А». */

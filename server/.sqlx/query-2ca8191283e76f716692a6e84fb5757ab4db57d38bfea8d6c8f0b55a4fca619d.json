@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size)\n           values ($1, $2, $3, $4, $5, $6, $7)",
+  "query": "insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size, price_per)\n           values ($1, $2, $3, $4, $5, $6, $7, $8)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -11,10 +11,11 @@
         "Jsonb",
         "Int4",
         "Uuid",
+        "Text",
         "Text"
       ]
     },
     "nullable": []
   },
-  "hash": "0826d685e8cb2abeef467069670c2e1884723852766597088b8c41103f36e764"
+  "hash": "2ca8191283e76f716692a6e84fb5757ab4db57d38bfea8d6c8f0b55a4fca619d"
 }

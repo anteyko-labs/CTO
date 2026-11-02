@@ -631,3 +631,120 @@ async fn small_label_settings_apart(pool: PgPool) {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// Задача 021: за что цена на этикетке — у задания (`piece`/`liter`/`meter`), станция получает его.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn job_carries_price_per(pool: PgPool) {
+    let w = world(pool).await;
+    let post = |per: Option<&str>| {
+        let mut body = json!({ "op_id": op(), "items": [{ "product_id": w.item, "copies": 1 }] });
+        if let Some(p) = per {
+            body["price_per"] = json!(p);
+        }
+        body
+    };
+    let (s, _) = w
+        .api
+        .call(
+            "POST",
+            "/api/v1/label-jobs",
+            &w.admin_a,
+            None,
+            Some(post(Some("kg"))),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let old = w
+        .api
+        .ok("POST", "/api/v1/label-jobs", &w.admin_a, None, post(None))
+        .await;
+    let liter = w
+        .api
+        .ok(
+            "POST",
+            "/api/v1/label-jobs",
+            &w.admin_a,
+            None,
+            post(Some("liter")),
+        )
+        .await;
+    let station = op();
+    let got = take(&w, &w.admin_a, station).await;
+    assert_eq!(got["job"]["id"], old["id"]);
+    assert_eq!(got["job"]["price_per"], json!("piece"), "без поля — за шт");
+    let got = take(&w, &w.admin_a, station).await;
+    assert_eq!(got["job"]["id"], liter["id"]);
+    assert_eq!(got["job"]["price_per"], json!("liter"));
+    let logged: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'label_job.create' and entity_id = $1",
+    )
+    .bind(Uuid::parse_str(&id(&liter)).unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(logged["price_per"], json!("liter"));
+}
+
+/// Задача 021: «Цена на этикетке по умолчанию» — одна на оба принтера; прежний экран без поля её
+/// не сбрасывает.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn label_price_default_shared_by_sizes(pool: PgPool) {
+    let w = world(pool).await;
+    let owner = w.api.login("owner", "owner-pass-1").await;
+    let big = w
+        .api
+        .get("/api/v1/settings/labels", &owner, Some(w.a))
+        .await;
+    assert_eq!(big["price_per_default"], json!("piece"));
+    let mut body = big.clone();
+    body["price_per_default"] = json!("kg");
+    let (s, _) = w
+        .api
+        .call(
+            "PUT",
+            "/api/v1/settings/labels",
+            &owner,
+            Some(w.a),
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    body["price_per_default"] = json!("liter");
+    let saved = w
+        .api
+        .ok("PUT", "/api/v1/settings/labels", &owner, Some(w.a), body)
+        .await;
+    assert_eq!(saved["price_per_default"], json!("liter"));
+    let small = w
+        .api
+        .get("/api/v1/settings/labels?size=small", &owner, Some(w.a))
+        .await;
+    assert_eq!(
+        small["price_per_default"],
+        json!("liter"),
+        "общая для размеров"
+    );
+    // Прежний экран сохраняет без поля — настройка остаётся.
+    let mut body = small.clone();
+    body.as_object_mut().unwrap().remove("price_per_default");
+    w.api
+        .ok(
+            "PUT",
+            "/api/v1/settings/labels?size=small",
+            &owner,
+            Some(w.a),
+            body,
+        )
+        .await;
+    let big = w
+        .api
+        .get("/api/v1/settings/labels", &owner, Some(w.a))
+        .await;
+    assert_eq!(big["price_per_default"], json!("liter"));
+    // У другого филиала — своя, по умолчанию «за шт».
+    let other = w
+        .api
+        .get("/api/v1/settings/labels", &owner, Some(w.b))
+        .await;
+    assert_eq!(other["price_per_default"], json!("piece"));
+}

@@ -344,7 +344,7 @@ export function RevisionNewProduct({
           <div className="flex justify-end gap-2">
             <LabelSizeButtons
               disabled={act.busy || !(Number(madeCopies) >= 1 && Number(madeCopies) <= 500)}
-              onPrint={(size) => void act.run(async () => void (await sendToStation([{ product: made, copies: Number(madeCopies) }], size)))}
+              onPrint={(size, per) => void act.run(async () => void (await sendToStation([{ product: made, copies: Number(madeCopies) }], size, per)))}
             />
             <Button onClick={onDone}>Готово</Button>
           </div>

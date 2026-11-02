@@ -1351,6 +1351,24 @@ struct LabelSettings {
     /// По умолчанию «На складе» — прямая просьба владельца (I21).
     #[serde(default = "station")]
     remote_default: String,
+    /// Цена на этикетке по умолчанию при печати (задача 021): `piece`, `liter` или `meter`.
+    /// Общая для обоих принтеров — хранится отдельным ключом [`LABELS_PRICE_PER_KEY`]; без поля
+    /// в `PUT` (прежний экран) не меняется.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_per_default: Option<String>,
+}
+
+/// Ключ настройки «Цена на этикетке по умолчанию» — одна на филиал, не по размеру.
+const LABELS_PRICE_PER_KEY: &str = "labels.price_per";
+
+/// За что цена на этикетке (задача 021); без значения — `piece`, неизвестное — 422.
+pub fn label_price_per(v: Option<&str>) -> AppResult<&'static str> {
+    match v.unwrap_or("piece") {
+        "piece" => Ok("piece"),
+        "liter" => Ok("liter"),
+        "meter" => Ok("meter"),
+        _ => Err(invalid("цена на этикетке — за шт, за литр или за метр")),
+    }
 }
 
 fn station() -> String {
@@ -1373,6 +1391,7 @@ impl LabelSettings {
             show_brand: false,
             show_spec: false,
             remote_default: station(),
+            price_per_default: None,
         }
     }
 }
@@ -1413,6 +1432,7 @@ impl Default for LabelSettings {
             show_brand: true,
             show_spec: true,
             remote_default: station(),
+            price_per_default: None,
         }
     }
 }
@@ -1641,7 +1661,7 @@ async fn get_labels(
     )
     .fetch_optional(&state.pool)
     .await?;
-    let settings = v
+    let mut settings = v
         .and_then(|v| serde_json::from_value::<LabelSettings>(v).ok())
         .unwrap_or_else(|| {
             if size == "small" {
@@ -1650,6 +1670,21 @@ async fn get_labels(
                 LabelSettings::default()
             }
         });
+    // Цена по умолчанию — общая для обоих принтеров (задача 021).
+    let per = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = $2",
+        user.branch_id,
+        LABELS_PRICE_PER_KEY
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    settings.price_per_default = Some(
+        per.as_ref()
+            .and_then(Value::as_str)
+            .and_then(|v| label_price_per(Some(v)).ok())
+            .unwrap_or("piece")
+            .into(),
+    );
     Ok(Json(json!(settings)))
 }
 
@@ -1657,7 +1692,7 @@ async fn put_labels(
     State(state): State<AppState>,
     ctx: Ctx,
     Query(q): Query<LabelSizeQuery>,
-    Json(req): Json<LabelSettings>,
+    Json(mut req): Json<LabelSettings>,
 ) -> AppResult<Json<Value>> {
     let size = label_size(q.size.as_deref())?;
     if !(10..=200).contains(&req.width_mm) || !(10..=200).contains(&req.height_mm) {
@@ -1666,6 +1701,11 @@ async fn put_labels(
     if !matches!(req.remote_default.as_str(), "station" | "here") {
         return Err(invalid("кнопка по умолчанию — «Здесь» или «На складе»"));
     }
+    let price_per = req
+        .price_per_default
+        .take()
+        .map(|v| label_price_per(Some(&v)))
+        .transpose()?;
     let value = json!(req);
     let mut tx = state.pool.begin().await?;
     // Этикетки — часть «Товары и штрихкоды» (ADR-128).
@@ -1679,14 +1719,32 @@ async fn put_labels(
     )
     .execute(&mut *tx)
     .await?;
+    if let Some(per) = price_per {
+        sqlx::query!(
+            r#"insert into settings (branch_id, key, value) values ($1, $2, $3)
+               on conflict (branch_id, key) do update set value = excluded.value"#,
+            ctx.user.branch_id,
+            LABELS_PRICE_PER_KEY,
+            json!(per)
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     ops::audit(&mut tx, &ctx, "settings.labels", "settings", None, {
         let mut a = value.clone();
         a["size"] = json!(size);
+        if let Some(per) = price_per {
+            a["price_per_default"] = json!(per);
+        }
         a
     })
     .await?;
     tx.commit().await?;
-    Ok(Json(value))
+    let mut out = value;
+    if let Some(per) = price_per {
+        out["price_per_default"] = json!(per);
+    }
+    Ok(Json(out))
 }
 
 // ---------- Настройки кассы ----------

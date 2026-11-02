@@ -31,14 +31,45 @@ describe('этикетки большая и маленькая (задача 01
     expect(html).toContain('Цена: ')
     expect(html).toContain('size: 40mm 30mm')
   })
-  it('маленькая 30×20 — штрихкод и «Цена:», без названия', async () => {
+  it('маленькая 30×20 — штрихкод и короткая цена «500 с/шт», без названия', async () => {
     const { labelsHtml } = await import('./labels')
     const html = labelsHtml([{ product, copies: 2 }], small)
     expect(html).toContain('size: 30mm 20mm')
     expect(html).toContain('data-code')
-    expect(html).toContain('class="price big">Цена: ')
+    expect(html).toContain('class="price big">500\u00a0с/шт<')
     expect(html).not.toContain('Фильтр масляный')
     expect(html).not.toContain('Mann')
     expect(html.match(/class="label"/g)).toHaveLength(2)
+  })
+})
+
+describe('цена за литр на этикетке (задача 021)', () => {
+  const oil = {
+    ...product,
+    id: 'p2',
+    name: 'Super 3000 5W-30',
+    brand: 'Mobil',
+    unit: 'ml',
+    container_ml: 4000,
+    attrs: { viscosity: '5W-30' },
+    sale_price_tyiyn: 200_000,
+    pour_price_per_l_tyiyn: 50_000,
+  } as unknown as Product
+  it('большая — «Цена: 500 с за л», фильтр в том же задании — «за шт»', async () => {
+    const { labelsHtml } = await import('./labels')
+    const html = labelsHtml([{ product: oil, copies: 1 }, { product, copies: 1 }], big, 'liter')
+    expect(html).toContain('Цена: 500\u00a0с за л')
+    expect(html).toContain('Цена: 500\u00a0с за шт')
+  })
+  it('маленькая — коротко «500 с/л», без «Цена:»', async () => {
+    const { labelsHtml } = await import('./labels')
+    const html = labelsHtml([{ product: oil, copies: 1 }], small, 'liter')
+    expect(html).toContain('class="price big">500\u00a0с/л<')
+    expect(html).not.toContain('Цена:')
+  })
+  it('маленькая с названием — короткая цена в нижней строке', async () => {
+    const { labelsHtml } = await import('./labels')
+    const html = labelsHtml([{ product: oil, copies: 1 }], { ...small, show_name: true }, 'piece')
+    expect(html).toContain('class="price">2\u00a0000\u00a0с/шт<')
   })
 })

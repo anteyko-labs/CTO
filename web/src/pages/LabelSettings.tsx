@@ -1,11 +1,13 @@
 // Настройка размера и содержимого этикеток с предпросмотром (SPEC-02, ADR-010). Два набора —
-// большой и маленький принтер склада (задача 014).
+// большой и маленький принтер склада (задача 014). Над ними — «Цена на этикетке по умолчанию»,
+// общая для обоих (задача 021).
 import { useState } from 'react'
+import { forgetDefaultPer, PricePerSwitch } from '../components/labelTarget'
 import { labelsHtml } from '../components/labels'
 import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader } from '../components/ui'
 import { get, put, qs } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
-import { previewPick } from '../lib/labelText'
+import { previewPick, type PricePer } from '../lib/labelText'
 import { SIZE_BUTTON, type LabelSize } from '../lib/labelJob'
 import type { Category, LabelSettings, Product } from '../lib/types'
 
@@ -94,7 +96,38 @@ async function previewProduct(): Promise<Product> {
   }
 }
 
-function Editor({ initial, size }: { initial: LabelSettings; size: LabelSize }) {
+/** «Цена на этикетке по умолчанию»: с ней открывается выбор при печати; сохраняется сразу. */
+function PriceDefault({ value, onSaved }: { value: PricePer; onSaved: (v: PricePer) => void }) {
+  const { busy, error, run } = useAction()
+  const [saved, setSaved] = useState(false)
+  const choose = (v: PricePer) =>
+    run(async () => {
+      if (busy || v === value) return
+      setSaved(false)
+      // Свежие настройки большого принтера: сохранение цены не откатывает их правку.
+      const cur = await get<LabelSettings>('/settings/labels')
+      const res = await put<LabelSettings>('/settings/labels', { ...cur, price_per_default: v })
+      forgetDefaultPer()
+      onSaved(res.price_per_default ?? v)
+      setSaved(true)
+    })
+  return (
+    <Card className="mb-4" data-testid="label-price-default">
+      <div className="flex flex-col gap-2">
+        <div className="text-sm font-medium text-slate-700">Цена на этикетке по умолчанию</div>
+        <PricePerSwitch value={value} onChange={(v) => void choose(v)} />
+        <p className="text-xs text-slate-500">
+          С этим выбором открывается печать; при печати можно сменить. Масло — за канистру («за шт») или за литр; товар в метрах — за метр, в кг —
+          за кг; выбор, который товару не подходит, печатается по его единице.
+        </p>
+        <ErrorBox error={error} />
+        {saved && <div className="text-sm text-emerald-700">Сохранено</div>}
+      </div>
+    </Card>
+  )
+}
+
+function Editor({ initial, size, per }: { initial: LabelSettings; size: LabelSize; per: PricePer }) {
   const [form, setForm] = useState<Form>(() => toForm(initial))
   const [saved, setSaved] = useState(false)
   const { busy, error, run } = useAction()
@@ -102,7 +135,7 @@ function Editor({ initial, size }: { initial: LabelSettings; size: LabelSize }) 
   const sample = useLoad(previewProduct, [])
   const product = sample.data ?? SAMPLE
 
-  const preview = settings ? labelsHtml([{ product, copies: 1 }], settings) : null
+  const preview = settings ? labelsHtml([{ product, copies: 1 }], settings, per) : null
 
   const update = (patchForm: Partial<Form>) => {
     setForm((f) => ({ ...f, ...patchForm }))
@@ -203,9 +236,12 @@ export default function LabelSettingsPage() {
   // её форму (иначе «Сохранить» записывал большой этикетке размер маленькой, 03.11.2026).
   const data = useLoad(() => get<LabelSettings>(`/settings/labels${qs({ size })}`).then((s) => ({ size, s })), [size])
   const loaded = data.data && data.data.size === size ? data.data.s : null
+  const [chosen, setChosen] = useState<PricePer | null>(null)
+  const per = chosen ?? loaded?.price_per_default ?? 'piece'
   return (
     <div>
       <PageHeader title="Этикетки" />
+      {loaded && <PriceDefault value={per} onSaved={setChosen} />}
       <div className="mb-4 inline-flex overflow-hidden rounded-md border border-slate-300" role="tablist" aria-label="Принтер">
         {(['big', 'small'] as LabelSize[]).map((k) => (
           <button
@@ -221,7 +257,7 @@ export default function LabelSettingsPage() {
         ))}
       </div>
       <ErrorBox error={data.error} />
-      {loaded ? <Editor key={size} size={size} initial={loaded} /> : !data.error && <Loading />}
+      {loaded ? <Editor key={size} size={size} initial={loaded} per={per} /> : !data.error && <Loading />}
     </div>
   )
 }
