@@ -1481,8 +1481,9 @@ pub struct CreateProductReq {
     /// получает все её коды в той же операции (SPEC-35 §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_catalog_id: Option<Uuid>,
-    /// Единица учёта (задача 002, П4): `ml` — литрами (канистра и розлив), `piece` — штуками.
-    /// Без поля — по виду категории: масло в литрах, остальное в штуках.
+    /// Единица учёта (задача 002, П4): `ml` — литрами (канистра и розлив), `piece` — штуками,
+    /// `g` — килограммами (граммы, цена за кг; ADR-174). Без поля — по виду категории: масло в
+    /// литрах, остальное в штуках.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     /// Баллы товара (ADR-140) — только владелец.
@@ -1576,21 +1577,22 @@ pub async fn create_product_tx(
     if name.is_empty() {
         return Err(invalid("название обязательно"));
     }
-    let liters = match req.unit.as_deref() {
-        None => kind == "oil",
-        Some("ml") => true,
-        Some("piece") => false,
-        Some(_) => return Err(invalid("единица товара — литры или штуки")),
+    // Килограммы — у любого товара (ADR-174): остаток в граммах, цена за кг.
+    let unit = match req.unit.as_deref() {
+        None if kind == "oil" => "ml",
+        None => "piece",
+        Some(u @ ("ml" | "piece" | "g")) => u,
+        Some(_) => return Err(invalid("единица товара — литры, штуки или килограммы")),
     };
-    let (unit, container_ml) = if liters {
+    let container_ml = if unit == "ml" {
         match req.container_ml {
             // Бочка 200 л — уже много; тысяча литров — предел, дальше явная ошибка ввода.
-            Some(v) if (1..=1_000_000).contains(&v) => ("ml", Some(v)),
+            Some(v) if (1..=1_000_000).contains(&v) => Some(v),
             Some(v) if v > 1_000_000 => return Err(invalid("объём тары не больше 1000 л")),
             _ => return Err(invalid("для масла укажите объём канистры")),
         }
     } else {
-        ("piece", None)
+        None
     };
     if req.sale_price_tyiyn < 0 || req.min_stock < 0 {
         return Err(invalid("цены и минимальный остаток не отрицательны"));
@@ -1660,7 +1662,8 @@ pub async fn create_product_tx(
                where branch_id = $1 and product_id = $2"#,
             ctx.user.branch_id,
             id,
-            container_ml.unwrap_or(1),
+            // Закупка — за канистру, за кг (1000 г) или за штуку.
+            price_unit(unit, container_ml),
             cost
         )
         .execute(&mut *tx)

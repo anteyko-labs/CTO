@@ -32,12 +32,12 @@ const DEFAULT_INTAKE_PER_KG: i64 = 10_000;
 const SCRAP_NAME: &str = "Аккумуляторы б/у (на вес)";
 
 /// Карточка «аккумуляторы на вес»: заводится сама при первом обращении, с внутренним штрихкодом.
+/// Узнаётся по пометке `system_role`, а не по единице: в кг бывает любой товар (ADR-174).
 pub async fn scrap_product(conn: &mut PgConnection) -> AppResult<Uuid> {
-    if let Some(id) = sqlx::query_scalar!(
-        "select id from products where unit = 'g' and not archived order by created_at limit 1"
-    )
-    .fetch_optional(&mut *conn)
-    .await?
+    if let Some(id) =
+        sqlx::query_scalar!("select id from products where system_role = 'battery_scrap'")
+            .fetch_optional(&mut *conn)
+            .await?
     {
         return Ok(id);
     }
@@ -45,11 +45,10 @@ pub async fn scrap_product(conn: &mut PgConnection) -> AppResult<Uuid> {
     sqlx::query!("select pg_advisory_xact_lock(hashtextextended('scrap_product', 0))")
         .execute(&mut *conn)
         .await?;
-    if let Some(id) = sqlx::query_scalar!(
-        "select id from products where unit = 'g' and not archived order by created_at limit 1"
-    )
-    .fetch_optional(&mut *conn)
-    .await?
+    if let Some(id) =
+        sqlx::query_scalar!("select id from products where system_role = 'battery_scrap'")
+            .fetch_optional(&mut *conn)
+            .await?
     {
         return Ok(id);
     }
@@ -75,7 +74,7 @@ pub async fn scrap_product(conn: &mut PgConnection) -> AppResult<Uuid> {
     };
     let id = new_id();
     sqlx::query!(
-        "insert into products (id, category_id, name, unit) values ($1, $2, $3, 'g')",
+        "insert into products (id, category_id, name, unit, system_role) values ($1, $2, $3, 'g', 'battery_scrap')",
         id,
         category,
         SCRAP_NAME

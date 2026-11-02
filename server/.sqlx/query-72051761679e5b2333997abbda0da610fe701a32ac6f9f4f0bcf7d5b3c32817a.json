@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into products (id, category_id, name, unit, system_role) values ($1, $2, $3, 'g', 'battery_scrap')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "72051761679e5b2333997abbda0da610fe701a32ac6f9f4f0bcf7d5b3c32817a"
+}
