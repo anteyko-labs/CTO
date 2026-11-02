@@ -9,6 +9,7 @@ import { colsIf, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib
 import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
+import { CameraScanButton } from '../components/CameraScan'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -708,8 +709,8 @@ function Draft({
   // Скан: код строки ревизии — и с потерянными Excel нулями впереди (код Умага, SPEC-35 §1); нет —
   // товар по коду на сервере: этой ревизии — его строка (появится, если её ещё нет на экране), вне
   // её — сообщение; нигде — новая карточка.
-  const onScan = () => {
-    const code = scan.trim()
+  const onScan = (camera?: string) => {
+    const code = (camera ?? scan).trim()
     if (!code) return
     const l = allLines.find((x) => x.barcodes.includes(code)) ?? allLines.find((x) => x.barcodes.some((b) => sameCode(b, code)))
     setScan('')
@@ -856,14 +857,19 @@ function Draft({
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Сканер" hint="Скан прибавляет 1 штуку или 1 канистру; початую тару впишите литрами в строке">
-              <input
-                autoFocus
-                data-picker
-                value={scan}
-                onChange={(e) => setScan(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && onScan()}
-                placeholder="Сканируйте штрихкод"
-              />
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  data-picker
+                  className="min-w-0 flex-1"
+                  value={scan}
+                  onChange={(e) => setScan(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && onScan()}
+                  placeholder="Сканируйте штрихкод"
+                />
+                {/* Камера телефона читает код так же, как сканер (задача 007). */}
+                <CameraScanButton onCode={(code) => onScan(code)} />
+              </div>
             </Field>
             <Field label="Найти в списке">
               <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, артикул или вязкость" />

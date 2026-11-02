@@ -12,9 +12,9 @@ import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { presetFromHit } from '../lib/oldCatalog'
 import { can } from '../lib/permissions'
-import type { Category, OldCatalogHit, Product } from '../lib/types'
+import { KIND_LABELS, type Category, type CategoryKind, type OldCatalogHit, type Product } from '../lib/types'
 import { searchUmag, umagStep } from '../lib/umagLink'
-import { countText, parseKg, parseOil } from '../lib/units'
+import { countText, parseKg, parseOil, viscosityFromName } from '../lib/units'
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
 import { PurchasePriceInput } from './PurchasePriceInput'
@@ -48,6 +48,8 @@ interface Form {
   umagId: string | null
   /** Не масло — в килограммах (ADR-174): на полке и цена — за кг. */
   kg?: boolean
+  /** Вязкость масла; не выбрана — берётся из названия (задача 007). */
+  viscosity?: string
 }
 
 const empty = (barcode = '', name = ''): Form => ({
@@ -128,6 +130,24 @@ export function RevisionNewProduct({
   const category = cats.find((c) => c.id === form?.categoryId)
   const oil = category?.kind === 'oil'
   const kg = !oil && Boolean(form?.kg)
+  // Вязкость — у масла с включённым полем «Вязкость»: выбрана человеком или из названия (задача 007).
+  const viscDef = oil ? category?.attributes.find((a) => a.key === 'viscosity' && a.enabled !== false) : undefined
+  const viscosity = viscDef && form ? (form.viscosity ?? viscosityFromName(form.name) ?? '') : ''
+  const viscOptions = viscDef ? [...new Set([...(viscDef.options ?? []), ...(viscosity ? [viscosity] : [])])] : []
+  /** Новая категория прямо из окна (задача 007): право «Товары и штрихкоды», ревизия не по категории. */
+  const [newCat, setNewCat] = useState<{ name: string; kind: CategoryKind } | null>(null)
+  const catAct = useAction()
+  const createCategory = () =>
+    void catAct.run(async () => {
+      if (!newCat) return
+      const name = newCat.name.trim()
+      if (!name) throw new Error('Введите название категории')
+      const c = await post<Category>('/categories', { name, kind: newCat.kind })
+      categories.setData((list) => [...(list ?? []), c])
+      setForm((f) => (f ? { ...f, categoryId: c.id } : f))
+      setNewCat(null)
+      toast(`Категория «${c.name}» создана`)
+    })
   const ml = oil && form ? parseLiters(form.liters) : null
   const price = form?.price.trim() ? parseSom(form.price) : 0
   const pour = ml && price ? canisterPourPrice(price, ml) : null
@@ -207,6 +227,7 @@ export function RevisionNewProduct({
         ...(kg ? { unit: 'g' } : {}),
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
+        ...(viscosity ? { attrs: { viscosity } } : {}),
         initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
         ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
       }
@@ -303,7 +324,55 @@ export function RevisionNewProduct({
                     </option>
                   ))}
                 </select>
+                {!categoryId && mayLink && !newCat && (
+                  <button type="button" className="mt-1 self-start text-sm text-sky-700 hover:underline" data-testid="revnew-new-category" onClick={() => setNewCat({ name: '', kind: 'other' })}>
+                    + Новая категория
+                  </button>
+                )}
               </Field>
+              {newCat && (
+                <div className="flex flex-col gap-2 rounded border border-slate-200 p-3 sm:col-span-2" data-testid="revnew-category-form">
+                  <Field label="Название новой категории" required>
+                    <input
+                      autoFocus
+                      id="revnew-category-name"
+                      value={newCat.name}
+                      onChange={(e) => setNewCat({ ...newCat, name: e.target.value })}
+                      onKeyDown={(e) => e.key === 'Enter' && createCategory()}
+                    />
+                  </Field>
+                  <Field label="Вид" hint="Масло — в литрах, остальное — в штуках">
+                    <select value={newCat.kind} onChange={(e) => setNewCat({ ...newCat, kind: e.target.value as CategoryKind })}>
+                      {(Object.keys(KIND_LABELS) as CategoryKind[]).map((k) => (
+                        <option key={k} value={k}>
+                          {KIND_LABELS[k]}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <ErrorBox error={catAct.error} />
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" onClick={() => setNewCat(null)}>
+                      Отмена
+                    </Button>
+                    <Button disabled={catAct.busy || !newCat.name.trim()} onClick={createCategory}>
+                      Создать категорию
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {viscDef && (
+                <Field label="Вязкость" hint={form.viscosity === undefined && viscosity ? 'из названия' : undefined}>
+                  <select data-testid="revnew-viscosity" value={viscosity} onChange={(e) => set('viscosity', e.target.value)}>
+                    <option value="">— не указана —</option>
+                    {viscOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
               <Field label="Бренд">
                 <input value={form.brand} onChange={(e) => set('brand', e.target.value)} />
               </Field>
