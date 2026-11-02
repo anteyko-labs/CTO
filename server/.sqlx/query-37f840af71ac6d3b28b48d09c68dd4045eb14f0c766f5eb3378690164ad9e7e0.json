@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select signature_png from debt_doc_signatures where branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "signature_png",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "37f840af71ac6d3b28b48d09c68dd4045eb14f0c766f5eb3378690164ad9e7e0"
+}

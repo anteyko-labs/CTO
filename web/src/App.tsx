@@ -40,6 +40,7 @@ const Expenses = lazyPage(() => import('./pages/Expenses'))
 const Gifts = lazyPage(() => import('./pages/Gifts'))
 const LabelSettingsPage = lazyPage(() => import('./pages/LabelSettings'))
 const LabelStation = lazyPage(() => import('./pages/LabelStation'))
+const CustomerScreen = lazyPage(() => import('./pages/CustomerScreen'))
 const Notifications = lazyPage(() => import('./pages/Notifications'))
 const Profit = lazyPage(() => import('./pages/Profit'))
 const OwnerDashboard = lazyPage(() => import('./pages/Owner').then((m) => ({ default: m.OwnerDashboard })))
@@ -543,6 +544,8 @@ function Root() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+      {/* Экран покупателя на втором мониторе (задача 008): без меню, данные — только от кассы этого браузера. */}
+      <Route path="/customer-screen" element={<Suspense fallback={null}><CustomerScreen /></Suspense>} />
       <Route path="/*" element={<Shell />} />
     </Routes>
   )

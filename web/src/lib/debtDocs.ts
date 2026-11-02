@@ -20,6 +20,34 @@ export interface DebtDocSettings {
   company: string | null
   /** Период акта сверки по умолчанию (задача 003 Н9); нет — «Всё время», как раньше. */
   act_period?: ActPeriod | null
+  /** Подпись руководителя задана в настройках (задача 008). */
+  has_owner_signature?: boolean
+}
+
+/** Картинка с сервера как `data:` — встаёт в документ, который печатается из фрейма. Нет — `null`. */
+export async function pngDataUrl(path: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/v1${path}`, { credentials: 'same-origin' })
+    if (!res.ok) return null
+    const blob = await res.blob()
+    return await new Promise<string | null>((resolve) => {
+      const r = new FileReader()
+      r.onload = () => resolve(typeof r.result === 'string' ? r.result : null)
+      r.onerror = () => resolve(null)
+      r.readAsDataURL(blob.type === 'image/png' ? blob : new Blob([blob], { type: 'image/png' }))
+    })
+  } catch {
+    return null
+  }
+}
+
+/** Подписи документа о долге: клиента по чеку и руководителя из настроек. */
+export async function debtSignatures(sale: { id: string; has_debt_signature?: boolean }, settings: DebtDocSettings) {
+  const [buyerSignature, sellerSignature] = await Promise.all([
+    sale.id && sale.has_debt_signature ? pngDataUrl(`/sales/${sale.id}/signature`) : Promise.resolve(null),
+    settings.has_owner_signature ? pngDataUrl('/settings/debt-docs/signature') : Promise.resolve(null),
+  ])
+  return { buyerSignature, sellerSignature }
 }
 
 /** Быстрые периоды акта сверки на экране (задача 003 Н9). */
@@ -236,6 +264,8 @@ export const PLACEHOLDERS: [string, string][] = [
   ['чек', 'номер чека'],
   ['товары', 'таблица: наименование, количество, цена, сумма'],
   ['итого', 'сумма всего чека'],
+  ['подпись_покупателя', 'подпись клиента с планшета; нет — линия для ручки'],
+  ['подпись_продавца', 'подпись руководителя из настроек; нет — линия для ручки'],
   ['итого_словами', 'сумма чека прописью'],
   ['из_них', '«, из них оплачено сразу …, в долг …» — если часть оплачена'],
   ['сумма', 'сумма в долг'],
@@ -279,9 +309,9 @@ export const DEFAULT_PERSON = `РАСПИСКА
 Товар получен, претензий к количеству, качеству и комплектности не имею.
 Расписка составлена в двух экземплярах, имеющих одинаковую силу, по одному для каждой стороны, и подписана мной добровольно.
 
-Покупатель:  ________________ / {{клиент}} /
+Покупатель:  {{подпись_покупателя}} / {{клиент}} /
 
-Продавец:    ________________ / {{кассир}} /`
+Продавец:    {{подпись_продавца}} / {{кассир}} /`
 
 export const DEFAULT_COMPANY = `НАКЛАДНАЯ № {{чек}} от {{дата}}
 на отпуск товара с отсрочкой оплаты
@@ -303,9 +333,9 @@ export const DEFAULT_COMPANY = `НАКЛАДНАЯ № {{чек}} от {{дат�
 Покупатель обязуется оплатить задолженность до {{срок_оплаты}}.
 Товар получен в полном объёме, претензий к количеству, качеству и комплектности нет.
 
-Отпустил:  ________________ / {{кассир}} /                    М.П.
+Отпустил:  {{подпись_продавца}} / {{кассир}} /                    М.П.
 
-Получил:   ________________ / {{работник}} /                  М.П.`
+Получил:   {{подпись_покупателя}} / {{работник}} /                  М.П.`
 
 // ---------- Печать ----------
 
@@ -325,6 +355,9 @@ const A4_STYLE = `
   .sign { display: flex; justify-content: space-between; gap: 10mm; margin-top: 10mm; }
   .sign > div { flex: 1; }
   .muted { color: #444; font-size: 9pt; }
+  /* Подпись с планшета — над строкой, не раздвигая текст (задача 008). */
+  .sig { display: inline-block; width: 42mm; height: 5mm; border-bottom: 1px solid #000; position: relative; vertical-align: bottom; }
+  .sig img { position: absolute; left: 0; bottom: -2mm; width: 42mm; height: 17mm; object-fit: contain; }
 `
 
 export function printHtml(title: string, body: string): void {
@@ -371,6 +404,27 @@ export interface DebtDocInput {
   settings: DebtDocSettings
   /** Вся история долга клиента (акт сверки с первой операции). */
   history?: Reconciliation | null
+  /** Подпись клиента с планшета (задача 008) — картинка `data:image/png;base64,…`. */
+  buyerSignature?: string | null
+  /** Подпись руководителя точки из «Настройки → Документы». */
+  sellerSignature?: string | null
+}
+
+/** Линия подписи без картинки — для ручки. */
+const SIGN_LINE = '________________'
+
+/** Место подписи: картинка над линией или пустая линия для ручки. */
+export function signatureSlot(png: string | null | undefined): string {
+  if (!png || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png)) return SIGN_LINE
+  return `<span class="sig"><img src="${png}" alt="подпись"></span>`
+}
+
+/** Шаблоны, сохранённые до подстановок подписи (задача 008): линия в строке покупателя/получателя
+ *  и продавца/отпустившего становится местом подписи. */
+export function withSignatureSlots(template: string): string {
+  return template
+    .replace(/^((?:Покупатель|Получил):\s*)_{6,}/m, '$1{{подпись_покупателя}}')
+    .replace(/^((?:Продавец|Отпустил):\s*)_{6,}/m, '$1{{подпись_продавца}}')
 }
 
 export interface DebtHistory {
@@ -414,14 +468,19 @@ function historyTable(h: DebtHistory | null): string {
 }
 
 /** Документ о долге по чеку: расписка физлица в двух экземплярах или накладная юрлица. */
-export function printDebtDoc({ sale, party, settings, history }: DebtDocInput): void {
+export function printDebtDoc({ sale, party, settings, history, buyerSignature, sellerSignature }: DebtDocInput): void {
+  printHtml(...debtDocHtml({ sale, party, settings, history, buyerSignature, sellerSignature }))
+}
+
+/** Заголовок и тело документа о долге (для печати и проверки). */
+export function debtDocHtml({ sale, party, settings, history, buyerSignature, sellerSignature }: DebtDocInput): [string, string] {
   const debt = sale.payments.filter((p) => p.method === 'debt').reduce((a, p) => a + p.amount_tyiyn, 0)
   // Баланс — на момент этого чека по истории, а не сегодняшний: документ печатают и позже.
   const h = history ? debtHistory(history, sale.id) : null
   const after = h ? h.after : sale.party_balance_tyiyn
   const before = h ? h.before : after === null ? null : after - debt
   const company = party.kind === 'company'
-  const template = (company ? settings.company : settings.person) || (company ? DEFAULT_COMPANY : DEFAULT_PERSON)
+  const template = withSignatureSlots((company ? settings.company : settings.person) || (company ? DEFAULT_COMPANY : DEFAULT_PERSON))
   // Учётный день чека — как в акте сверки и просрочке (чек без сети после полуночи, исправленный
   // чек). Старый ответ без него — день записи по Бишкеку.
   const saleDate = sale.business_date ?? new Date(sale.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
@@ -452,16 +511,18 @@ export function printDebtDoc({ sale, party, settings, history }: DebtDocInput): 
     долг_до: before === null ? '' : formatSomExact(Math.max(before, 0)),
     кассир: sale.cashier_name,
   }
-  const body = `<div class="doc">${renderTemplate(template, vars, { товары: itemsTable(sale), история_долга: historyTable(h) })}</div>`
+  const body = `<div class="doc">${renderTemplate(template, vars, {
+    товары: itemsTable(sale),
+    история_долга: historyTable(h),
+    подпись_покупателя: signatureSlot(buyerSignature),
+    подпись_продавца: signatureSlot(sellerSignature),
+  })}</div>`
   const copies = company ? 1 : 2
-  printHtml(
-    `${company ? 'Накладная' : 'Расписка'} № ${sale.number}`,
-    Array.from({ length: copies }, () => `<div class="copy">${body}</div>`).join(''),
-  )
+  return [`${company ? 'Накладная' : 'Расписка'} № ${sale.number}`, Array.from({ length: copies }, () => `<div class="copy">${body}</div>`).join('')]
 }
 
 /** Акт сверки взаимных расчётов: данные точки полностью, графы контрагента — для его отметок. */
-export function printReconciliation(act: Reconciliation, seller: Seller): void {
+export function printReconciliation(act: Reconciliation, seller: Seller, sellerSignature?: string | null): void {
   const us = seller.name || BLANK
   const them = act.name
   const money = (v: number) => (v ? esc(formatSomExact(v)) : '')
@@ -504,7 +565,7 @@ export function printReconciliation(act: Reconciliation, seller: Seller): void {
     <p>По данным ${esc(us)}: ${verdict}</p>
     <p>По данным ${esc(them)}: ______________________________________________________________</p>
     <div class="sign">
-      <div>От ${esc(us)}<br><br>________________ / ${esc(seller.director || '________________')} /<br><br>М.П.</div>
+      <div>От ${esc(us)}<br><br>${signatureSlot(sellerSignature)} / ${esc(seller.director || '________________')} /<br><br>М.П.</div>
       <div>От ${esc(them)}<br><br>________________ / ________________ /<br><br>М.П.</div>
     </div>
     <p class="muted">Сформировано ${esc(formatDateTime(new Date().toISOString()))}. Дебет — в пользу ${esc(us)} (отгрузка покупателю, оплата поставщику), кредит — в пользу ${esc(them)}.</p>`

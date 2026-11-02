@@ -26,6 +26,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/sales", routing::get(list_sales).post(post_sale))
         .route("/sales/{id}", routing::get(get_sale))
+        .route("/sales/{id}/signature", routing::get(sale_signature))
         .route("/sales/{id}/return", routing::post(return_sale))
         .route(
             "/sales/return-without-receipt",
@@ -150,6 +151,10 @@ pub struct SaleReq {
     /// неверная строка пропускается, а не отклоняет чек.
     #[serde(default)]
     pub removed_lines: serde_json::Value,
+    /// Подпись клиента за долг с экрана покупателя (задача 008): PNG в base64. Нужна онлайн-чеку
+    /// с долгом; у чека без долга не смотрится.
+    #[serde(default)]
+    pub debt_signature_png: Option<String>,
     /// Чек проводит «Исправить» владельца (SPEC-29 §24): кассир — из исправления, а не смены,
     /// учётный день — заданный. С экрана не приходит.
     #[serde(skip)]
@@ -160,6 +165,8 @@ pub struct SaleReq {
 #[derive(Clone, Debug)]
 pub struct SaleCorrection {
     pub business_date: NaiveDate,
+    /// Исходный чек: его подпись клиента за долг переносится на новый чек (задача 008).
+    pub signature_from: Option<Uuid>,
     /// «Изменить оплату» (SPEC-37 §2): новый чек повторяет исходный.
     pub replay: Option<Replay>,
 }
@@ -273,6 +280,9 @@ pub struct SaleOut {
     pub lines: Vec<SaleLineOut>,
     pub payments: Vec<PaymentOut>,
     pub returns: Vec<SaleRef>,
+    /// Клиент расписался за долг на экране покупателя (задача 008): `GET /sales/{id}/signature`.
+    #[serde(default)]
+    pub has_debt_signature: bool,
     /// Масляная книжка чека «В сервис» для печати (SPEC-34 §4): машина, пробег и следующие
     /// замены.
     #[serde(default)]
@@ -290,7 +300,8 @@ pub async fn load_sale(
                   s.comment, s.delivery_address, s.reversal_of, s.no_receipt,
                   s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
                   pc.full_name as "contact_name?", pv.plate as "vehicle_plate?", pv.id as "vehicle_id?",
-                  u.full_name as user_name, s.created_at, s.business_date
+                  u.full_name as user_name, s.created_at, s.business_date,
+                  exists (select 1 from sale_signatures g where g.sale_id = s.id) as "has_debt_signature!"
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id
@@ -397,6 +408,7 @@ pub async fn load_sale(
         lines,
         payments,
         returns,
+        has_debt_signature: h.has_debt_signature,
         book: crate::api::oil_book::sale_book(conn, id).await?,
     })
 }
@@ -1474,6 +1486,22 @@ pub async fn post_sale_core(
             Access::NoRight => bypass.push("продажа в долг без права".into()),
         }
     }
+    // Клиент расписывается за долг на экране покупателя (задача 008). Исправление и «Изменить
+    // оплату» подпись не просят — переносят исходную; чек без сети уже состоялся — владелец узнает.
+    let debt_signature = if debt_total > 0 && req.correction.is_none() {
+        let text = req.debt_signature_png.as_deref().unwrap_or("");
+        if text.trim().is_empty() && offline {
+            bypass.push("чек в долг без подписи клиента".into());
+            None
+        } else {
+            Some(crate::api::acceptances::signature_png_or(
+                text,
+                "Клиент не расписался за долг",
+            )?)
+        }
+    } else {
+        None
+    };
     match req.party_id {
         // Клиент исходного чека при «Изменить оплату» уже проверен при продаже: отключённый клиент
         // или убранная машина чек не останавливают и не возвращаются в список (SPEC-37 §2).
@@ -1763,6 +1791,26 @@ pub async fn post_sale_core(
     )
     .execute(&mut *conn)
     .await?;
+    if let Some(png) = &debt_signature {
+        sqlx::query!(
+            "insert into sale_signatures (sale_id, signature_png) values ($1, $2)",
+            id,
+            png
+        )
+        .execute(&mut *conn)
+        .await?;
+    } else if debt_total > 0
+        && let Some(from) = req.correction.as_ref().and_then(|c| c.signature_from)
+    {
+        sqlx::query!(
+            r#"insert into sale_signatures (sale_id, signature_png)
+               select $1, signature_png from sale_signatures where sale_id = $2"#,
+            id,
+            from
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
 
     let mut overrides = Vec::new();
     let mut below_cost = Vec::new();
@@ -3502,6 +3550,24 @@ async fn get_sale(
 ) -> AppResult<Json<SaleOut>> {
     let mut conn = state.pool.acquire().await?;
     Ok(Json(load_sale(&mut conn, &user, id).await?))
+}
+
+/// Подпись клиента за долг (задача 008): тем же, кому виден чек.
+async fn sale_signature(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<axum::response::Response> {
+    let png = sqlx::query_scalar!(
+        r#"select g.signature_png from sale_signatures g join sales s on s.id = g.sale_id
+           where g.sale_id = $1 and s.branch_id = $2"#,
+        id,
+        user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(crate::api::acceptances::file_response(png, "image/png"))
 }
 
 #[derive(Deserialize)]

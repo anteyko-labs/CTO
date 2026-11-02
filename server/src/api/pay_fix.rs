@@ -1311,6 +1311,7 @@ pub async fn pay_change_tx(
     sale_req.client_time = None;
     sale_req.correction = Some(crate::api::sales::SaleCorrection {
         business_date: orig.business_date,
+        signature_from: Some(id),
         replay: Some(replay),
     });
     let new_sale =

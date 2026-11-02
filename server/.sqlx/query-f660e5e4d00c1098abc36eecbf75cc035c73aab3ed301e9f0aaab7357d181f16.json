@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select g.signature_png from sale_signatures g join sales s on s.id = g.sale_id\n           where g.sale_id = $1 and s.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "signature_png",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f660e5e4d00c1098abc36eecbf75cc035c73aab3ed301e9f0aaab7357d181f16"
+}

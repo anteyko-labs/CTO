@@ -7,7 +7,17 @@ import { Button } from './ui'
 const WIDTH = 720
 const HEIGHT = 300
 
-export function SignaturePad({ busy, onDone, doneLabel = 'Готово' }: { busy?: boolean; onDone: (png: string) => void; doneLabel?: string }) {
+export function SignaturePad({
+  busy,
+  onDone,
+  doneLabel = 'Готово',
+  hint = 'Распишитесь пальцем в белом поле',
+}: {
+  busy?: boolean
+  onDone: (png: string) => void
+  doneLabel?: string
+  hint?: string
+}) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const last = useRef<{ x: number; y: number } | null>(null)
   // Длина линии в точках: точка или короткий штрих — не подпись.
@@ -79,7 +89,7 @@ export function SignaturePad({ busy, onDone, doneLabel = 'Готово' }: { bus
         onPointerCancel={up}
         onPointerLeave={up}
       />
-      {!signed && <div className="text-sm text-slate-500">Распишитесь пальцем в белом поле</div>}
+      {!signed && <div className="text-sm text-slate-500">{hint}</div>}
       <div className="flex justify-between gap-3">
         <Button variant="secondary" className="px-6 text-lg" onClick={clear} disabled={busy}>
           Очистить

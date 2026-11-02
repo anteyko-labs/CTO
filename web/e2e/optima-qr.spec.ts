@@ -194,6 +194,10 @@ test('QR на сумму чека в режиме кассы: крупно, от
     await page.goto('/')
     await page.getByRole('button', { name: 'Режим кассы', exact: true }).tap()
     await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
+    // Экран покупателя на втором мониторе (задача 008) — второе окно того же браузера.
+    const screen = await page.context().newPage()
+    await screen.goto('/customer-screen')
+    await expect(screen.getByTestId('customer-idle')).toBeVisible()
     await page.getByPlaceholder(PICKER).fill(name)
     await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
     // Наличными кнопки QR нет; «Карта / QR банка» — есть, на сумму к оплате.
@@ -231,39 +235,52 @@ test('QR на сумму чека в режиме кассы: крупно, от
     await expect(panel.getByTestId('bank-qr-wait')).toContainText('Ждём оплату')
     await expect(page.getByRole('button', { name: 'Провести чек' })).toBeDisabled()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1366-qr.png` })
+    // На экране покупателя — тот же QR и сумма крупно.
+    await expect(screen.getByTestId('customer-qr-amount')).toContainText(/500\sс/)
+    await expect(screen.getByTestId('customer-qr').getByRole('img')).toBeVisible()
+    if (SHOTS) await screen.screenshot({ path: `${SHOTS}/customer-screen-qr.png` })
 
-    // Покупатель оплатил: сервер узнаёт у банка, касса — у сервера.
+    // Покупатель оплатил: сервер узнаёт у банка, касса — у сервера; сумма та же — чек проводится
+    // и печатается сам (задача 008), кассир ничего не нажимает.
     bank.paid.add(`e2e${RUN}tx2`)
-    const paid = page.getByTestId('bank-qr-paid')
-    await expect(paid).toContainText(/Оплачено 500\sс/, { timeout: 15_000 })
+    await expect(screen.getByTestId('customer-paid')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible({ timeout: 15_000 })
     await expect(panel).toHaveCount(0)
     expect(await noPageScroll(page)).toBe(true)
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1366-qr-paid.png` })
-    await page.getByRole('button', { name: 'Провести чек' }).tap()
-    await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+    const paid = page.getByTestId('bank-qr-paid')
     const after = await api<{ status: string; sale_id: string | null }>(page.request, 'GET', `/bank-qr/${qr.id}`)
     expect(after.status).toBe('paid')
     expect(after.sale_id).toBeTruthy()
 
-    // Оплата по QR не теряется после перезагрузки страницы (ADR-130): касса сама предлагает
-    // привязать её к чеку.
+    // Оплачено не ровно сумму картой (количество поменяли после QR) — чек сам не проводится,
+    // кассир видит расхождение; вернули количество — суммы сошлись, чек проводится сам.
     await page.getByPlaceholder(PICKER).fill(name)
     await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
+    await page.getByRole('button', { name: 'Больше' }).tap()
     await page.getByRole('button', { name: 'Карта / QR банка' }).tap()
+    await expect(create).toContainText(/1\s000\sс/)
+    const created3 = page.waitForResponse((r) => r.url().endsWith('/api/v1/bank-qr') && r.request().method() === 'POST')
     await create.tap()
+    const qr3 = (await (await created3).json()) as { id: string }
     await expect(panel.getByRole('img')).toBeVisible()
-    bank.paid.add(`e2e${RUN}tx3`)
-    await expect(paid).toContainText(/Оплачено 500\sс/, { timeout: 15_000 })
+    // Оплата не теряется после перезагрузки страницы (ADR-130): касса сама предлагает привязать её.
     await page.reload()
+    await page.getByRole('button', { name: 'Меньше' }).tap()
+    bank.paid.add(`e2e${RUN}tx3`)
     const stray = page.getByTestId('bank-qr-stray')
-    await expect(stray).toContainText(/Оплачен QR на 500\sс — привязать к чеку/, { timeout: 10_000 })
+    await expect(stray).toContainText(/Оплачен QR на 1\s000\sс — привязать к чеку/, { timeout: 15_000 })
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1366-qr-stray.png` })
     await stray.tap()
-    await expect(paid).toContainText(/Оплачено 500\sс/)
-    await expect(stray).toHaveCount(0)
-    await page.getByRole('button', { name: 'Провести чек' }).tap()
-    await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+    await expect(paid).toContainText(/Оплачено 1\s000\sс/)
+    await expect(paid).toContainText('сделайте оплату картой ровно')
+    await page.waitForTimeout(3000)
+    await expect(page.getByText(/Чек № \d+ проведён/)).toHaveCount(0)
+    expect((await api<{ sale_id: string | null }>(page.request, 'GET', `/bank-qr/${qr3.id}`)).sale_id).toBeNull()
+    await page.getByRole('button', { name: 'Больше' }).tap()
+    await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible({ timeout: 15_000 })
+    expect((await api<{ sale_id: string | null }>(page.request, 'GET', `/bank-qr/${qr3.id}`)).sale_id).toBeTruthy()
     expect(bank.generated).toBe(3)
+    await screen.close()
 
     await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
     await expect(page.getByTestId('cashier-mode-bar')).toHaveCount(0)

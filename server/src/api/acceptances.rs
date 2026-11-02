@@ -359,7 +359,7 @@ async fn of_receipt(
 }
 
 /// Файл из базы — с запретом кэша и угадывания вида (ADR-090).
-fn file_response(data: Vec<u8>, content_type: &str) -> Response {
+pub fn file_response(data: Vec<u8>, content_type: &str) -> Response {
     let mut res = data.into_response();
     let h = res.headers_mut();
     h.insert(
@@ -953,10 +953,15 @@ pub fn decode_base64(s: &str) -> Option<Vec<u8>> {
 
 /// Подпись из запроса: PNG по первым байтам, не больше 200 КБ (SPEC-39 §4).
 pub fn signature_png(text: &str) -> AppResult<Vec<u8>> {
+    signature_png_or(text, "нужна подпись кассира")
+}
+
+/// Подпись PNG в base64 (можно с `data:image/png;base64,`); пустая — ошибка `empty`.
+pub fn signature_png_or(text: &str, empty: &str) -> AppResult<Vec<u8>> {
     let t = text.trim();
     let t = t.strip_prefix("data:image/png;base64,").unwrap_or(t);
     if t.is_empty() {
-        return Err(invalid("нужна подпись кассира"));
+        return Err(invalid(empty));
     }
     // Длинее 200 КБ после раскодирования — не раскодируем вовсе.
     if t.len() > MAX_SIGNATURE / 3 * 4 + 8 {

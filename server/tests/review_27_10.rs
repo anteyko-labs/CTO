@@ -68,7 +68,7 @@ async fn call(
     let req = match body {
         Some(b) => req
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(b.to_string())),
+            .body(Body::from(with_debt_signature(uri, b).to_string())),
         None => req.body(Body::empty()),
     }
     .unwrap();
@@ -899,4 +899,19 @@ async fn cashier_pin_locks_add_up(pool: PgPool) {
     let (s, v) = open("5678").await;
     assert_ne!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
     assert_ne!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+/// Чек с долгом онлайн требует подписи клиента (задача 008): тесты, где она не проверяется,
+/// расписываются за клиента.
+fn with_debt_signature(uri: &str, mut b: Value) -> Value {
+    if uri.ends_with("/sales")
+        && let Some(o) = b.as_object_mut()
+        && !o.contains_key("debt_signature_png")
+    {
+        o.insert(
+            "debt_signature_png".into(),
+            Value::from("iVBORw0KGgpzaWctb25lIQ=="),
+        );
+    }
+    b
 }

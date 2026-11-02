@@ -21,9 +21,26 @@ export function printInFrame(html: string): void {
     if (back && back.isConnected) back.focus()
   }
   win.addEventListener('afterprint', restore, { once: true })
-  win.focus()
-  win.print()
-  // Диалог печати в Chromium блокирует до закрытия: сразу после — вернуть фокус.
-  restore()
-  setTimeout(() => frame.remove(), 60_000)
+  const print = () => {
+    win.focus()
+    win.print()
+    // Диалог печати в Chromium блокирует до закрытия: сразу после — вернуть фокус.
+    restore()
+    setTimeout(() => frame.remove(), 60_000)
+  }
+  // Картинка подписи (задача 008) ещё не разобрана — печать после неё, иначе на листе пусто.
+  const pending = Array.from(doc.images).filter((img) => !img.complete)
+  if (pending.length === 0) {
+    print()
+    return
+  }
+  let left = pending.length
+  const one = () => {
+    left -= 1
+    if (left === 0) print()
+  }
+  for (const img of pending) {
+    img.addEventListener('load', one, { once: true })
+    img.addEventListener('error', one, { once: true })
+  }
 }

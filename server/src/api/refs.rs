@@ -43,6 +43,12 @@ pub fn routes() -> Router<AppState> {
             routing::get(get_debt_docs).put(put_debt_docs),
         )
         .route(
+            "/settings/debt-docs/signature",
+            routing::get(get_owner_signature)
+                .put(put_owner_signature)
+                .delete(delete_owner_signature),
+        )
+        .route(
             "/settings/sales",
             routing::get(get_sales_settings).put(put_sales_settings),
         )
@@ -1414,7 +1420,96 @@ async fn get_debt_docs(State(state): State<AppState>, user: CurrentUser) -> AppR
     let docs = v
         .and_then(|v| serde_json::from_value::<DebtDocs>(v).ok())
         .unwrap_or_default();
-    Ok(Json(json!(docs)))
+    let has_owner_signature = sqlx::query_scalar!(
+        r#"select exists (select 1 from debt_doc_signatures where branch_id = $1) as "e!""#,
+        user.branch_id
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let mut out = json!(docs);
+    out["has_owner_signature"] = json!(has_owner_signature);
+    Ok(Json(out))
+}
+
+/// Подпись руководителя точки в документах о долге (задача 008): видна всем вошедшим точки —
+/// она печатается в документах.
+async fn get_owner_signature(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<axum::response::Response> {
+    let png = sqlx::query_scalar!(
+        "select signature_png from debt_doc_signatures where branch_id = $1",
+        user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(crate::api::acceptances::file_response(png, "image/png"))
+}
+
+#[derive(Deserialize)]
+struct OwnerSignatureReq {
+    signature_png: String,
+}
+
+/// Подпись руководителя ставит и меняет владелец.
+async fn put_owner_signature(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<OwnerSignatureReq>,
+) -> AppResult<Json<Value>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let png = crate::api::acceptances::signature_png_or(&req.signature_png, "нужна подпись")?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query!(
+        r#"insert into debt_doc_signatures (branch_id, signature_png, updated_by)
+           values ($1, $2, $3)
+           on conflict (branch_id) do update
+             set signature_png = excluded.signature_png, updated_at = now(),
+                 updated_by = excluded.updated_by"#,
+        ctx.user.branch_id,
+        png,
+        ctx.user.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "settings.debt_docs_signature",
+        "settings",
+        None,
+        json!({ "set": true }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "has_owner_signature": true })))
+}
+
+async fn delete_owner_signature(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Value>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query!(
+        "delete from debt_doc_signatures where branch_id = $1",
+        ctx.user.branch_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "settings.debt_docs_signature",
+        "settings",
+        None,
+        json!({ "set": false }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "has_owner_signature": false })))
 }
 
 /// Реквизиты и тексты правит владелец (SPEC-10, права).

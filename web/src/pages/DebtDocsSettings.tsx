@@ -1,7 +1,8 @@
 // Реквизиты точки и тексты документов о долге (SPEC-10). Правит владелец.
 import { useEffect, useRef, useState } from 'react'
 import { Button, Card, CardTitle, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
-import { get, put } from '../lib/api'
+import { del, get, put } from '../lib/api'
+import { SignaturePad } from '../components/SignaturePad'
 import { ACT_PERIODS, DEFAULT_COMPANY, DEFAULT_PERSON, PLACEHOLDERS, renderTemplate, somInWords, type ActPeriod, type DebtDocSettings, type Seller } from '../lib/debtDocs'
 import { formatSomExact, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -159,6 +160,64 @@ function TemplateCard({
   )
 }
 
+/** Подпись руководителя (задача 008): нарисовать мышью или пером, загрузить PNG или убрать.
+ *  Задана — встаёт в расписку, накладную и акт сверки сама; нет — линия для ручки. */
+function OwnerSignatureCard({ has, onChanged }: { has: boolean; onChanged: () => void }) {
+  const [drawing, setDrawing] = useState(false)
+  const [version, setVersion] = useState(0)
+  const { busy, error, run } = useAction()
+  const save = (png: string) =>
+    void run(async () => {
+      await put('/settings/debt-docs/signature', { signature_png: png })
+      setDrawing(false)
+      setVersion((v) => v + 1)
+      onChanged()
+      toast('Подпись сохранена')
+    })
+  const upload = (file: File | undefined) => {
+    if (!file) return
+    const r = new FileReader()
+    r.onload = () => typeof r.result === 'string' && save(r.result)
+    r.readAsDataURL(file)
+  }
+  const remove = () =>
+    void run(async () => {
+      await del('/settings/debt-docs/signature')
+      onChanged()
+      toast('Подпись убрана — в документах линия для ручки')
+    })
+  return (
+    <Card className="flex flex-col gap-3" data-testid="owner-signature">
+      <h2 className="text-base font-semibold">Подпись руководителя</h2>
+      <div className="text-xs text-slate-500">
+        Задана — ставится во все документы о долге и акт сверки сама. Не задана — в документе линия, кассир расписывается ручкой.
+      </div>
+      <ErrorBox error={error} />
+      {has && !drawing && (
+        <img src={`/api/v1/settings/debt-docs/signature?v=${version}`} alt="подпись руководителя" className="h-24 w-auto self-start rounded border border-slate-300 bg-white" />
+      )}
+      {drawing ? (
+        <SignaturePad busy={busy} doneLabel="Сохранить подпись" hint="Распишитесь мышью или пером в белом поле" onDone={save} />
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled={busy} onClick={() => setDrawing(true)}>
+            {has ? 'Нарисовать заново' : 'Нарисовать подпись'}
+          </Button>
+          <label className="inline-flex cursor-pointer items-center rounded-md border border-slate-300 px-3 py-2 text-sm">
+            Загрузить PNG
+            <input type="file" accept="image/png" className="hidden" data-testid="owner-signature-file" onChange={(e) => upload(e.target.files?.[0])} />
+          </label>
+          {has && (
+            <Button variant="secondary" disabled={busy} onClick={remove}>
+              Убрать
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 export default function DebtDocsSettings() {
   const loaded = useLoad(() => get<DebtDocSettings>('/settings/debt-docs'), [])
   const [form, setForm] = useState<DebtDocSettings | null>(null)
@@ -209,6 +268,8 @@ export default function DebtDocsSettings() {
           ))}
         </div>
       </Card>
+
+      <OwnerSignatureCard has={Boolean(loaded.data?.has_owner_signature)} onChanged={loaded.reload} />
 
       <TemplateCard
         title="Физическое лицо: расписка"

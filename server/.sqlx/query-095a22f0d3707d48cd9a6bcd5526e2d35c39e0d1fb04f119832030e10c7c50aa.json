@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from debt_doc_signatures where branch_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "095a22f0d3707d48cd9a6bcd5526e2d35c39e0d1fb04f119832030e10c7c50aa"
+}

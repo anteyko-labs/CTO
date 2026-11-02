@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into debt_doc_signatures (branch_id, signature_png, updated_by)\n           values ($1, $2, $3)\n           on conflict (branch_id) do update\n             set signature_png = excluded.signature_png, updated_at = now(),\n                 updated_by = excluded.updated_by",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d31507d29820e23fb5bdcd715b5aabdb2f84f14420c734e416fc4ed0ee39fb2"
+}
