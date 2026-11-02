@@ -4,6 +4,12 @@ import { labelPrice, labelText, previewPick, specText } from './labelText'
 const on = { show_name: true, show_brand: true, show_spec: true }
 
 describe('этикетка', () => {
+  it('без бренда (null) и с числом в характеристиках — не падает (пробная этикетка станции)', () => {
+    const p = { name: 'Пробная этикетка', brand: null, unit: 'piece', attrs: { capacity_ah: 60 } } as never
+    expect(labelText(p, on).brand).toBe('')
+    expect(labelText(p, on).name).toBe('Пробная этикетка')
+  })
+
   it('масло: бренд, название, вязкость и объём', () => {
     const p = { name: 'Magnatec 5W-30', brand: 'Castrol', attrs: { viscosity: '5W-30' }, unit: 'ml' as const, container_ml: 4000, category_kind: 'oil' }
     expect(labelText(p, on)).toEqual({ brand: 'Castrol', name: 'Magnatec 5W-30', spec: '5W-30 · 4 л' })

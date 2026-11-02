@@ -21,7 +21,7 @@ export function labelPrice(p: Pick<Product, 'unit' | 'sale_price_tyiyn'>): strin
 /** Характеристики строкой: «5W-30 · 4 л», «масляный», «60 А·ч · 540 А». */
 export function specText(p: LabelProduct): string {
   const a = (p.attrs ?? {}) as Record<string, string>
-  const val = (k: string) => (a[k] ?? '').trim()
+  const val = (k: string) => String(a[k] ?? '').trim()
   const parts: string[] = []
   if (p.unit === 'ml' || p.category_kind === 'oil') {
     if (val('viscosity')) parts.push(val('viscosity'))
@@ -37,7 +37,7 @@ export function specText(p: LabelProduct): string {
 
 /** Строки этикетки по настройкам. Бренд не повторяется, если название уже с него начинается. */
 export function labelText(p: LabelProduct, s: Pick<LabelSettings, 'show_name' | 'show_brand' | 'show_spec'>): LabelText {
-  const brand = p.brand.trim()
+  const brand = (p.brand ?? '').trim()
   const named = p.name.trim().toLowerCase().startsWith(brand.toLowerCase())
   return {
     brand: s.show_brand !== false && brand && !named ? brand : '',
