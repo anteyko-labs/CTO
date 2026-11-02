@@ -146,7 +146,10 @@ async fn world(pool: PgPool) -> World {
         .await
         .unwrap();
     let api = Api {
-        app: app(build_state(pool.clone(), false).await.unwrap(), None),
+        app: {
+            allow_negative(&pool).await;
+            app(build_state(pool.clone(), false).await.unwrap(), None)
+        },
     };
     let owner = api.login("owner", "owner-pass-1").await;
     let a: Uuid = sqlx::query_scalar("select id from branches")
@@ -1256,6 +1259,7 @@ async fn new_branch_gets_own_accounts_settings_numbers_and_closed_branch_does_no
         )
         .await))
     .unwrap();
+    allow_negative(&pool).await;
     // Свои кассы и счета.
     let accounts = api.get("/api/v1/cash/accounts", &w.owner, Some(c)).await;
     let names: Vec<&str> = accounts
@@ -1555,4 +1559,17 @@ fn with_debt_signature(uri: &str, mut b: Value) -> Value {
         );
     }
     b
+}
+
+/// Эти проверки продают сверх остатка (минус, себестоимость без цены): прежнее поведение кассы —
+/// «Продажа в минус на кассе» включена (задача 018). Запрет по умолчанию — `tests/till_stock.rs`.
+async fn allow_negative(pool: &PgPool) {
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'cashier', '{"sale_allow_negative": true}'::jsonb from branches
+           on conflict (branch_id, key) do update set value = settings.value || excluded.value"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
 }

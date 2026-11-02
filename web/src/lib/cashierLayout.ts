@@ -109,6 +109,8 @@ export interface CashierSettings {
   /** «Продажа только при открытой смене» (задача 005 Н4): при связи без смены чек не пробивается
    *  (по умолчанию да — прямая просьба заказчика). */
   sale_requires_shift: boolean
+  /** «Продажа в минус на кассе» (задача 018): по умолчанию нет — сверх остатка чек не пробить. */
+  sale_allow_negative: boolean
   /** Бочка (задача 010): товар в литрах с тарой больше стольких литров — в чек розливом; 0 — канистрой. */
   barrel_pour_over_l: number
 }
@@ -127,6 +129,7 @@ export const DEFAULT_CASHIER: CashierSettings = {
   print_shift_profit: false,
   sale_cost_on_till: false,
   sale_requires_shift: true,
+  sale_allow_negative: false,
   barrel_pour_over_l: 150,
 }
 

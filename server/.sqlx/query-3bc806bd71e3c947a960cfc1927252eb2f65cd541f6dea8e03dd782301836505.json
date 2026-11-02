@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, p.unit, p.container_ml, coalesce(bp.stock_qty, 0) as \"stock!\"\n                   from products p\n                   left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1\n                   where p.id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "stock!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "3bc806bd71e3c947a960cfc1927252eb2f65cd541f6dea8e03dd782301836505"
+}

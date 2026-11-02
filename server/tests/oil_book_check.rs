@@ -18,6 +18,7 @@ async fn setup(pool: PgPool) -> Router {
     bootstrap::ensure_owner(&pool, Some(("owner".into(), "owner-pass-1".into())))
         .await
         .unwrap();
+    allow_negative(&pool).await;
     app(build_state(pool, false).await.unwrap(), None)
 }
 
@@ -1667,4 +1668,17 @@ async fn record_edit_with_custom_slot_logs_its_name(pool: PgPool) {
     let lines = &audit["changes"]["lines"];
     assert_eq!(lines["old"], json!(["other: Свечи старые"]), "{audit}");
     assert_eq!(lines["new"], json!(["Свечи: NGK"]), "{audit}");
+}
+
+/// Эти проверки продают сверх остатка (минус, себестоимость без цены): прежнее поведение кассы —
+/// «Продажа в минус на кассе» включена (задача 018). Запрет по умолчанию — `tests/till_stock.rs`.
+async fn allow_negative(pool: &PgPool) {
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'cashier', '{"sale_allow_negative": true}'::jsonb from branches
+           on conflict (branch_id, key) do update set value = settings.value || excluded.value"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
 }

@@ -1,6 +1,6 @@
 //! Касса: продажа и возврат (SPEC-04).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
@@ -1770,6 +1770,44 @@ pub async fn post_sale_core(
         return Err(AppError::Conflict(
             "товар только что объединили с другой карточкой — проведите чек ещё раз".into(),
         ));
+    }
+    // Продажа сверх остатка (задача 018, ADR-185): онлайн-чек — отказ для всех, включая
+    // владельца; чек без сети уже состоялся (I10) — проводится, владелец получает причину.
+    // «Исправить» и «Изменить оплату» (`correction`) не ограничиваются. Остаток прочитан под
+    // блокировкой `lock_products`, строки одного товара складываются.
+    if req.correction.is_none()
+        && !crate::api::cashier_settings::load(conn, branch_id)
+            .await?
+            .sale_allow_negative
+    {
+        let mut need: BTreeMap<Uuid, i64> = BTreeMap::new();
+        for p in &prepared {
+            if let Some(pid) = p.product_id {
+                let e = need.entry(pid).or_insert(0);
+                *e = e.checked_add(p.units).ok_or_else(overflow)?;
+            }
+        }
+        for (pid, units) in need {
+            let r = sqlx::query!(
+                r#"select p.name, p.unit, p.container_ml, coalesce(bp.stock_qty, 0) as "stock!"
+                   from products p
+                   left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1
+                   where p.id = $2"#,
+                branch_id,
+                pid
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if units > r.stock {
+                let have = crate::domain::qty::stock_text(r.stock, &r.unit, r.container_ml);
+                let why = format!("не хватает: {}, остаток {have}", r.name);
+                if offline {
+                    bypass.push(why);
+                } else {
+                    return Err(AppError::Conflict(why));
+                }
+            }
+        }
     }
     let number = ops::next_counter(conn, branch_id, "sale").await?;
     let id = new_id();

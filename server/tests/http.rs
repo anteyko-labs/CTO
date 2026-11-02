@@ -30,6 +30,7 @@ async fn setup(pool: PgPool) -> Router {
         .await
         .unwrap();
     grant_default_permissions(&pool, admin, branch).await;
+    allow_negative(&pool).await;
     app(build_state(pool, false).await.unwrap(), None)
 }
 
@@ -13146,4 +13147,17 @@ fn with_debt_signature(uri: &str, mut b: Value) -> Value {
         );
     }
     b
+}
+
+/// Эти проверки продают сверх остатка (минус, себестоимость без цены): прежнее поведение кассы —
+/// «Продажа в минус на кассе» включена (задача 018). Запрет по умолчанию — `tests/till_stock.rs`.
+async fn allow_negative(pool: &PgPool) {
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'cashier', '{"sale_allow_negative": true}'::jsonb from branches
+           on conflict (branch_id, key) do update set value = settings.value || excluded.value"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
 }

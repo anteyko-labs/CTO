@@ -20,6 +20,8 @@ describe('раскладка режима кассы (задача 003 Н2)', ()
     // Продажа только при открытой смене — включена (задача 005 Н4).
     expect(s.sale_requires_shift).toBe(true)
     expect(withDefaults({ sale_requires_shift: false }).sale_requires_shift).toBe(false)
+    expect(s.sale_allow_negative).toBe(false)
+    expect(withDefaults({ sale_allow_negative: true }).sale_allow_negative).toBe(true)
   })
 
   it('кнопка без права скрыта, где бы ни стояла', () => {

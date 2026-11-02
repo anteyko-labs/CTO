@@ -98,6 +98,9 @@ pub struct CashierSettings {
     /// отказ, чек без сети проводится с уведомлением владельцу. По умолчанию включено — прямая
     /// просьба заказчика (I21).
     pub sale_requires_shift: bool,
+    /// «Продажа в минус на кассе» (задача 018, ADR-185): по умолчанию выключено — онлайн-чек
+    /// сверх остатка отклоняется для всех; чек без сети проводится с уведомлением (I10).
+    pub sale_allow_negative: bool,
     /// Бочка на кассе (задача 010): товар в литрах с тарой строго больше этого объёма, л, —
     /// в чек сразу розливом в литрах, а не канистрой; 0 — всегда канистра.
     pub barrel_pour_over_l: i32,
@@ -125,6 +128,7 @@ impl Default for CashierSettings {
             print_shift_profit: false,
             sale_cost_on_till: false,
             sale_requires_shift: true,
+            sale_allow_negative: false,
             barrel_pour_over_l: 150,
         }
     }
@@ -290,6 +294,7 @@ mod tests {
         assert!(!d.print_shift_profit);
         assert!(!d.sale_cost_on_till);
         assert!(d.sale_requires_shift);
+        assert!(!d.sale_allow_negative);
         assert_eq!(d.barrel_pour_over_l, 150);
         let parsed: CashierSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(normalize(parsed).unwrap(), d);
