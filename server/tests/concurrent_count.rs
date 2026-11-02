@@ -655,13 +655,21 @@ async fn overlapping_revision_starts_share_one_draft(pool: PgPool) {
             |_| json!({ "category_id": cat, "reuse_draft": true }),
         )
         .await;
+    // Начинает только владелец (задача 019): администратор, успевший раньше него, получает 403,
+    // остальные — тот же черновик.
     let mut ids: Vec<String> = res
         .iter()
+        .filter(|(s, v)| {
+            *s != StatusCode::FORBIDDEN
+                || v["error"]["message"] != json!("Ревизию начинает владелец")
+        })
         .map(|(s, v)| {
             assert_eq!(*s, StatusCode::OK, "{v}");
             v["head"]["id"].as_str().unwrap().to_string()
         })
         .collect();
+    assert!(!ids.is_empty(), "черновик владельца");
+    ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 1, "один черновик категории");
     assert_eq!(drafts(&w).await, 1);
