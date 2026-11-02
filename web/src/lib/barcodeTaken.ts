@@ -31,3 +31,8 @@ export async function createOrTaken<T>(
     return { taken: true, product }
   }
 }
+
+/** Коды новой позиции (задача 012): основной и добавленные «+», без пустых и повторов, основной — первым. */
+export function barcodesOf(form: { barcode: string; more?: string[] }): string[] {
+  return [...new Set([form.barcode, ...(form.more ?? [])].map((c) => c.trim()).filter(Boolean))]
+}

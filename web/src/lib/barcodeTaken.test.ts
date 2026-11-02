@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './api'
-import { createOrTaken } from './barcodeTaken'
+import { barcodesOf, createOrTaken } from './barcodeTaken'
 import type { Product } from './types'
 
 const shell = { id: 'p1', name: 'Shell 5W-30 4 л' } as Product
@@ -22,4 +22,11 @@ describe('createOrTaken (задача 003, Н14)', () => {
     await expect(createOrTaken('460', () => Promise.reject(new ApiError(422, 'validation', 'укажите цену')), find)).rejects.toThrow('укажите цену')
     await expect(createOrTaken('460', taken, () => Promise.reject(new ApiError(404, 'not_found', 'не найдено')))).rejects.toThrow('уже у товара')
   })
+})
+
+describe('barcodesOf', () => {
+  it('основной первым, пустые и повторы убраны', () =>
+    expect(barcodesOf({ barcode: ' 111 ', more: ['', '222', '111', ' 333'] })).toEqual(['111', '222', '333']))
+  it('основной пуст — коды из добавленных', () => expect(barcodesOf({ barcode: '', more: ['222'] })).toEqual(['222']))
+  it('ничего — пусто (программа выдаст свой)', () => expect(barcodesOf({ barcode: ' ' })).toEqual([]))
 })

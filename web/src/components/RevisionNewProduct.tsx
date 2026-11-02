@@ -2,7 +2,7 @@
 // количеством одной операцией; подсказки из старой программы заполняют карточку.
 import { useEffect, useMemo, useState } from 'react'
 import { ApiError, get, newOpId, noServerAnswer, post, put } from '../lib/api'
-import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
+import { barcodesOf, createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
 import { createCounted, InputOps, LostOps, qtyInUnits, type ShelfInput } from '../lib/revisionCount'
 import { useUser } from '../lib/auth'
@@ -32,6 +32,8 @@ interface NewProductOut {
 
 interface Form {
   barcode: string
+  /** Ещё коды той же позиции (задача 012): «+» у поля «Штрихкод». */
+  more?: string[]
   name: string
   brand: string
   article: string
@@ -255,7 +257,7 @@ export function RevisionNewProduct({
         article: form.article.trim(),
         container_ml: oil ? ml : null,
         ...(milli ? { unit: milli } : {}),
-        barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
+        barcodes: barcodesOf(form),
         sale_price_tyiyn: price ?? 0,
         ...(viscosity ? { attrs: { viscosity } } : {}),
         initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
@@ -272,7 +274,7 @@ export function RevisionNewProduct({
           key: JSON.stringify(body),
           count,
           send: (opId, prev) =>
-            createOrTaken(form.barcode.trim(), () =>
+            createOrTaken(barcodesOf(form)[0] ?? '', () =>
               retrySame(() => post<NewProductOut>(`/revisions/${revisionId}/new-product`, { ...body, op_id: opId, prev_op_ids: prev })),
             ),
           earlierOf: (x) => {
@@ -301,7 +303,7 @@ export function RevisionNewProduct({
       if (r.taken) {
         // Товар с этим кодом — из другой категории: в эту ревизию он не входит, прибавлять некуда.
         if (categoryId && r.product.category_id !== categoryId)
-          throw new Error(`Код ${form.barcode.trim()} уже у товара «${r.product.name}» из другой категории — в эту ревизию он не входит`)
+          throw new Error(`Код ${barcodesOf(form)[0]} уже у товара «${r.product.name}» из другой категории — в эту ревизию он не входит`)
         // Найденное — в единицах его товара (у него может быть другая тара или штуки вместо литров).
         const raw: ShelfInput | null = milli ? { cans: 0, ml: 0, milli: { unit: milli, qty: count } } : shelfOf(form.count, oil ? form.countL : '')
         const qty = raw === null ? null : qtyInUnits(raw, r.product)
@@ -318,7 +320,7 @@ export function RevisionNewProduct({
         toast(TAKEN_ADDED)
       } else {
         toast(`Заведён и посчитан: ${r.created.product.name}`)
-        if (!form.barcode.trim() && r.created.product.barcodes.length > 0) {
+        if (barcodesOf(form).length === 0 && r.created.product.barcodes.length > 0) {
           setMade(r.created.product)
           setMadeCopies(String(r.created.product.unit === 'piece' && count > 0 ? Math.min(count, 500) : 1))
           return
@@ -459,8 +461,28 @@ export function RevisionNewProduct({
               <Field label="Бренд">
                 <input value={form.brand} onChange={(e) => set('brand', e.target.value)} />
               </Field>
-              <Field label="Штрихкод" hint="Пусто — программа выдаст свой код и предложит напечатать этикетку">
-                <input value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />
+              <Field label="Штрихкод" hint="Пусто — программа выдаст свой код и предложит напечатать этикетку. «+» — ещё код этой же позиции">
+                <div className="flex gap-2">
+                  <input id="revnew-barcode" className="min-w-0 flex-1" value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />
+                  <Button type="button" data-testid="revnew-barcode-add" aria-label="Ещё штрихкод" onClick={() => set('more', [...(form.more ?? []), ''])}>
+                    +
+                  </Button>
+                </div>
+                {(form.more ?? []).map((code, i) => (
+                  <div key={i} className="mt-2 flex gap-2">
+                    <input
+                      className="min-w-0 flex-1"
+                      data-testid="revnew-barcode-more"
+                      aria-label={`Штрихкод ${i + 2}`}
+                      autoFocus={code === ''}
+                      value={code}
+                      onChange={(e) => set('more', (form.more ?? []).map((c, j) => (j === i ? e.target.value : c)))}
+                    />
+                    <Button type="button" aria-label="Убрать код" onClick={() => set('more', (form.more ?? []).filter((_, j) => j !== i))}>
+                      ×
+                    </Button>
+                  </div>
+                ))}
               </Field>
               {oil && (
                 <Field label="Объём тары, л" required>
