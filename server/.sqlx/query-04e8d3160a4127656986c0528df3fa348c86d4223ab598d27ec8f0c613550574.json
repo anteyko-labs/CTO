@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update revision_lines set counted_qty = counted_qty + $3, user_id = $4, updated_at = now()\n                   where revision_id = $1 and product_id = $2 and counted_qty + $3 >= 0\n                   returning counted_qty",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "counted_qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "04e8d3160a4127656986c0528df3fa348c86d4223ab598d27ec8f0c613550574"
+}

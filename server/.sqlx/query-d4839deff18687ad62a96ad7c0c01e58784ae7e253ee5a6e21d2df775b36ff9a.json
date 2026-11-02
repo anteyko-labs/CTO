@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(qty), 0)::bigint as \"n!\" from revision_line_adds\n           where revision_id = $1 and product_id = $2 and user_id = $3 and mode = 'add'\n             and seq > coalesce((select max(seq) from revision_line_adds\n                                 where revision_id = $1 and product_id = $2 and mode <> 'add'), 0)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d4839deff18687ad62a96ad7c0c01e58784ae7e253ee5a6e21d2df775b36ff9a"
+}

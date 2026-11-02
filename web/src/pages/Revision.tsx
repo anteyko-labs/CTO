@@ -25,6 +25,7 @@ import {
   appendCount,
   countLogText,
   countSummary,
+  mineOf,
   defaultCountMode,
   expectedBody,
   expectedQuery,
@@ -149,6 +150,9 @@ const countInput = (l: Line, q: number): string => (l.unit === 'ml' ? litersInpu
 const REFRESH_MS = 5_000
 
 /** Вязкость строки: из карточки; у масла без неё — из названия, с пометкой. */
+/** Вид ревизии у владельца на этом устройстве: `all` — «Все вместе», иначе «Моё» (задача 007). */
+const VIEW_KEY = 'avtodom.revision.view'
+
 function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string; fromName: boolean } | null {
   if (l.viscosity) return { v: l.viscosity, fromName: false }
   if (l.unit !== 'ml') return null
@@ -197,14 +201,27 @@ function Draft({
   const [card, setCard] = useState<Product | null>(null)
   const act = useAction()
   const draft = rev.head.status === 'draft'
+  /** Владелец смотрит «Все вместе» — итог строк и кто сколько; иначе каждый видит только свой
+   *  пересчёт (задача 007). */
+  const [allView, setAllViewState] = useState(() => localStorage.getItem(VIEW_KEY) === 'all')
+  /** Выбор владельца запоминается на устройстве. */
+  const setAllView = (v: boolean) => {
+    localStorage.setItem(VIEW_KEY, v ? 'all' : 'own')
+    setAllViewState(v)
+  }
+  const ownView = draft && !(owner && allView)
+  /** Сотрудник во время пересчёта не видит учётного остатка и расхождений — слепой пересчёт. */
+  const blind = draft && !owner
   // Строка, появившаяся до перечитывания, — новее загруженной, пока перечитывание её не догонит.
-  const allLines = [
+  const rawLines = [
     ...rev.lines.map((x) => {
       const e = extra.find((y) => y.product_id === x.product_id)
       return e && (e.version ?? -1) > (x.version ?? -1) ? e : x
     }),
     ...extra.filter((e) => !rev.lines.some((x) => x.product_id === e.product_id)),
   ]
+  // Свой вид: в строке — своё число (сумма своих прибавок), а не общий итог (задача 007).
+  const allLines = ownView ? rawLines.map((x) => ({ ...x, counted_qty: mineOf(x.counted_log ?? [], me.id), counted_by: null })) : rawLines
 
   /** Товар этой ревизии: весь склад или её категория. */
   const fitsRevision = (p: Pick<Product, 'category_id'>) => !rev.head.category_id || p.category_id === rev.head.category_id
@@ -254,7 +271,9 @@ function Draft({
   const [ops] = useState(() => new InputOps(newOpId))
   /** op_id записей, которые ещё идут: тот же ввод второй раз не отправляется. */
   const inflight = useRef(new Set<string>())
-  const modeOf = (l: Line): CountMode => modesNow.current[l.product_id] ?? defaultCountMode()
+  /** Режим, допустимый в этом виде: в своём — «+ добавить» и «= моё», в общем — «+ добавить» и «= итог». */
+  const fitMode = (m: CountMode | undefined): CountMode => (!m || (ownView ? m === 'set' : m === 'mine') ? defaultCountMode() : m)
+  const modeOf = (l: Line): CountMode => fitMode(modesNow.current[l.product_id])
   const putMode = (id: string, m: CountMode) => {
     modesNow.current = { ...modesNow.current, [id]: m }
     setModes(modesNow.current)
@@ -398,12 +417,18 @@ function Draft({
   /** Своя запись записана: итог строки — из ответа, в журнале строки — своя запись. */
   const applySaved = (id: string, qty: number | null, mode: CountMode, res: Saved) => {
     const total = res.counted_qty
-    const entry: CountEntry = qty === null ? { by: me.full_name, user_id: me.id, mode: 'clear', qty: 0 } : { by: me.full_name, user_id: me.id, mode, qty }
+    // «= моё» сервер записал прибавкой разницы со своим числом строки — так же и в журнал на экране.
+    const entryOf = (x: Line): CountEntry =>
+      qty === null
+        ? { by: me.full_name, user_id: me.id, mode: 'clear', qty: 0 }
+        : mode === 'mine'
+          ? { by: me.full_name, user_id: me.id, mode: 'add', qty: qty - (mineOf(x.counted_log ?? [], me.id) ?? 0) }
+          : { by: me.full_name, user_id: me.id, mode, qty }
     setLine(id, res.version, (x) => ({
       ...x,
       counted_qty: total,
       counted_by: total === null ? null : me.full_name,
-      counted_log: appendCount(x.counted_log ?? [], entry),
+      counted_log: appendCount(x.counted_log ?? [], entryOf(x)),
     }))
     // Строки не было в загруженном списке — перечитываем, чтобы она стала настоящей.
     if (!rev.lines.some((x) => x.product_id === id)) void reload()
@@ -426,7 +451,7 @@ function Draft({
     // из очереди ушла бы после итога и прибавилась к нему. Сканы уходят первыми в той же цепочке
     // записей строки и, записавшись, входят в сверку как свои (человек их видел с отметкой ⏳);
     // не ушли — итог не записывается, число остаётся в поле.
-    const before = mode === 'set' ? writer.current.filter((x) => x.productId === id).map((x) => x.opId) : []
+    const before = mode !== 'add' ? writer.current.filter((x) => x.productId === id).map((x) => x.opId) : []
     for (const s of writer.current) if (before.includes(s.opId) && !inflight.current.has(s.opId)) void sendScan(s, 0)
     const gate =
       before.length === 0
@@ -604,6 +629,8 @@ function Draft({
     const id = l.product_id
     const mode = modeOf(l)
     if (mode === 'add' && addIsEmpty(qty, l.counted_qty)) return dropEdit(id)
+    // «= моё»: пустое поле или то же своё число — менять нечего.
+    if (mode === 'mine' && (qty === null || qty === l.counted_qty)) return dropEdit(id)
     // Пустую строку очистили, своих записей в пути и неотправленных сканов нет — убирать нечего.
     if (
       mode === 'set' &&
@@ -715,6 +742,8 @@ function Draft({
   }
 
   const counted = allLines.filter((l) => l.counted_qty !== null)
+  /** Посчитано кем угодно — для проведения, в каком бы виде владелец ни смотрел. */
+  const countedAll = rawLines.filter((l) => l.counted_qty !== null)
   const unsent = unsentCount(queue, fresh)
   const unsentLines = unsentByLine(queue, fresh)
   const codes = unsentCodes(queue, fresh)
@@ -834,11 +863,44 @@ function Draft({
             </Button>
           </div>
           <div className="text-sm text-slate-600">
-            Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
-            {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
-            Непересчитанные товары не меняются. Число в строке — «+ добавить»: то, что вы нашли в своём месте, прибавится к общему
-            итогу (считают несколько человек со своих входов — итог складывается). 0 в непосчитанной строке — «не нашли». Записать итог строки
-            целиком — выберите «= итог».
+            {owner && (
+              <div className="mb-2 flex gap-1" role="group" aria-label="Чей пересчёт показывать">
+                {(
+                  [
+                    [false, 'Моё'],
+                    [true, 'Все вместе'],
+                  ] as const
+                ).map(([v, label]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    aria-pressed={allView === v}
+                    data-view={v ? 'all' : 'own'}
+                    onClick={() => setAllView(v)}
+                    className={`min-h-[36px] rounded border px-3 text-sm ${allView === v ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {ownView ? (
+              <>
+                Вы пересчитали {counted.length} из {allLines.length}
+                {!blind && <>, расхождений {diffs.length}</>}. В строках — только ваш пересчёт, чужие числа не видны; итог по каждой строке
+                складывается из пересчёта всех. Число в строке — «+ добавить»: прибавится к вашему. Пробили лишнее — «= моё» и впишите,
+                сколько нашли вы. 0 в непосчитанной строке — «не нашли».
+                {owner && ' Итог всех и проведение — «Все вместе».'}
+              </>
+            ) : (
+              <>
+                Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
+                {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
+                Непересчитанные товары не меняются. Число в строке — «+ добавить»: то, что вы нашли в своём месте, прибавится к общему
+                итогу (считают несколько человек со своих входов — итог складывается). 0 в непосчитанной строке — «не нашли». Записать итог строки
+                целиком — выберите «= итог».
+              </>
+            )}
           </div>
         </Card>
       )}
@@ -866,7 +928,7 @@ function Draft({
           </select>
         </label>
       )}
-      <div className="flex justify-end">
+      <div className={`flex justify-end ${blind ? 'hidden' : ''}`}>
         {/* Все строки ревизии по отбору; «В деньгах» — только владельцу, как в таблице (задача 003 Н13, I13). */}
         <ExportButton
           file={`Ревизия ${rev.head.number}`}
@@ -888,12 +950,12 @@ function Draft({
         {lines.length === 0 ? (
           <Empty>Товаров нет</Empty>
         ) : (
-          <Table head={['Товар', 'Должно быть', 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
+          <Table head={blind ? ['Товар', 'Пересчитано вами'] : ['Товар', 'Должно быть', ownView ? 'Пересчитано вами' : 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
             {pager.shown.map((l) => {
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
               const tare = oilTare(l)
-              const mode = modes[l.product_id] ?? defaultCountMode()
+              const mode = fitMode(modes[l.product_id])
               const v = viscosityOf(l)
               return (
                 <tr key={l.product_id}>
@@ -925,18 +987,24 @@ function Draft({
                     </div>
                     {l.article && <div className="text-xs text-slate-500">{l.article}</div>}
                   </td>
-                  <td className="whitespace-nowrap px-2 py-2" data-testid="expected">
-                    {countText(l, l.expected_qty)}
-                  </td>
+                  {!blind && (
+                    <td className="whitespace-nowrap px-2 py-2" data-testid="expected">
+                      {countText(l, l.expected_qty)}
+                    </td>
+                  )}
                   <td className="whitespace-nowrap px-2 py-2">
                     {draft ? (
                       <div className="flex flex-col gap-1">
                         <div className="flex gap-1" role="group" aria-label="Как записать">
-                          {(
-                            [
-                              ['add', '+ добавить', 'Прибавить найденное в своём месте к общему итогу'],
-                              ['set', '= итог', 'Записать итог строки целиком'],
-                            ] as const
+                          {(ownView
+                            ? ([
+                                ['add', '+ добавить', 'Прибавить найденное к своему пересчёту'],
+                                ['mine', '= моё', 'Исправить своё число строки: сколько нашли вы'],
+                              ] as const)
+                            : ([
+                                ['add', '+ добавить', 'Прибавить найденное в своём месте к общему итогу'],
+                                ['set', '= итог', 'Записать итог строки целиком'],
+                              ] as const)
                           ).map(([m, label, title]) => (
                             <button
                               key={m}
@@ -988,7 +1056,7 @@ function Draft({
                         )}
                         {l.counted_qty !== null && (
                           <div className="text-xs font-medium text-slate-700" data-total={l.product_id}>
-                            итого {countText(l, l.counted_qty)}
+                            {ownView ? 'моё' : 'итого'} {countText(l, l.counted_qty)}
                           </div>
                         )}
                         {unsentLines.has(l.product_id) && (
@@ -1006,7 +1074,7 @@ function Draft({
                     ) : (
                       countText(l, l.counted_qty)
                     )}
-                    {l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
+                    {!ownView && l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
                       <div className="mt-0.5 whitespace-normal text-xs text-slate-400" data-testid="counted-by">
                         {l.counted_log?.length ? (
                           // Кто сколько добавил к итогу; весь журнал — подсказкой.
@@ -1019,7 +1087,7 @@ function Draft({
                       </div>
                     )}
                   </td>
-                  <td className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                  <td hidden={blind} className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
                     {diff === null ? '—' : diff === 0 ? 'сходится' : `${diff > 0 ? '+' : '−'}${countText(l, Math.abs(diff))}`}
                     {l.unit === 'ml' && diff !== null && diff !== 0 && (
                       <div className="mt-0.5">
@@ -1057,7 +1125,7 @@ function Draft({
             Отменить ревизию
           </Button>
           {owner ? (
-            <Button disabled={act.busy || counted.length === 0} onClick={() => setPosting({ comment: '', opId: newOpId() })}>
+            <Button disabled={act.busy || countedAll.length === 0} onClick={() => setPosting({ comment: '', opId: newOpId() })}>
               Провести
             </Button>
           ) : (

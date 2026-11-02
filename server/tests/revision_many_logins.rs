@@ -487,3 +487,57 @@ async fn other_login_on_same_tablet_does_not_wipe_fresh_adds(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["counted_qty"], json!(7));
 }
+
+/// «= моё» (задача 007): каждый видит только свой пересчёт и исправляет своё число строки. Азиз
+/// пробил 5 вместо 3 — «= моё 3» убирает 2 из итога, а 4 Алексея целы (итог 7). Повтор того же
+/// `op_id` не меняет итог; «= моё» больше своего — прибавка разницы; «= моё 0» в своей строке —
+/// своё 0, чужое цело.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn mine_fixes_own_count_and_keeps_others(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item) = w.draft("Трос буксировочный").await;
+    let uri = format!("/api/v1/revisions/{rid}/lines");
+    let (aziz, aleksey) = (&w.people[0], &w.people[1]);
+    let put = |who: &'static str, qty: i64, mode: &'static str, op: Uuid| json!({ "product_id": item, "counted_qty": qty, "mode": mode, "op_id": op, "_who": who });
+    w.ok(aziz, "PUT", &uri, put("a", 5, "add", Uuid::now_v7()))
+        .await;
+    w.ok(aleksey, "PUT", &uri, put("b", 4, "add", Uuid::now_v7()))
+        .await;
+    let op = Uuid::now_v7();
+    let fixed = w.ok(aziz, "PUT", &uri, put("a", 3, "mine", op)).await;
+    assert_eq!(fixed["counted_qty"], json!(7));
+    // Ответ потерялся — тот же ввод ещё раз: итог тот же.
+    let again = w.ok(aziz, "PUT", &uri, put("a", 3, "mine", op)).await;
+    assert_eq!(again["counted_qty"], json!(7));
+    let line = w.line(&w.owner, &rid, &item).await;
+    assert_eq!(
+        log_of(&line),
+        vec![
+            ("Азиз".into(), "add".into(), 5),
+            ("Алексей".into(), "add".into(), 4),
+            ("Азиз".into(), "add".into(), -2)
+        ]
+    );
+    // Больше своего — прибавка разницы; у Алексея «= моё 0» — его 4 уходят, Азиза цело.
+    let up = w
+        .ok(aziz, "PUT", &uri, put("a", 6, "mine", Uuid::now_v7()))
+        .await;
+    assert_eq!(up["counted_qty"], json!(10));
+    let zero = w
+        .ok(aleksey, "PUT", &uri, put("b", 0, "mine", Uuid::now_v7()))
+        .await;
+    assert_eq!(zero["counted_qty"], json!(6));
+    // «= итог» владельца перекрывает всех: своё число Азиза после него — с нуля.
+    let seen = w.line(&w.owner, &rid, &item).await;
+    w.ok(
+        &w.owner,
+        "PUT",
+        &uri,
+        json!({ "product_id": item, "counted_qty": 8, "mode": "set", "op_id": Uuid::now_v7(), "expected_qty": seen["counted_qty"] }),
+    )
+    .await;
+    let after = w
+        .ok(aziz, "PUT", &uri, put("a", 1, "mine", Uuid::now_v7()))
+        .await;
+    assert_eq!(after["counted_qty"], json!(9));
+}

@@ -1,8 +1,9 @@
 // Пересчёт строки ревизии несколькими людьми (задача 003, Н14): поле «+ добавить» или «= итог»
 // и журнал «кто сколько посчитал».
 
-/** `add` — прибавить найденное в своём месте; `set` — записать итог строки. */
-export type CountMode = 'add' | 'set'
+/** `add` — прибавить найденное в своём месте; `set` — записать итог строки; `mine` — «= моё»:
+ *  записать своё число строки, чужие не трогаются (задача 007). */
+export type CountMode = 'add' | 'set' | 'mine'
 
 /** Запись журнала строки с сервера: прибавил, записал итог, убрал строку. */
 export interface CountEntry {
@@ -38,6 +39,22 @@ export function appendCount(log: CountEntry[], e: CountEntry): CountEntry[] {
   const last = log[log.length - 1]
   if (last && e.mode === 'add' && last.mode === 'add' && sameWriter(last, e)) return [...log.slice(0, -1), { ...last, qty: last.qty + e.qty }]
   return [...log, e]
+}
+
+/**
+ * Своё число строки (задача 007: каждый видит только свой пересчёт): сумма своих прибавок после
+ * последнего «= итог» или «убрал»; своих прибавок нет — `null` (строку сам не считал).
+ */
+export function mineOf(log: CountEntry[], userId: string): number | null {
+  let from = 0
+  for (let i = log.length - 1; i >= 0; i--)
+    if (log[i].mode !== 'add') {
+      from = i + 1
+      break
+    }
+  let n: number | null = null
+  for (const e of log.slice(from)) if (e.mode === 'add' && e.user_id === userId) n = (n ?? 0) + e.qty
+  return n
 }
 
 /** Одна и та же запись одного входа: по входу, а у прежних ответов без входа — по имени. */
@@ -88,7 +105,7 @@ export const expectedBody = (seen: Seen): { expected_qty: number } | { expected_
 /** Та же сверка для очистки строки (`DELETE …?…`). */
 export const expectedQuery = (seen: Seen): string => (seen === null ? 'expected_empty=true' : `expected_qty=${seen}`)
 
-type OwnKind = 'add' | 'set' | 'clear'
+type OwnKind = 'add' | 'set' | 'clear' | 'mine'
 
 interface OwnWrite {
   seq: number
@@ -145,6 +162,8 @@ export class OwnWrites {
     let v = l.mark.seen
     for (const w of l.writes) {
       if (w.seq < l.mark.from || w.seq >= seq || w.state !== 'ok') continue
+      // «= моё» меняет итог на неизвестную здесь разницу — сверка «= итог» после него переспросит.
+      if (w.kind === 'mine') continue
       v = w.kind === 'add' ? (v ?? 0) + w.qty : w.kind === 'set' ? w.qty : null
     }
     return v

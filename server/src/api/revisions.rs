@@ -608,6 +608,10 @@ enum CountMode {
     #[default]
     Set,
     Add,
+    /// «= моё» (задача 007): своё число строки — N. Каждый видит только свой пересчёт, итог
+    /// строки — сумма всех; сервер прибавляет разницу с тем, что этот вход уже добавил после
+    /// последнего «= итог» или «убрал» (может быть меньше нуля — «пробил лишнее»).
+    Mine,
 }
 
 /// Сколько уже пересчитано по товару в черновике: экран «Работа с товарами» показывает это
@@ -635,6 +639,27 @@ async fn get_line(
     let version = line_version(&mut conn, id, product_id).await?;
     conn.commit().await?;
     Ok(Json(json!({ "counted_qty": counted, "version": version })))
+}
+
+/// Сколько этот вход добавил в строку после последнего «= итог» или «убрал» (задача 007):
+/// своё число строки, когда каждый видит только свой пересчёт.
+async fn my_count(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce(sum(qty), 0)::bigint as "n!" from revision_line_adds
+           where revision_id = $1 and product_id = $2 and user_id = $3 and mode = 'add'
+             and seq > coalesce((select max(seq) from revision_line_adds
+                                 where revision_id = $1 and product_id = $2 and mode <> 'add'), 0)"#,
+        id,
+        product_id,
+        ctx.user.id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 /// Посчитано по строке сейчас; строки нет — `None` (не путать с посчитанным 0).
@@ -700,7 +725,13 @@ async fn put_line(
     // Товар уже посчитан в другом открытом черновике: вторая строка вычла бы остаток дважды.
     // Тот черновик проводят — замок выше ждёт конца проведения, остаток ниже — уже после него.
     counted_elsewhere(&mut tx, ctx.user.branch_id, id, &[req.product_id]).await?;
-    let add = req.mode == CountMode::Add;
+    // «= моё» — прибавка разницы со своим числом строки; дальше — как «+ добавить».
+    let qty = if req.mode == CountMode::Mine {
+        req.counted_qty - my_count(&mut tx, &ctx, id, req.product_id).await?
+    } else {
+        req.counted_qty
+    };
+    let add = req.mode != CountMode::Set;
     // Записи строк одной ревизии идут по очереди (замок черновика выше): посчитанное сейчас —
     // точное, проверка итога на экране не гоняется с чужой прибавкой.
     if !add {
@@ -732,7 +763,29 @@ async fn put_line(
     // пересчёта, такая продажа вычлась бы дважды (её нет на полке и нет в остатке) — ложная
     // недостача. Продажа с ещё не посчитанной полки, наоборот, даст недостачу на проданное;
     // поэтому одну позицию лучше пересчитывать подряд (SPEC-15, ADR-059).
-    let counted = sqlx::query_scalar!(
+    // «= моё» вниз: строка уже есть (своё число больше нуля), вставка с минусом не прошла бы
+    // проверку строки ещё до «on conflict» — только обновление; итог ниже нуля — отказ.
+    let lowered = if qty < 0 {
+        Some(
+            sqlx::query_scalar!(
+                r#"update revision_lines set counted_qty = counted_qty + $3, user_id = $4, updated_at = now()
+                   where revision_id = $1 and product_id = $2 and counted_qty + $3 >= 0
+                   returning counted_qty"#,
+                id,
+                req.product_id,
+                qty,
+                ctx.user.id
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| invalid("итог строки меньше нуля: строку изменили — обновите страницу"))?,
+        )
+    } else {
+        None
+    };
+    let counted = match lowered {
+        Some(c) => c,
+        None => sqlx::query_scalar!(
         r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
            values ($1, $2, $3, $4, $5)
            on conflict (revision_id, product_id)
@@ -744,13 +797,14 @@ async fn put_line(
            returning counted_qty"#,
         id,
         req.product_id,
-        req.counted_qty,
+        qty,
         ctx.user.id,
         stock_now,
         add
     )
     .fetch_one(&mut *tx)
-    .await?;
+    .await?,
+    };
     if counted > 1_000_000_000 {
         return Err(invalid("пересчитано слишком много"));
     }
@@ -760,7 +814,7 @@ async fn put_line(
         id,
         req.product_id,
         if add { "add" } else { "set" },
-        req.counted_qty,
+        qty,
         req.op_id,
     )
     .await?;

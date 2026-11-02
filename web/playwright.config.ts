@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
+const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:8080'
+
 // Сквозные проверки в браузере. Нужен запущенный сервер с собранным клиентом
 // и владелец с логином/паролем из E2E_LOGIN / E2E_PASSWORD.
 export default defineConfig({
@@ -9,7 +11,10 @@ export default defineConfig({
   workers: 1,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
-    baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:8080',
+    baseURL,
+    // Ревизия у владельца — «Все вместе» (задача 007): прежние проверки смотрят общий итог; свой
+    // вид («Моё») проверяет revision-own.spec.ts, переключая его явно.
+    storageState: { cookies: [], origins: [{ origin: new URL(baseURL).origin, localStorage: [{ name: 'avtodom.revision.view', value: 'all' }] }] },
     channel: process.env.E2E_CHANNEL || undefined,
     locale: 'ru-RU',
     timezoneId: 'Asia/Bishkek',
