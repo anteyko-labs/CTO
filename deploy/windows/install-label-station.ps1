@@ -37,8 +37,13 @@ if ($RemovePrinter) {
 # Этикеточный принтер — по умолчанию: Chrome с --kiosk-printing печатает на него.
 $p = Get-CimInstance Win32_Printer | Where-Object { $_.Name -like "*$Printer*" } | Select-Object -First 1
 if ($p) {
-  Invoke-CimMethod -InputObject $p -MethodName SetDefaultPrinter | Out-Null
-  Write-Host "Принтер по умолчанию: $($p.Name) ($($p.PortName))." -ForegroundColor Green
+  # По ssh (без сеанса на экране) Windows не даёт сменить принтер по умолчанию — не останавливаемся.
+  try {
+    Invoke-CimMethod -InputObject $p -MethodName SetDefaultPrinter -ErrorAction Stop | Out-Null
+    Write-Host "Принтер по умолчанию: $($p.Name) ($($p.PortName))." -ForegroundColor Green
+  } catch {
+    Write-Host "Принтер по умолчанию не сменить отсюда — проверьте на экране склада, что это $($p.Name)." -ForegroundColor Yellow
+  }
 } else {
   Write-Host "Принтер «$Printer» не найден — поставьте драйвер и сделайте его принтером по умолчанию вручную." -ForegroundColor Yellow
 }
