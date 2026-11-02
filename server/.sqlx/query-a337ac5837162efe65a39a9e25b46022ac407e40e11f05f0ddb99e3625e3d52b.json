@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into oil_change_items (id, branch_id, oil_change_id, slot, text, category_id, position,\n                                             service_id, target_set, next_value, next_unit, next_km, next_date,\n                                             target_auto, custom_slot_id)\n               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "Bool",
+        "Int4",
+        "Text",
+        "Int4",
+        "Date",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a337ac5837162efe65a39a9e25b46022ac407e40e11f05f0ddb99e3625e3d52b"
+}

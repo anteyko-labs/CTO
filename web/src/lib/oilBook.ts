@@ -20,6 +20,18 @@ export interface BookLine {
   title?: string
   /** Вид замены: услуга строки, у фильтров с маслом — услуга масла (`oil_book::line_group`). */
   group?: string | null
+  /** Своя строка книжки точки (задача 016): слот `other` + её id и название. */
+  custom_slot_id?: string | null
+  custom_slot_name?: string | null
+}
+
+/** Своя строка книжки точки (задача 016, `GET /book-slots`); скрытая — не в списке выбора. */
+export interface CustomSlot {
+  id: string
+  name: string
+  interval_km: number | null
+  interval_days: number | null
+  hidden: boolean
 }
 
 /** Следующая замена по строке книжки; у «прочего» — по каждой услуге, с её названием (ADR-131). */
@@ -149,8 +161,15 @@ export function titleOf(slot: BookSlot, text: string, service?: string | null): 
   return text
 }
 
-/** Подпись строки замены: от сервера, у старого ответа — по тому же правилу. */
-export const lineTitle = (l: BookLine): string => l.title || titleOf(l.slot, l.text, l.service)
+/** Подпись строки замены: от сервера, у старого ответа — по тому же правилу. У своей строки
+ *  (задача 016) — с её названием впереди: «Свечи: NGK BKR6E», если его нет в подписи. */
+export function lineTitle(l: BookLine): string {
+  const t = l.title || titleOf(l.slot, l.text, l.service)
+  const name = l.custom_slot_name?.trim()
+  if (!name) return t
+  if (!t.trim()) return name
+  return t.toLowerCase().includes(name.toLowerCase()) ? t : `${name}: ${t}`
+}
 
 /** Подпись следующей замены строки книжки: что залили в последний раз (задача 003 Н5). */
 export const slotTitle = (n: Pick<SlotNext, 'title' | 'label'>): string => n.title || n.label
@@ -225,6 +244,9 @@ export function recordText(r: OilRecord): string {
 }
 
 export const slotLabel = (slot: BookSlot): string => BOOK_SLOT_LABELS[slot] ?? slot
+
+/** Название строки книжки у строки записи: своя строка точки — её названием (задача 016). */
+export const lineSlotLabel = (l: Pick<BookLine, 'slot' | 'custom_slot_name'>): string => l.custom_slot_name?.trim() || slotLabel(l.slot)
 
 /** Пробег записи, как его вписали: «57 790 миль»; без пробега — null. */
 export function recordMileage(r: Pick<OilRecord, 'mileage' | 'mileage_unit' | 'mileage_km'>): string | null {

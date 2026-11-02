@@ -1946,7 +1946,7 @@ fn reminder_what(slots: &[&crate::api::oil_book::SlotNext]) -> String {
     // 003 Н5).
     let genitives: Vec<String> = slots
         .iter()
-        .filter(|n| n.service_id.is_none())
+        .filter(|n| n.service_id.is_none() && n.custom_slot_id.is_none())
         .map(|n| match n.products.as_slice() {
             [] => slot_genitive(&n.slot).to_string(),
             p => format!("{} ({})", slot_genitive(&n.slot), p.join(", ")),
@@ -1956,7 +1956,11 @@ fn reminder_what(slots: &[&crate::api::oil_book::SlotNext]) -> String {
     if !genitives.is_empty() {
         parts.push(format!("замена {}", genitives.join(", ")));
     }
-    for n in slots.iter().filter(|n| n.service_id.is_some()) {
+    // Своя строка точки (задача 016) — так же, своим названием.
+    for n in slots
+        .iter()
+        .filter(|n| n.service_id.is_some() || n.custom_slot_id.is_some())
+    {
         let mut chars = n.label.trim().chars();
         if let Some(c) = chars.next() {
             parts.push(c.to_lowercase().chain(chars).collect());
@@ -5277,6 +5281,7 @@ mod tests {
             |slot: &str, service_id: Option<Uuid>, label: &str| crate::api::oil_book::SlotNext {
                 slot: slot.into(),
                 service_id,
+                custom_slot_id: None,
                 label: label.into(),
                 title: label.into(),
                 products: Vec::new(),
@@ -5301,6 +5306,12 @@ mod tests {
             "замена масла, масляного фильтра, замена ГУР"
         );
         assert_eq!(reminder_what(&[&other]), "замена ГУР");
+        // Задача 016: своя строка точки — своим названием, как услуга «прочее».
+        let plugs = crate::api::oil_book::SlotNext {
+            custom_slot_id: Some(Uuid::now_v7()),
+            ..slot("other", None, "Свечи")
+        };
+        assert_eq!(reminder_what(&[&oil, &plugs]), "замена масла, свечи");
         // Задача 003 Н5: товар последней замены известен — он в скобках.
         let gear = crate::api::oil_book::SlotNext {
             products: vec!["Mobil ATF 3309".into()],

@@ -600,8 +600,9 @@ pub fn slot_dues(b: &VehicleBook, today: NaiveDate, default_km_per_day: i32) -> 
             let due = n.next_date.map_or(by_km, |d| d.min(by_km));
             Some(SlotDue {
                 slot: n.slot.clone(),
-                service_id: n.service_id,
-                service: n.service_id.map(|_| n.label.clone()),
+                // Своя строка точки (задача 016) — как услуга «прочее»: ключ «other:<id>», её название.
+                service_id: n.service_id.or(n.custom_slot_id),
+                service: n.service_id.or(n.custom_slot_id).map(|_| n.label.clone()),
                 products: n.products.clone(),
                 target_km,
                 target: n.next_mileage.unwrap_or(target_km),

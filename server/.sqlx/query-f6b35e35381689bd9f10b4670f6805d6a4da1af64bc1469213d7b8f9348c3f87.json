@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name, interval_km, interval_days, hidden from book_custom_slots\n           where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "interval_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "hidden",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "f6b35e35381689bd9f10b4670f6805d6a4da1af64bc1469213d7b8f9348c3f87"
+}

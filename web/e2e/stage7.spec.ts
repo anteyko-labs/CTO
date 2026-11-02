@@ -213,6 +213,21 @@ test('масляная книжка по каждому фильтру: стро
   await expect(page.getByText(`Свечи ${RUN}`).first()).toBeVisible()
   await expect(page.getByText(`правка ${RUN}`).first()).toBeVisible()
 
+  // Задача 016: своя строка книжки — «+ Новая строка…» в «Что меняли», создаётся и сразу выбрана.
+  await page.getByTestId('book-record-edit').first().click()
+  const edit2 = page.getByRole('dialog', { name: /Запись книжки/ })
+  await edit2.getByRole('button', { name: '+ строка' }).click()
+  await edit2.getByLabel('Что меняли').last().selectOption({ label: '+ Новая строка…' })
+  const newSlot = edit2.getByTestId('book-new-slot')
+  await newSlot.getByLabel('Название').fill(`Свечи ${RUN}`)
+  await newSlot.getByRole('button', { name: 'Создать' }).click()
+  await expect(newSlot).toBeHidden()
+  await expect(edit2.getByLabel('Что меняли').last().locator('option:checked')).toHaveText(`Свечи ${RUN}`)
+  await edit2.getByLabel('Что залили или поставили').last().fill(`NGK ${RUN}`)
+  await edit2.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(edit2).toBeHidden()
+  await expect(page.getByText(`NGK ${RUN} (Свечи ${RUN})`).first()).toBeVisible()
+
   // Касса: под выбранной машиной — следующая замена по строкам.
   await page.goto('/')
   // Клиента находят по госномеру — машина подставляется сама.

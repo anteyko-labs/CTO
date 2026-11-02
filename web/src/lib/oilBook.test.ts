@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bookGroups, categorySlotText, lineNextText, lineTitle, titleOf, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
+import { bookGroups, categorySlotText, lineNextText, lineSlotLabel, lineTitle, titleOf, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
 import { oilBookHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
@@ -261,5 +261,18 @@ describe('подпись строки книжки — товар, а не ст�
       ['Замена масла', 2, 'на 138 000 км'],
       [null, 1, 'на 170 000 км'],
     ])
+  })
+})
+
+describe('своя строка книжки (задача 016)', () => {
+  it('название строки — своё, подпись — с ним впереди', () => {
+    const l = { slot: 'other' as const, text: 'NGK BKR6E · 4 шт', custom_slot_id: 'c1', custom_slot_name: 'Свечи' }
+    expect(lineSlotLabel(l)).toBe('Свечи')
+    expect(lineTitle(l)).toBe('Свечи: NGK BKR6E · 4 шт')
+    expect(lineTitle({ ...l, text: 'Свечи NGK' })).toBe('Свечи NGK')
+    expect(lineTitle({ ...l, text: '' })).toBe('Свечи')
+    // Без своей строки — как раньше.
+    expect(lineSlotLabel({ slot: 'other', custom_slot_name: null })).toBe('Прочие работы')
+    expect(lineTitle({ slot: 'other', text: 'Замена ГУР' })).toBe('Замена ГУР')
   })
 })

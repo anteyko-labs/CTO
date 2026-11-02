@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select i.id, i.slot, i.text, i.position, c.name as \"custom?\"\n           from oil_change_items i left join book_custom_slots c on c.id = i.custom_slot_id\n           where i.oil_change_id = $1 order by i.position, i.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "position",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "custom?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "477cb6947b11a2ada3051c70937e68ef9a5cfe18580299cd6eb270fb49610205"
+}

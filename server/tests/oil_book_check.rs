@@ -1606,3 +1606,65 @@ async fn record_lines_are_editable(pool: PgPool) {
         assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
     }
 }
+
+/// Задача 016: строка записи, поставленная своей строкой точки, — в журнале правки её названием
+/// (было → стало), в книжке — `other` с названием.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn record_edit_with_custom_slot_logs_its_name(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app).await;
+    let p = ok(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        &owner,
+        json!({ "kind": "person", "first_name": "Азиз", "last_name": "Свечной", "phone": "0700112016" }),
+    )
+    .await;
+    let pid = p["id"].as_str().unwrap();
+    let v = ok(
+        &app,
+        "POST",
+        &format!("/api/v1/parties/{pid}/vehicles"),
+        &owner,
+        json!({ "plate": "01KG016XYZ" }),
+    )
+    .await;
+    let vid = v["id"].as_str().unwrap();
+    let plugs = ok(
+        &app,
+        "POST",
+        "/api/v1/book-slots",
+        &owner,
+        json!({ "name": "Свечи" }),
+    )
+    .await;
+    let book = ok(
+        &app,
+        "POST",
+        &format!("/api/v1/vehicles/{vid}/oil-changes"),
+        &owner,
+        json!({ "change_date": "2026-10-01", "lines": [{ "slot": "other", "text": "Свечи старые" }] }),
+    )
+    .await;
+    let rid = book["records"][0]["id"].as_str().unwrap();
+    let out = ok(
+        &app,
+        "PATCH",
+        &format!("/api/v1/oil-changes/{rid}"),
+        &owner,
+        json!({ "lines": [{ "index": 0, "slot": "other", "text": "NGK", "custom_slot_id": plugs["id"] }] }),
+    )
+    .await;
+    let line = &out["records"][0]["lines"][0];
+    assert_eq!(line["custom_slot_name"], "Свечи");
+    let audit: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'vehicle.oil_edit' order by created_at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let lines = &audit["changes"]["lines"];
+    assert_eq!(lines["old"], json!(["other: Свечи старые"]), "{audit}");
+    assert_eq!(lines["new"], json!(["Свечи: NGK"]), "{audit}");
+}

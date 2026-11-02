@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update oil_change_items set slot = $2, text = $3, custom_slot_id = $4 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c50ffc61a0871753602d3be78604d2e0ba9f7e441ebf220b6ec5a783a8fc7ee"
+}

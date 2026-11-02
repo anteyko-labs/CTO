@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from book_custom_slots\n                          where branch_id = $1 and lower(name) = lower($2)\n                            and ($3::uuid is null or id <> $3)) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5f23f971c72c017d269db9d6033d66dce063d14a82c179f9236afdc6a84007a8"
+}

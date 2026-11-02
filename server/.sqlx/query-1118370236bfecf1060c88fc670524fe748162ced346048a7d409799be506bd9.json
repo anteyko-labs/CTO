@@ -1,22 +1,23 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select slot, text from oil_change_items where oil_change_id = $1 order by position, id",
+  "query": "select id, name from book_custom_slots where branch_id = $1 and id = any($2)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "slot",
-        "type_info": "Text"
+        "name": "id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 1,
-        "name": "text",
+        "name": "name",
         "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -24,5 +25,5 @@
       false
     ]
   },
-  "hash": "c69481e3edf1cf5789f1b5c2ee519b78fdedfa12026266fa991c46c8dbfb449a"
+  "hash": "1118370236bfecf1060c88fc670524fe748162ced346048a7d409799be506bd9"
 }

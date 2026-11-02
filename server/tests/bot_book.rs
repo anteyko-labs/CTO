@@ -180,6 +180,7 @@ fn next_change_text_is_mileage_only() {
     let slot = |mileage: Option<i32>, unit: &str, date: Option<NaiveDate>| SlotNext {
         slot: "oil".into(),
         service_id: None,
+        custom_slot_id: None,
         label: "Масло двигателя".into(),
         title: "Масло двигателя".into(),
         products: Vec::new(),

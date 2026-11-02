@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update book_custom_slots set name = $2, interval_km = $3, interval_days = $4, hidden = $5\n           where id = $1\n           returning id, name, interval_km, interval_days, hidden",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "interval_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "hidden",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "f8c2694ee65fa6c369ab07dbb09715164b2c02abae43588c36802ce32680f43c"
+}

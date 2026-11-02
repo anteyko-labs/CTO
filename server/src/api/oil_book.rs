@@ -22,6 +22,8 @@ pub fn routes() -> Router<AppState> {
         .route("/vehicles/{id}/oil-changes", routing::post(manual))
         .route("/oil-changes/{id}", routing::patch(edit))
         .route("/parties/{id}/oil-book", routing::get(party_book))
+        .route("/book-slots", routing::get(list_custom).post(create_custom))
+        .route("/book-slots/{id}", routing::patch(update_custom))
 }
 
 /// Строки книжки (SPEC-27): у каждой замены — масло, фильтры по видам и прочие работы.
@@ -106,8 +108,19 @@ pub fn title_of(slot: &str, text: &str, service: Option<&str>) -> String {
     text.to_string()
 }
 
-/// Подпись строки замены (`title_of`).
+/// Подпись строки замены (`title_of`). Своя строка точки (задача 016) — её название в скобках,
+/// если в тексте его нет: «NGK BKR6E (Свечи)»; без текста — название.
 pub fn line_title(l: &BookLine) -> String {
+    if let Some(name) = l.custom_slot_name.as_deref() {
+        let text = l.text.trim();
+        if text.is_empty() {
+            return name.to_string();
+        }
+        if text.to_lowercase().contains(&name.to_lowercase()) {
+            return text.to_string();
+        }
+        return format!("{text} ({name})");
+    }
     title_of(&l.slot, &l.text, l.service.as_deref())
 }
 
@@ -137,6 +150,9 @@ fn product_name(l: &BookLine) -> Option<String> {
 fn line_group(l: &BookLine, all: &[BookLine]) -> Option<String> {
     if let Some(s) = &l.service {
         return Some(s.clone());
+    }
+    if let Some(name) = &l.custom_slot_name {
+        return Some(name.clone());
     }
     if follows_oil(&l.slot) {
         return all
@@ -386,6 +402,9 @@ pub struct BookLine {
     pub title: String,
     /// Вид замены строки (`line_group`): под ним она в чеке книжки.
     pub group: Option<String>,
+    /// Своя строка точки (задача 016, ADR-184): строка `other` под своим названием.
+    pub custom_slot_id: Option<Uuid>,
+    pub custom_slot_name: Option<String>,
 }
 
 impl BookLine {
@@ -420,6 +439,8 @@ pub struct SlotNext {
     pub slot: String,
     /// Услуга «прочее», чья это следующая замена; у остальных строк — нет.
     pub service_id: Option<Uuid>,
+    /// Своя строка точки (задача 016): `slot` — `other`, `label` и `title` — её название.
+    pub custom_slot_id: Option<Uuid>,
     /// Название строки книжки («Масло в коробке»), у «прочего» — услуги: для интервала и выбора строки.
     pub label: String,
     /// Что залито или поставлено в последнюю замену строки (задача 003 Н5): «Mobil ATF 3309 · 1 л»;
@@ -1293,8 +1314,8 @@ async fn insert_lines(
         sqlx::query!(
             r#"insert into oil_change_items (id, branch_id, oil_change_id, slot, text, category_id, position,
                                              service_id, target_set, next_value, next_unit, next_km, next_date,
-                                             target_auto)
-               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
+                                             target_auto, custom_slot_id)
+               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
             new_id(),
             branch_id,
             oil_change_id,
@@ -1308,7 +1329,8 @@ async fn insert_lines(
             l.next_unit,
             l.next_km,
             l.next_date,
-            l.target_auto
+            l.target_auto,
+            l.custom_slot_id
         )
         .execute(&mut *conn)
         .await?;
@@ -1366,15 +1388,23 @@ pub async fn books_with_removed(
     let record_ids: Vec<Uuid> = records.iter().map(|r| r.id).collect();
     let items = sqlx::query!(
         r#"select i.oil_change_id, i.slot, i.text, i.category_id, i.service_id, s.name as "service?",
-                  i.target_set, i.target_auto, i.next_value, i.next_unit, i.next_km, i.next_date
+                  i.target_set, i.target_auto, i.next_value, i.next_unit, i.next_km, i.next_date,
+                  i.custom_slot_id, c.name as "custom_slot_name?",
+                  c.interval_km as "custom_km?", c.interval_days as "custom_days?"
            from oil_change_items i left join services s on s.id = i.service_id
+           left join book_custom_slots c on c.id = i.custom_slot_id
            where i.oil_change_id = any($1) order by i.oil_change_id, i.position"#,
         &record_ids
     )
     .fetch_all(&mut *conn)
     .await?;
     let mut items_by: HashMap<Uuid, Vec<BookLine>> = HashMap::new();
+    // Свои строки точки (задача 016): название и интервал (км, дни) — у каждой свой.
+    let mut customs: HashMap<Uuid, (String, Option<i32>, Option<i32>)> = HashMap::new();
     for i in items {
+        if let (Some(id), Some(name)) = (i.custom_slot_id, &i.custom_slot_name) {
+            customs.insert(id, (name.clone(), i.custom_km, i.custom_days));
+        }
         items_by.entry(i.oil_change_id).or_default().push(BookLine {
             slot: i.slot,
             text: i.text,
@@ -1387,6 +1417,8 @@ pub async fn books_with_removed(
             next_unit: i.next_unit,
             next_km: i.next_km,
             next_date: i.next_date,
+            custom_slot_id: i.custom_slot_id,
+            custom_slot_name: i.custom_slot_name,
             ..BookLine::default()
         });
     }
@@ -1468,6 +1500,7 @@ pub async fn books_with_removed(
         let mut other: Vec<Uuid> = Vec::new();
         for l in recs.iter().flat_map(|r| r.lines.iter()) {
             if l.slot == "other"
+                && l.custom_slot_id.is_none()
                 && let Some(id) = l.service_id
                 && !other.contains(&id)
             {
@@ -1483,6 +1516,20 @@ pub async fn books_with_removed(
                 &services,
                 &v.mileage_unit,
             ));
+        }
+        // Свои строки точки (задача 016) — по своему интервалу, со своим названием; свежие сверху.
+        let mut own_rows: Vec<Uuid> = Vec::new();
+        for l in recs.iter().flat_map(|r| r.lines.iter()) {
+            if let Some(id) = l.custom_slot_id
+                && !own_rows.contains(&id)
+            {
+                own_rows.push(id);
+            }
+        }
+        for id in own_rows {
+            if let Some((name, km, days)) = customs.get(&id) {
+                slots.push(custom_next(id, name, (*km, *days), &recs, &v.mileage_unit));
+            }
         }
         let oil = slots
             .iter()
@@ -1550,13 +1597,20 @@ pub fn next_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
 /// а строки без услуги (из тетради) — общие «Прочие работы».
 pub type SlotKey<'a> = (&'a str, Option<Uuid>);
 
+/// Своя строка точки (задача 016) — тот же ключ: `other` и id своей строки (id не совпадают).
 fn line_of(l: &BookLine, (slot, service): SlotKey) -> bool {
-    l.slot == slot && (slot != "other" || l.service_id == service)
+    l.slot == slot
+        && (slot != "other"
+            || match l.custom_slot_id {
+                Some(own) => service == Some(own),
+                None => l.service_id == service,
+            })
 }
 
-/// Ключ строки в напоминаниях: строка книжки, у услуги «прочее» — «other:<услуга>».
+/// Ключ строки в напоминаниях: строка книжки, у услуги «прочее» — «other:<услуга>», у своей
+/// строки — «other:<своя строка>».
 pub fn slot_key(n: &SlotNext) -> String {
-    match n.service_id {
+    match n.service_id.or(n.custom_slot_id) {
         Some(id) => format!("{}:{id}", n.slot),
         None => n.slot.clone(),
     }
@@ -1584,7 +1638,7 @@ pub fn now_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
         .iter()
         .filter_map(|n| {
             let date = n.last_date?;
-            let last = last_line(b, (&n.slot, n.service_id));
+            let last = last_line(b, (&n.slot, n.service_id.or(n.custom_slot_id)));
             let mut when = vec![date.format("%d.%m.%Y").to_string()];
             if let Some((r, _)) = last
                 && let Some(m) = r.mileage
@@ -1790,12 +1844,80 @@ fn slot_next(
         next_mileage,
         slot: slot.to_string(),
         service_id: service,
+        custom_slot_id: None,
         label,
         title,
         products,
         interval_km: interval.map(|i| i.0),
         interval_days: interval.map(|i| i.1),
         own_interval: own.is_some(),
+        last_date: last.as_ref().map(|(r, _)| r.change_date),
+        last_km,
+        last_text: last.map(|(_, l)| l.text),
+        next_km,
+        next_date,
+    }
+}
+
+/// Следующая замена своей строки точки (задача 016, ADR-184): пробег последней замены + интервал
+/// км, дата + интервал дней (дата — только для бота, ADR-182); без интервала — без срока. Цель,
+/// которую задал кассир, — она.
+fn custom_next(
+    id: Uuid,
+    name: &str,
+    (km, days): (Option<i32>, Option<i32>),
+    recs: &[OilRecord],
+    unit: &str,
+) -> SlotNext {
+    let key: SlotKey = ("other", Some(id));
+    let last = recs.iter().find_map(|r| {
+        let mine = || r.lines.iter().filter(|l| line_of(l, key));
+        mine()
+            .find(|l| l.target_set)
+            .or_else(|| mine().next())
+            .map(|l| (r, l.clone()))
+    });
+    let last_km = recs
+        .iter()
+        .filter(|r| r.lines.iter().any(|l| line_of(l, key)))
+        .find_map(|r| r.mileage_km);
+    let in_unit = |k: Option<i32>| k.and_then(|k| crate::domain::mileage::from_km(k, unit));
+    let target = last
+        .as_ref()
+        .map(|(_, l)| l)
+        .filter(|l| l.target_set && !l.target_auto);
+    let (next_km, next_date, next_mileage) = match target {
+        Some(l) => (
+            l.next_km,
+            l.next_date,
+            if l.next_unit.as_deref() == Some(unit) {
+                l.next_mileage
+            } else {
+                in_unit(l.next_km)
+            },
+        ),
+        None => {
+            let next_km = last_km.zip(km).map(|(m, k)| m.saturating_add(k));
+            let next_date = last.as_ref().zip(days).and_then(|((r, _), d)| {
+                r.change_date
+                    .checked_add_days(chrono::Days::new(u64::try_from(d).unwrap_or(31)))
+            });
+            (next_km, next_date, in_unit(next_km))
+        }
+    };
+    SlotNext {
+        unit: unit.to_string(),
+        last_mileage: in_unit(last_km),
+        next_mileage,
+        slot: "other".to_string(),
+        service_id: None,
+        custom_slot_id: Some(id),
+        label: name.to_string(),
+        title: name.to_string(),
+        products: Vec::new(),
+        interval_km: km,
+        interval_days: days,
+        own_interval: false,
         last_date: last.as_ref().map(|(r, _)| r.change_date),
         last_km,
         last_text: last.map(|(_, l)| l.text),
@@ -2025,6 +2147,9 @@ pub fn check_interval(km: i32, days: i32) -> AppResult<()> {
 struct ManualLine {
     slot: String,
     text: String,
+    /// Своя строка точки (задача 016): строка — `other` под её названием.
+    #[serde(default)]
+    custom_slot_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -2133,7 +2258,15 @@ async fn manual(
             return Err(invalid("неизвестная строка книжки"));
         }
         if !l.text.trim().is_empty() {
-            lines.push(BookLine::plain(&l.slot, l.text.trim().to_string(), None));
+            let slot = if l.custom_slot_id.is_some() {
+                "other"
+            } else {
+                l.slot.as_str()
+            };
+            lines.push(BookLine {
+                custom_slot_id: l.custom_slot_id,
+                ..BookLine::plain(slot, l.text.trim().to_string(), None)
+            });
         }
     }
     if lines.is_empty() {
@@ -2144,6 +2277,7 @@ async fn manual(
     }
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
+    check_own_slots(&mut tx, ctx.user.branch_id, &lines).await?;
     let v = sqlx::query!(
         "select party_id, plate, active, mileage_unit from party_vehicles where id = $1",
         id
@@ -2233,6 +2367,10 @@ struct EditLine {
     index: Option<usize>,
     slot: String,
     text: String,
+    /// Своя строка точки (задача 016): строка становится `other` под её названием. Нет поля —
+    /// своей строки у строки записи нет (снимается).
+    #[serde(default)]
+    custom_slot_id: Option<Uuid>,
 }
 
 /// Поправить пробег, строки или комментарий записи: книжка — справка, а не учёт денег (SPEC-16);
@@ -2315,7 +2453,21 @@ async fn edit_lines(
     record: Uuid,
     lines: &[EditLine],
 ) -> AppResult<(Value, Value)> {
+    // Свои строки точки (задача 016): только своего филиала; названия — для журнала.
+    let own_ids: Vec<Uuid> = lines.iter().filter_map(|l| l.custom_slot_id).collect();
+    let own = sqlx::query!(
+        "select id, name from book_custom_slots where branch_id = $1 and id = any($2)",
+        branch_id,
+        &own_ids
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     for l in lines {
+        if let Some(id) = l.custom_slot_id
+            && !own.iter().any(|o| o.id == id)
+        {
+            return Err(invalid("своя строка книжки не найдена — обновите страницу"));
+        }
         if !is_slot(&l.slot) {
             return Err(invalid("неизвестная строка книжки"));
         }
@@ -2327,17 +2479,30 @@ async fn edit_lines(
         return Err(invalid("укажите, что заменили: масло, фильтр или другое"));
     }
     let items = sqlx::query!(
-        "select id, slot, text, position from oil_change_items where oil_change_id = $1 order by position, id",
+        r#"select i.id, i.slot, i.text, i.position, c.name as "custom?"
+           from oil_change_items i left join book_custom_slots c on c.id = i.custom_slot_id
+           where i.oil_change_id = $1 order by i.position, i.id"#,
         record
     )
     .fetch_all(&mut *tx)
     .await?;
-    let text_of = |slot: &str, text: &str| format!("{slot}: {text}");
-    let before: Vec<String> = items.iter().map(|i| text_of(&i.slot, &i.text)).collect();
+    // Своя строка — её названием (задача 016): «Свечи: NGK».
+    let text_of = |slot: &str, custom: Option<&str>, text: &str| {
+        format!("{}: {text}", custom.unwrap_or(slot))
+    };
+    let before: Vec<String> = items
+        .iter()
+        .map(|i| text_of(&i.slot, i.custom.as_deref(), &i.text))
+        .collect();
     let mut kept = vec![false; items.len()];
     let mut next_pos = items.iter().map(|i| i.position).max().unwrap_or(-1) + 1;
     for l in lines {
         let text = l.text.trim();
+        let slot = if l.custom_slot_id.is_some() {
+            "other"
+        } else {
+            l.slot.as_str()
+        };
         match l.index {
             Some(ix) => {
                 let item = items
@@ -2348,10 +2513,11 @@ async fn edit_lines(
                 }
                 kept[ix] = true;
                 sqlx::query!(
-                    "update oil_change_items set slot = $2, text = $3 where id = $1",
+                    "update oil_change_items set slot = $2, text = $3, custom_slot_id = $4 where id = $1",
                     item.id,
-                    l.slot,
-                    text
+                    slot,
+                    text,
+                    l.custom_slot_id
                 )
                 .execute(&mut *tx)
                 .await?;
@@ -2359,14 +2525,16 @@ async fn edit_lines(
             None if text.is_empty() => {}
             None => {
                 sqlx::query!(
-                    r#"insert into oil_change_items (id, branch_id, oil_change_id, slot, text, position)
-                       values ($1, $2, $3, $4, $5, $6)"#,
+                    r#"insert into oil_change_items (id, branch_id, oil_change_id, slot, text, position,
+                                                     custom_slot_id)
+                       values ($1, $2, $3, $4, $5, $6, $7)"#,
                     new_id(),
                     branch_id,
                     record,
-                    l.slot,
+                    slot,
                     text,
-                    next_pos
+                    next_pos,
+                    l.custom_slot_id
                 )
                 .execute(&mut *tx)
                 .await?;
@@ -2382,7 +2550,9 @@ async fn edit_lines(
         }
     }
     let after = sqlx::query!(
-        "select slot, text from oil_change_items where oil_change_id = $1 order by position, id",
+        r#"select i.slot, i.text, c.name as "custom?"
+           from oil_change_items i left join book_custom_slots c on c.id = i.custom_slot_id
+           where i.oil_change_id = $1 order by i.position, i.id"#,
         record
     )
     .fetch_all(&mut *tx)
@@ -2400,8 +2570,266 @@ async fn edit_lines(
     )
     .execute(&mut *tx)
     .await?;
-    let after: Vec<String> = after.iter().map(|a| text_of(&a.slot, &a.text)).collect();
+    let after: Vec<String> = after
+        .iter()
+        .map(|a| text_of(&a.slot, a.custom.as_deref(), &a.text))
+        .collect();
     Ok((json!(before), json!(after)))
+}
+
+/// Свои строки записи — только своей точки (задача 016); чужая или неизвестная — отказ.
+async fn check_own_slots(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    lines: &[BookLine],
+) -> AppResult<()> {
+    let ids: Vec<Uuid> = lines.iter().filter_map(|l| l.custom_slot_id).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let found = sqlx::query_scalar!(
+        r#"select count(distinct id) as "n!" from book_custom_slots where branch_id = $1 and id = any($2)"#,
+        branch_id,
+        &ids
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let mut uniq = ids.clone();
+    uniq.sort();
+    uniq.dedup();
+    if usize::try_from(found).unwrap_or(0) != uniq.len() {
+        return Err(invalid("своя строка книжки не найдена — обновите страницу"));
+    }
+    Ok(())
+}
+
+/// Своя строка книжки точки (задача 016, ADR-184).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct CustomSlot {
+    pub id: Uuid,
+    pub name: String,
+    pub interval_km: Option<i32>,
+    pub interval_days: Option<i32>,
+    pub hidden: bool,
+}
+
+/// Свои строки точки — все, со скрытыми (экран выбора их отсеивает), по названию.
+async fn list_custom(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<Vec<CustomSlot>>> {
+    let mut conn = state.pool.acquire().await?;
+    let mut out = sqlx::query_as!(
+        CustomSlot,
+        r#"select id, name, interval_km, interval_days, hidden from book_custom_slots
+           where branch_id = $1"#,
+        user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    // По названию без учёта регистра — не зависит от сортировки базы.
+    out.sort_by_cached_key(|c| (c.name.to_lowercase(), c.id));
+    Ok(Json(out))
+}
+
+/// Название своей строки: 2–40 знаков, не совпадает (без учёта регистра) со встроенной строкой
+/// и с другой своей строкой точки (409).
+async fn check_custom_name(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Option<Uuid>,
+    name: &str,
+) -> AppResult<()> {
+    let n = name.chars().count();
+    if !(2..=40).contains(&n) {
+        return Err(invalid("название строки — от 2 до 40 знаков"));
+    }
+    let lower = name.to_lowercase();
+    if SLOTS.iter().any(|s| slot_label(s).to_lowercase() == lower) {
+        return Err(AppError::Conflict(format!(
+            "строка «{name}» уже есть в книжке"
+        )));
+    }
+    let taken = sqlx::query_scalar!(
+        r#"select exists (select 1 from book_custom_slots
+                          where branch_id = $1 and lower(name) = lower($2)
+                            and ($3::uuid is null or id <> $3)) as "e!""#,
+        branch_id,
+        name,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if taken {
+        return Err(AppError::Conflict(format!(
+            "строка «{name}» уже есть в книжке"
+        )));
+    }
+    Ok(())
+}
+
+/// Интервал своей строки — те же пределы, что у услуги (0064); пустой — без срока.
+fn check_custom_interval(km: Option<i32>, days: Option<i32>) -> AppResult<()> {
+    if km.is_some_and(|k| !(500..=200_000).contains(&k)) {
+        return Err(invalid("интервал — от 500 до 200 000 км"));
+    }
+    if days.is_some_and(|d| !(1..=1095).contains(&d)) {
+        return Err(invalid("интервал — от 1 до 1095 дней"));
+    }
+    Ok(())
+}
+
+/// Повтор названия, пойманный базой (одновременное создание), — тот же 409.
+fn custom_name_taken(e: sqlx::Error, name: &str) -> AppError {
+    if crate::error::is_unique_violation(&e) {
+        AppError::Conflict(format!("строка «{name}» уже есть в книжке"))
+    } else {
+        AppError::Db(e)
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateCustomReq {
+    #[serde(default)]
+    op_id: Option<Uuid>,
+    name: String,
+    #[serde(default)]
+    interval_km: Option<i32>,
+    #[serde(default)]
+    interval_days: Option<i32>,
+}
+
+/// Новая своя строка — из окна записи книжки: может тот, кто правит записи (`clients`, задача 013).
+async fn create_custom(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<CreateCustomReq>,
+) -> AppResult<Json<CustomSlot>> {
+    const KIND: &str = "book_slot.create";
+    let name = req.name.trim().to_string();
+    let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
+    if let Some(done) = ops::begin_opt::<CustomSlot>(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    check_custom_name(&mut tx, ctx.user.branch_id, None, &name).await?;
+    check_custom_interval(req.interval_km, req.interval_days)?;
+    let out = sqlx::query_as!(
+        CustomSlot,
+        r#"insert into book_custom_slots (id, branch_id, name, interval_km, interval_days)
+           values ($1, $2, $3, $4, $5)
+           returning id, name, interval_km, interval_days, hidden"#,
+        new_id(),
+        ctx.user.branch_id,
+        name,
+        req.interval_km,
+        req.interval_days
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| custom_name_taken(e, &name))?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "book_slot",
+        Some(out.id),
+        json!({ "name": out.name, "interval_km": out.interval_km, "interval_days": out.interval_days }),
+    )
+    .await?;
+    ops::finish_opt(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Поле, где важно отличить «не прислано» от `null`: `Some(None)` — снять интервал.
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+#[derive(Deserialize)]
+struct UpdateCustomReq {
+    #[serde(default)]
+    op_id: Option<Uuid>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    interval_km: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "present")]
+    interval_days: Option<Option<i32>>,
+    #[serde(default)]
+    hidden: Option<bool>,
+}
+
+/// Переименовать, сменить интервал, скрыть свою строку («Настройки → Книжка»): владелец или
+/// администратор с правом «Услуги: заводить и править» (справочник работ). Записи, где строка
+/// уже стоит, показывают новое название; скрытая остаётся в старых записях.
+async fn update_custom(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateCustomReq>,
+) -> AppResult<Json<CustomSlot>> {
+    const KIND: &str = "book_slot.update";
+    let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "services").await?;
+    if let Some(done) = ops::begin_opt::<CustomSlot>(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let before = sqlx::query_as!(
+        CustomSlot,
+        r#"select id, name, interval_km, interval_days, hidden from book_custom_slots
+           where id = $1 and branch_id = $2 for update"#,
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let name = match &req.name {
+        Some(n) => {
+            let n = n.trim().to_string();
+            check_custom_name(&mut tx, ctx.user.branch_id, Some(id), &n).await?;
+            n
+        }
+        None => before.name.clone(),
+    };
+    let interval_km = req.interval_km.unwrap_or(before.interval_km);
+    let interval_days = req.interval_days.unwrap_or(before.interval_days);
+    check_custom_interval(interval_km, interval_days)?;
+    let out = sqlx::query_as!(
+        CustomSlot,
+        r#"update book_custom_slots set name = $2, interval_km = $3, interval_days = $4, hidden = $5
+           where id = $1
+           returning id, name, interval_km, interval_days, hidden"#,
+        id,
+        name,
+        interval_km,
+        interval_days,
+        req.hidden.unwrap_or(before.hidden)
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| custom_name_taken(e, &name))?;
+    if out != before {
+        let view = |c: &CustomSlot| json!({ "name": c.name, "interval_km": c.interval_km, "interval_days": c.interval_days, "hidden": c.hidden });
+        ops::audit(
+            &mut tx,
+            &ctx,
+            KIND,
+            "book_slot",
+            Some(id),
+            json!({ "name": out.name, "changes": ops::changes(&view(&before), &view(&out)) }),
+        )
+        .await?;
+    }
+    ops::finish_opt(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 #[cfg(test)]

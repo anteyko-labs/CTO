@@ -1,12 +1,12 @@
 // Масляная книжка: замены по машинам, строки по фильтрам, следующая замена по каждой строке,
 // правка пробега и интервала (SPEC-16, SPEC-27).
 import { useState } from 'react'
-import { get, patch, post } from '../lib/api'
+import { ApiError, get, patch, post } from '../lib/api'
 import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNotes'
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { lineNextText, lineTitle, nextText, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, lineSlotLabel, lineTitle, nextText, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type CustomSlot, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
@@ -76,7 +76,27 @@ type ManualForm = { date: string; mileage: string } & Record<BookSlot, string>
 
 /** Правка записи книжки (задача 013): пробег, строки и комментарий; даты нет. `index` — номер
  *  строки в записи на сервере, у новой строки — нет. */
-type RecordEdit = { id: string; mileage: string; comment: string; lines: { index: number | null; slot: BookSlot; text: string }[] }
+type RecordEdit = {
+  id: string
+  mileage: string
+  comment: string
+  lines: { index: number | null; slot: BookSlot; text: string; custom_slot_id: string | null; custom_slot_name: string | null }[]
+}
+
+/** Значение строки в списке «Что меняли»: встроенная строка или своя строка точки (задача 016). */
+const CUSTOM = 'custom:'
+const NEW_SLOT = '__new'
+const lineValue = (l: { slot: BookSlot; custom_slot_id: string | null }): string => (l.custom_slot_id ? `${CUSTOM}${l.custom_slot_id}` : l.slot)
+
+/** Новая своя строка из окна записи: к какой строке записи и поля формы. */
+type NewSlotForm = { line: number; name: string; km: string; days: string }
+
+/** Отказ сервера при создании своей строки — понятным текстом (задача 016). */
+function customSlotError(e: unknown): string {
+  if (e instanceof ApiError && e.status === 409) return 'Строка с таким названием уже есть — выберите её в списке или назовите иначе'
+  if (e instanceof ApiError && (e.status === 400 || e.status === 422)) return 'Название — от 2 до 40 символов; интервал — от 500 до 200 000 км и от 1 до 1095 дней'
+  return e instanceof Error ? e.message : String(e)
+}
 
 function recordEdit(r: OilRecord, unit: MileageUnit): RecordEdit {
   const before = r.mileage ?? r.mileage_km
@@ -86,7 +106,13 @@ function recordEdit(r: OilRecord, unit: MileageUnit): RecordEdit {
     id: r.id,
     mileage: before !== null && before !== undefined && (r.mileage_unit ?? 'km') === unit ? String(before) : '',
     comment: r.comment ?? '',
-    lines: recordLines(r).map((l, i) => ({ index: own ? i : null, slot: l.slot, text: l.text })),
+    lines: recordLines(r).map((l, i) => ({
+      index: own ? i : null,
+      slot: l.slot,
+      text: l.text,
+      custom_slot_id: l.custom_slot_id ?? null,
+      custom_slot_name: l.custom_slot_name ?? null,
+    })),
   }
 }
 
@@ -108,6 +134,11 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
   const [manual, setManual] = useState<ManualForm | null>(null)
   const [editing, setEditing] = useState(false)
   const [recEdit, setRecEdit] = useState<RecordEdit | null>(null)
+  // Свои строки точки для списка «Что меняли» — грузятся при открытии окна записи (задача 016).
+  const [customSlots, setCustomSlots] = useState<CustomSlot[]>([])
+  const [newSlot, setNewSlot] = useState<NewSlotForm | null>(null)
+  const [newSlotError, setNewSlotError] = useState<string | null>(null)
+  const [newSlotBusy, setNewSlotBusy] = useState(false)
   const act = useAction()
   // Пробег машины — в км или милях; интервалы в книжке хранятся в км (ADR-084).
   const unit: MileageUnit = b.mileage_unit ?? 'km'
@@ -118,6 +149,46 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
   // Строки без замен тоже можно настроить: интервал у машины задают заранее. Услуги «прочее» — со
   // своим интервалом у услуги (ADR-131), «Прочие работы» из тетради — строкой книжки.
   const unused = SLOT_ORDER.filter((s) => !slots.some((n) => n.slot === s && !n.service_id))
+  const openRecEdit = (r: OilRecord) => {
+    setRecEdit(recordEdit(r, unit))
+    setNewSlot(null)
+    setNewSlotError(null)
+    get<CustomSlot[]>('/book-slots')
+      .then(setCustomSlots)
+      .catch(() => setCustomSlots([]))
+  }
+  const setLine = (i: number, patchLine: Partial<RecordEdit['lines'][number]>) =>
+    setRecEdit((cur) => (cur ? { ...cur, lines: cur.lines.map((x, j) => (j === i ? { ...x, ...patchLine } : x)) } : cur))
+  const pickSlot = (i: number, value: string) => {
+    if (value === NEW_SLOT) {
+      setNewSlotError(null)
+      setNewSlot({ line: i, name: '', km: '', days: '' })
+      return
+    }
+    if (value.startsWith(CUSTOM)) {
+      const c = customSlots.find((x) => x.id === value.slice(CUSTOM.length))
+      setLine(i, { slot: 'other', custom_slot_id: value.slice(CUSTOM.length), custom_slot_name: c?.name ?? null })
+    } else setLine(i, { slot: value as BookSlot, custom_slot_id: null, custom_slot_name: null })
+  }
+  const createSlot = async (f: NewSlotForm) => {
+    setNewSlotBusy(true)
+    setNewSlotError(null)
+    try {
+      const c = await post<CustomSlot>('/book-slots', {
+        name: f.name.trim(),
+        ...(f.km.trim() ? { interval_km: toKm(Number(f.km.trim()), unit) } : {}),
+        ...(f.days.trim() ? { interval_days: Number(f.days.trim()) } : {}),
+      })
+      setCustomSlots((cur) => [...cur.filter((x) => x.id !== c.id), c])
+      setLine(f.line, { slot: 'other', custom_slot_id: c.id, custom_slot_name: c.name })
+      setNewSlot(null)
+      toast(`Строка «${c.name}» создана`)
+    } catch (e) {
+      setNewSlotError(customSlotError(e))
+    } finally {
+      setNewSlotBusy(false)
+    }
+  }
   const manualLines = manual ? SLOT_ORDER.filter((s) => manual[s].trim()).map((s) => ({ slot: s, text: manual[s].trim() })) : []
   return (
     <Card className={`flex flex-col gap-2 ${removed ? 'opacity-75' : ''}`}>
@@ -227,7 +298,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 </span>
               </span>
               {editable && (
-                <Button variant="ghost" className="px-2 py-1 text-xs" data-testid="book-record-edit" onClick={() => setRecEdit(recordEdit(r, unit))}>
+                <Button variant="ghost" className="px-2 py-1 text-xs" data-testid="book-record-edit" onClick={() => openRecEdit(r)}>
                   Изменить
                 </Button>
               )}
@@ -345,30 +416,76 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
             </Field>
             {recEdit.lines.map((l, i) => (
               <div key={i} className="flex gap-2" data-testid="book-edit-line">
-                <select
-                  aria-label="Что меняли"
-                  value={l.slot}
-                  onChange={(e) => setRecEdit({ ...recEdit, lines: recEdit.lines.map((x, j) => (j === i ? { ...x, slot: e.target.value as BookSlot } : x)) })}
-                >
+                <select aria-label="Что меняли" value={lineValue(l)} onChange={(e) => pickSlot(i, e.target.value)}>
                   {SLOT_ORDER.map((s) => (
                     <option key={s} value={s}>
                       {slotLabel(s)}
                     </option>
                   ))}
+                  {/* Свои строки точки (задача 016): видимые, и у старой записи — её строка, даже скрытая. */}
+                  {customSlots
+                    .filter((c) => !c.hidden || c.id === l.custom_slot_id)
+                    .map((c) => (
+                      <option key={c.id} value={`${CUSTOM}${c.id}`}>
+                        {c.name}
+                      </option>
+                    ))}
+                  {l.custom_slot_id && !customSlots.some((c) => c.id === l.custom_slot_id) && (
+                    <option value={lineValue(l)}>{lineSlotLabel(l)}</option>
+                  )}
+                  <option value={NEW_SLOT}>+ Новая строка…</option>
                 </select>
                 <input
                   className="min-w-0 flex-1"
                   aria-label="Что залили или поставили"
                   value={l.text}
-                  onChange={(e) => setRecEdit({ ...recEdit, lines: recEdit.lines.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)) })}
+                  onChange={(e) => setLine(i, { text: e.target.value })}
                 />
                 <Button variant="secondary" aria-label="Убрать строку" onClick={() => setRecEdit({ ...recEdit, lines: recEdit.lines.filter((_, j) => j !== i) })}>
                   ×
                 </Button>
               </div>
             ))}
+            {newSlot && (
+              <div className="flex flex-col gap-2 rounded-md bg-slate-50 p-3" data-testid="book-new-slot">
+                <div className="text-sm font-medium">Новая строка книжки — появится у всех машин точки</div>
+                <Field label="Название">
+                  <input value={newSlot.name} maxLength={40} onChange={(e) => setNewSlot({ ...newSlot, name: e.target.value })} placeholder="Свечи, ремень ГРМ…" />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={`Интервал, ${unitLabel(unit)}`} hint="Необязательно: без интервала — без срока">
+                    <input inputMode="numeric" value={newSlot.km} onChange={(e) => setNewSlot({ ...newSlot, km: e.target.value })} />
+                  </Field>
+                  <Field label="Интервал, дней" hint="Необязательно: для напоминаний в боте">
+                    <input inputMode="numeric" value={newSlot.days} onChange={(e) => setNewSlot({ ...newSlot, days: e.target.value })} />
+                  </Field>
+                </div>
+                <ErrorBox error={newSlotError} />
+                <div className="flex justify-end gap-2">
+                  <Button variant="secondary" className="text-xs" onClick={() => setNewSlot(null)}>
+                    Отмена
+                  </Button>
+                  <Button
+                    className="text-xs"
+                    disabled={
+                      newSlotBusy ||
+                      newSlot.name.trim().length < 2 ||
+                      (newSlot.km.trim() !== '' && !/^\d+$/.test(newSlot.km.trim())) ||
+                      (newSlot.days.trim() !== '' && !/^\d+$/.test(newSlot.days.trim()))
+                    }
+                    onClick={() => void createSlot(newSlot)}
+                  >
+                    Создать
+                  </Button>
+                </div>
+              </div>
+            )}
             <div>
-              <Button variant="secondary" className="text-xs" onClick={() => setRecEdit({ ...recEdit, lines: [...recEdit.lines, { index: null, slot: 'other', text: '' }] })}>
+              <Button
+                variant="secondary"
+                className="text-xs"
+                onClick={() => setRecEdit({ ...recEdit, lines: [...recEdit.lines, { index: null, slot: 'other', text: '', custom_slot_id: null, custom_slot_name: null }] })}
+              >
                 + строка
               </Button>
             </div>
@@ -383,6 +500,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
               <Button
                 disabled={
                   act.busy ||
+                  newSlot !== null ||
                   !recEdit.lines.some((l) => l.text.trim()) ||
                   (recEdit.mileage.trim() !== '' && !/^\d+$/.test(recEdit.mileage.trim()))
                 }
@@ -391,7 +509,12 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                     await patch(`/oil-changes/${recEdit.id}`, {
                       ...(recEdit.mileage.trim() ? { mileage: Number(recEdit.mileage.trim()), mileage_unit: unit } : {}),
                       comment: recEdit.comment,
-                      lines: recEdit.lines.map((l) => ({ ...(l.index !== null ? { index: l.index } : {}), slot: l.slot, text: l.text })),
+                      lines: recEdit.lines.map((l) => ({
+                        ...(l.index !== null ? { index: l.index } : {}),
+                        slot: l.slot,
+                        text: l.text,
+                        ...(l.custom_slot_id ? { custom_slot_id: l.custom_slot_id } : {}),
+                      })),
                     })
                     setRecEdit(null)
                     onChanged()
@@ -544,7 +667,7 @@ const RECORD_COLS: ExportCol<RecordRow>[] = [
   { label: 'Дата', value: ({ r }) => xl.date(r.change_date) },
   { label: 'Пробег', value: ({ r }) => recordMileage(r) ?? '' },
   { label: 'Пробег, км', value: ({ r }) => (r.mileage_km !== null ? xl.int(r.mileage_km) : null) },
-  { label: 'Что меняли', value: ({ r }) => recordLines(r).map((l) => [`${slotLabel(l.slot)}: ${l.text}`, lineNextText(l)].filter(Boolean).join(', ')).join('; ') },
+  { label: 'Что меняли', value: ({ r }) => recordLines(r).map((l) => [`${lineSlotLabel(l)}: ${l.text}`, lineNextText(l)].filter(Boolean).join(', ')).join('; ') },
   { label: 'Чек', value: ({ r }) => (r.sale_number !== null ? xl.int(r.sale_number) : null) },
   { label: 'Сумма чека', value: ({ r }) => xl.maybeMoney(r.sale_total_tyiyn) },
   { label: 'Комментарий', value: ({ r }) => r.comment },
