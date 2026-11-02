@@ -14,11 +14,11 @@
 - Коды: 409 — повтор/конфликт состояния (дубль документа, уже обработано), 422 — неверные данные, 403 — нет права, 401 — нет входа.
 - Заголовки: `x-branch-id` (филиал владельца), `x-device-id` (устройство для журнала), `x-total-count` (списки).
 - Каждая изменяющая операция несёт `op_id` (UUID v7 с клиента) → идемпотентность (I8).
-- Станция этикеток (задача 006, ADR-177, SPEC-02): `POST /label-jobs` (с `op_id`, ≤ 500 копий), `GET /label-jobs`, `GET /label-jobs/{id}` (+ `station_online`), `POST /label-jobs/take|{id}/done|{id}/failed` (с `station_id`) — без права, только свой филиал.
+- Станция этикеток (задача 006, ADR-177, SPEC-02): `POST /label-jobs` (с `op_id`, ≤ 500 копий, `size` `big`|`small` — задача 014), `GET /label-jobs`, `GET /label-jobs/{id}` (+ `station_online`), `POST /label-jobs/take|{id}/done|{id}/failed` (с `station_id`) — без права, только свой филиал.
 - Новый маршрут попадает в обход филиалов `server/tests/branches.rs`. Список «Все филиалы» владельца — `?branch=all` (SPEC-33 §3): строки с `branch_id`/`branch_name`, правка — только у строк своего филиала. Задача 003: `POST /debts/old-supplier` — старый долг поставщику (ADR-163; `POST /debts/old` для поставщика — 422); `GET /expenses/all` и `/expenses/all/summary` с `?branch=all` — владельцу все филиалы, строки с `branch_id`/`branch_name`, администратору 404 (ADR-161, ADR-164).
 
 ## Данные
-- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0099; 0098 — метры, применяется после 0099). Применённые не правятся; номер — следующий за последним в main. Единицы товара — `piece`/`ml`/`g`/`mm`, виды строки чека — `piece`/`container`/`pour`/`weight`/`length` (вид должен подходить к единице, иначе 409).
+- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0100; 0098 — метры, применяется после 0099). Применённые не правятся; номер — следующий за последним в main. Единицы товара — `piece`/`ml`/`g`/`mm`, виды строки чека — `piece`/`container`/`pour`/`weight`/`length` (вид должен подходить к единице, иначе 409).
 - Деньги — `*_tyiyn BIGINT`; объёмы — мл; пробег — `mileage_km` + как вписан (`mileage_value`, `mileage_unit`).
 - Долги — `party_ledger` (append-only, сторно — `reversal_of`); касса/счета — движения; склад — движения.
 - Книжка ТО: `oil_changes` + `oil_change_items` (строка = `slot`, `next_km`/`next_date`); фильтры масляный/воздушный/салонный идут на срок масла (ADR-117); итог чека — только строки этого чека (ADR-111); цель, которую кассир не прислал, ставит сервер — пробег + интервал, `target_auto` (ADR-144).

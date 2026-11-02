@@ -1,6 +1,12 @@
 # 014 — второй принтер на складе: маленькие этикетки 2×3 см
 
-Статус: утверждено (02.11.2026; ответы 1а, 2б; выбор «Здесь» убрать)
+Статус: сделано (02.11.2026; ответы 1а, 2б; выбор «Здесь» убран; ветка feat-014-small-labels, не слита и не выкачена — сначала выкатка задачи из другого чата)
+
+## Итог проверки (02.11.2026)
+- [x] `server/tests/label_jobs.rs` — 7/7 (новые: станция берёт только свой размер, без size — big, station_online по размеру; настройки small отдельно, 30×20 по умолчанию, границы).
+- [x] `web/src/lib/labelJob.test.ts`, `web/src/components/labels.test.ts` (маленькая — штрихкод и «Цена:» без названия; большая — «Цена:»).
+- [x] e2e `label-station.spec.ts` (две станции), `receipt-labels.spec.ts`, `revision-new-category.spec.ts` — 7/7 на avtodom_e2e_014, порт 8214.
+- [ ] `install-label-station.ps1 -SmallPrinter` на Windows не запускался: запись принтера в профиль Chrome проверить на складе «Пробной этикеткой» в обоих окнах.
 
 ## Зачем
 Владелец 02.11.2026: «на складе был 1 принтер, теперь ещё 1 появился для маленьких этикеток 2 на 3… кнопка печать на складе — ту что была, напиши „большой штрихкод“, а для второго — маленький; ещё надпись „Цена“ нужно вернуть». Сейчас размер этикетки один (`LabelSettings` в `refs.rs:1338`), станция печатает всё на принтер по умолчанию (задача 006 Н3).
@@ -16,7 +22,7 @@
 Выбор принтера из программы (браузер этого не умеет — только через профиль Chrome). Третий размер. Ценники на полку.
 
 ## Затронутые файлы
-`server/migrations/0100_label_size.sql`; `server/src/api/label_jobs.rs` (create, take:279, station_online:72, seen:240), `server/src/api/refs.rs:1338,1581` (второй набор, `GET/PUT /settings/labels?size=`); `web/src/components/{labels.ts,labelTarget.tsx}`, `web/src/lib/labelJob.ts`, `web/src/pages/{LabelStation,LabelSettings,Products,ReceiptNew,ReceiptView,StockInView}.tsx`; tier2 (label-jobs: `size`, последняя миграция 0100), SPEC-02, ADR-182.
+`server/migrations/0100_label_size.sql`; `deploy/windows/install-label-station.ps1`; `server/src/api/label_jobs.rs` (create, take:279, station_online:72, seen:240), `server/src/api/refs.rs:1338,1581` (второй набор, `GET/PUT /settings/labels?size=`); `web/src/components/{labels.ts,labelTarget.tsx}`, `web/src/lib/labelJob.ts`, `web/src/pages/{LabelStation,LabelSettings,Products,ReceiptNew,ReceiptView,StockInView}.tsx`; tier2 (label-jobs: `size`, последняя миграция 0100), SPEC-02, ADR-183.
 
 ## Проверка
 - `server/tests/label_jobs.rs`: задание `small` не берёт станция `big` и наоборот; без `size` → `big`; `station_online` по размеру; настройки `small` сохраняются отдельно, границы 10..200 мм.

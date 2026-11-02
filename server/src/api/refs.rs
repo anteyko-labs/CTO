@@ -1,6 +1,6 @@
 //! Справочники сотрудников, услуг, поставщиков и настройки этикеток (SPEC-02).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1361,11 +1361,52 @@ fn yes() -> bool {
     true
 }
 
+impl LabelSettings {
+    /// Маленькая этикетка 30×20 мм (задача 014): только штрихкод и цена.
+    fn small() -> Self {
+        Self {
+            width_mm: 30,
+            height_mm: 20,
+            show_name: false,
+            show_price: true,
+            show_article: false,
+            show_brand: false,
+            show_spec: false,
+            remote_default: station(),
+        }
+    }
+}
+
+/// Размер этикетки: `big` — прежний принтер, `small` — 30×20 мм (задача 014).
+#[derive(Deserialize)]
+pub struct LabelSizeQuery {
+    #[serde(default)]
+    pub size: Option<String>,
+}
+
+/// Ключ настроек по размеру; неизвестный размер — 422.
+pub fn label_size(size: Option<&str>) -> AppResult<&'static str> {
+    match size.unwrap_or("big") {
+        "big" => Ok("big"),
+        "small" => Ok("small"),
+        _ => Err(invalid("размер этикетки — big или small")),
+    }
+}
+
+fn labels_key(size: &str) -> &'static str {
+    if size == "small" {
+        "labels.small"
+    } else {
+        "labels"
+    }
+}
+
 impl Default for LabelSettings {
     fn default() -> Self {
         Self {
-            width_mm: 40,
-            height_mm: 30,
+            // Бумага большого принтера склада — 58×40 мм.
+            width_mm: 58,
+            height_mm: 40,
             show_name: true,
             show_price: true,
             show_article: false,
@@ -1587,24 +1628,38 @@ async fn put_debt_docs(
     Ok(Json(value))
 }
 
-async fn get_labels(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Value>> {
+async fn get_labels(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<LabelSizeQuery>,
+) -> AppResult<Json<Value>> {
+    let size = label_size(q.size.as_deref())?;
     let v = sqlx::query_scalar!(
-        "select value from settings where branch_id = $1 and key = 'labels'",
-        user.branch_id
+        "select value from settings where branch_id = $1 and key = $2",
+        user.branch_id,
+        labels_key(size)
     )
     .fetch_optional(&state.pool)
     .await?;
     let settings = v
         .and_then(|v| serde_json::from_value::<LabelSettings>(v).ok())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if size == "small" {
+                LabelSettings::small()
+            } else {
+                LabelSettings::default()
+            }
+        });
     Ok(Json(json!(settings)))
 }
 
 async fn put_labels(
     State(state): State<AppState>,
     ctx: Ctx,
+    Query(q): Query<LabelSizeQuery>,
     Json(req): Json<LabelSettings>,
 ) -> AppResult<Json<Value>> {
+    let size = label_size(q.size.as_deref())?;
     if !(10..=200).contains(&req.width_mm) || !(10..=200).contains(&req.height_mm) {
         return Err(invalid("размер этикетки от 10 до 200 мм"));
     }
@@ -1616,21 +1671,19 @@ async fn put_labels(
     // Этикетки — часть «Товары и штрихкоды» (ADR-128).
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     sqlx::query!(
-        r#"insert into settings (branch_id, key, value) values ($1, 'labels', $2)
+        r#"insert into settings (branch_id, key, value) values ($1, $2, $3)
            on conflict (branch_id, key) do update set value = excluded.value"#,
         ctx.user.branch_id,
+        labels_key(size),
         value
     )
     .execute(&mut *tx)
     .await?;
-    ops::audit(
-        &mut tx,
-        &ctx,
-        "settings.labels",
-        "settings",
-        None,
-        value.clone(),
-    )
+    ops::audit(&mut tx, &ctx, "settings.labels", "settings", None, {
+        let mut a = value.clone();
+        a["size"] = json!(size);
+        a
+    })
     .await?;
     tx.commit().await?;
     Ok(Json(value))

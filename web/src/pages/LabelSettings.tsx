@@ -1,10 +1,12 @@
-// Настройка размера и содержимого этикеток с предпросмотром (SPEC-02, ADR-010).
+// Настройка размера и содержимого этикеток с предпросмотром (SPEC-02, ADR-010). Два набора —
+// большой и маленький принтер склада (задача 014).
 import { useState } from 'react'
 import { labelsHtml } from '../components/labels'
 import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader } from '../components/ui'
 import { get, put, qs } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
 import { previewPick } from '../lib/labelText'
+import { SIZE_BUTTON, type LabelSize } from '../lib/labelJob'
 import type { Category, LabelSettings, Product } from '../lib/types'
 
 const PRESETS: [number, number][] = [
@@ -46,7 +48,6 @@ interface Form {
   show_article: boolean
   show_brand: boolean
   show_spec: boolean
-  remote_default: 'here' | 'station'
 }
 
 const toForm = (s: LabelSettings): Form => ({
@@ -57,7 +58,6 @@ const toForm = (s: LabelSettings): Form => ({
   show_article: s.show_article,
   show_brand: s.show_brand !== false,
   show_spec: s.show_spec !== false,
-  remote_default: s.remote_default === 'here' ? 'here' : 'station',
 })
 
 function parseMm(v: string): number | null {
@@ -78,7 +78,6 @@ function toSettings(f: Form): LabelSettings | null {
     show_article: f.show_article,
     show_brand: f.show_brand,
     show_spec: f.show_spec,
-    remote_default: f.remote_default,
   }
 }
 
@@ -95,7 +94,7 @@ async function previewProduct(): Promise<Product> {
   }
 }
 
-function Editor({ initial }: { initial: LabelSettings }) {
+function Editor({ initial, size }: { initial: LabelSettings; size: LabelSize }) {
   const [form, setForm] = useState<Form>(() => toForm(initial))
   const [saved, setSaved] = useState(false)
   const { busy, error, run } = useAction()
@@ -113,7 +112,8 @@ function Editor({ initial }: { initial: LabelSettings }) {
   const save = () =>
     run(async () => {
       if (!settings) throw new Error(`Размер этикетки от ${MIN_MM} до ${MAX_MM} мм`)
-      const res = await put<LabelSettings>('/settings/labels', settings)
+      // Прежний ключ «кнопка по умолчанию» (задача 006) не трогаем — печать теперь только на складе.
+      const res = await put<LabelSettings>(`/settings/labels${qs({ size })}`, { ...settings, remote_default: initial.remote_default ?? 'station' })
       setForm(toForm(res))
       setSaved(true)
     })
@@ -163,23 +163,6 @@ function Editor({ initial }: { initial: LabelSettings }) {
             <Checkbox label="Цена" checked={form.show_price} onChange={(v) => update({ show_price: v })} />
             <Checkbox label="Артикул" checked={form.show_article} onChange={(v) => update({ show_article: v })} />
           </div>
-          <div role="radiogroup" aria-label="Кнопка по умолчанию на телефоне">
-            <div className="mb-2 text-sm font-medium text-slate-700">Кнопка по умолчанию на телефоне</div>
-            <div className="flex flex-wrap gap-4 text-sm">
-              {(
-                [
-                  ['station', 'На складе'],
-                  ['here', 'Здесь'],
-                ] as const
-              ).map(([v, t]) => (
-                <label key={v} className="flex items-center gap-2">
-                  <input type="radio" name="remote_default" checked={form.remote_default === v} onChange={() => update({ remote_default: v })} />
-                  {t}
-                </label>
-              ))}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">«На складе» — этикетка уходит на принтер склада (станция этикеток); на компьютере по умолчанию — «Здесь».</div>
-          </div>
           <ErrorBox error={error} />
           {saved && <div className="text-sm text-emerald-700">Сохранено</div>}
           <div>
@@ -215,12 +198,27 @@ function Editor({ initial }: { initial: LabelSettings }) {
 }
 
 export default function LabelSettingsPage() {
-  const data = useLoad(() => get<LabelSettings>('/settings/labels'), [])
+  const [size, setSize] = useState<LabelSize>('big')
+  const data = useLoad(() => get<LabelSettings>(`/settings/labels${qs({ size })}`), [size])
   return (
     <div>
       <PageHeader title="Этикетки" />
+      <div className="mb-4 inline-flex overflow-hidden rounded-md border border-slate-300" role="tablist" aria-label="Принтер">
+        {(['big', 'small'] as LabelSize[]).map((k) => (
+          <button
+            key={k}
+            type="button"
+            role="tab"
+            aria-selected={size === k}
+            onClick={() => setSize(k)}
+            className={`min-h-[36px] px-3 text-sm ${size === k ? 'bg-slate-800 text-white' : 'bg-white text-slate-700'}`}
+          >
+            {SIZE_BUTTON[k]}
+          </button>
+        ))}
+      </div>
       <ErrorBox error={data.error} />
-      {data.loading && !data.data ? <Loading /> : data.data && <Editor initial={data.data} />}
+      {data.loading && !data.data ? <Loading /> : data.data && <Editor key={size} size={size} initial={data.data} />}
     </div>
   )
 }

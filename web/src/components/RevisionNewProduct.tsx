@@ -18,7 +18,7 @@ import { countText, parseOil, parseQty, perWord, unitShort, viscosityFromName } 
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
 import { CameraScanButton } from './CameraScan'
-import { sendToStation } from './labelTarget'
+import { LabelSizeButtons, sendToStation } from './labelTarget'
 import { PurchasePriceInput } from './PurchasePriceInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
@@ -342,13 +342,10 @@ export function RevisionNewProduct({
           </Field>
           <ErrorBox error={act.error} />
           <div className="flex justify-end gap-2">
-            <Button
-              variant="secondary"
+            <LabelSizeButtons
               disabled={act.busy || !(Number(madeCopies) >= 1 && Number(madeCopies) <= 500)}
-              onClick={() => void act.run(async () => void (await sendToStation([{ product: made, copies: Number(madeCopies) }])))}
-            >
-              Напечатать этикетку
-            </Button>
+              onPrint={(size) => void act.run(async () => void (await sendToStation([{ product: made, copies: Number(madeCopies) }], size)))}
+            />
             <Button onClick={onDone}>Готово</Button>
           </div>
         </div>

@@ -11,6 +11,7 @@ import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
 import { sendToStation } from '../components/labelTarget'
+import type { LabelSize } from '../lib/labelJob'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -640,11 +641,11 @@ function Draft({
   /** Товар без штрихкода (не из Умага, старая карточка): программа выдаёт свой код, этикетка —
    *  на принтер; дальше товар сканируется (задача 007). */
   /** Окно «Сколько этикеток» перед печатью на складе (задача 007). */
-  const [labelFor, setLabelFor] = useState<{ line: Line; copies: string } | null>(null)
-  const askLabels = (l: Line) =>
+  const [labelFor, setLabelFor] = useState<{ line: Line; copies: string; size: LabelSize } | null>(null)
+  const askLabels = (l: Line, size: LabelSize) =>
     // По умолчанию — сколько штук посчитано (на вес и масло — одна).
-    setLabelFor({ line: l, copies: String(l.unit === 'piece' && l.counted_qty && l.counted_qty > 0 ? Math.min(l.counted_qty, 500) : 1) })
-  const issueCode = (l: Line, copies: number) =>
+    setLabelFor({ line: l, size, copies: String(l.unit === 'piece' && l.counted_qty && l.counted_qty > 0 ? Math.min(l.counted_qty, 500) : 1) })
+  const issueCode = (l: Line, copies: number, size: LabelSize) =>
     void act.run(async () => {
       if (l.barcodes.length === 0) {
         const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
@@ -653,7 +654,7 @@ function Draft({
       }
       const product = await get<Product>(`/products/${l.product_id}`)
       // Этикетка — на складской принтер (станция этикеток, задача 006).
-      await sendToStation([{ product, copies }])
+      await sendToStation([{ product, copies }], size)
     })
 
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
@@ -1059,15 +1060,21 @@ function Draft({
                     {l.article && <div className="text-xs text-slate-500">{l.article}</div>}
                     {draft && !readOnly && mayUmag && (
                       <div className="mt-1 flex flex-wrap gap-1">
-                        <button
-                          type="button"
-                          className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
-                          data-issue-code={l.product_id}
-                          title="Этикетка на складской принтер (станция этикеток); нет кода — программа выдаст свой"
-                          onClick={() => askLabels(l)}
-                        >
-                          {l.barcodes.length === 0 ? '🏷 Выдать код и этикетку на склад' : '🏷 Этикетка на склад'}
-                        </button>
+                        {(['big', 'small'] as LabelSize[]).map((size) => (
+                          <button
+                            key={size}
+                            type="button"
+                            className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                            data-issue-code={l.product_id}
+                            data-issue-size={size}
+                            title={`${size === 'big' ? 'Большая' : 'Маленькая'} этикетка на складской принтер; нет кода — программа выдаст свой`}
+                            onClick={() => askLabels(l, size)}
+                          >
+                            {/* Два принтера склада (задача 014): размер выбирается прямо в строке. */}
+                            {size === 'big' ? '🏷 Большая' : '🏷 Маленькая'}
+                            {l.barcodes.length === 0 ? ' (выдать код)' : ''}
+                          </button>
+                        ))}
                       </div>
                     )}
                   </td>
@@ -1322,7 +1329,7 @@ function Draft({
       {labelFor && (
         <Modal title="Сколько этикеток напечатать?" onClose={() => setLabelFor(null)}>
           <div className="flex flex-col gap-3" data-testid="label-copies">
-            <div className="text-sm text-slate-700">{labelFor.line.name} — на складской принтер</div>
+            <div className="text-sm text-slate-700">{labelFor.line.name} — {labelFor.size === 'big' ? 'большая этикетка' : 'маленькая этикетка'}, на складской принтер</div>
             <Field label="Этикеток, шт">
               <input
                 id="label-copies"
@@ -1340,12 +1347,12 @@ function Draft({
                 disabled={!(Number(labelFor.copies) >= 1 && Number(labelFor.copies) <= 500)}
                 onClick={() => {
                   const n = Number(labelFor.copies)
-                  const l = labelFor.line
+                  const { line, size } = labelFor
                   setLabelFor(null)
-                  issueCode(l, n)
+                  issueCode(line, n, size)
                 }}
               >
-                Печатать {Number(labelFor.copies) >= 1 ? Number(labelFor.copies) : ''}
+                Печатать{Number(labelFor.copies) >= 1 ? ` (${Number(labelFor.copies)})` : ''}
               </Button>
             </div>
           </div>

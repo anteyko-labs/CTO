@@ -451,3 +451,183 @@ async fn station_last_seen_and_offline(pool: PgPool) {
         "не отмечалась > 30 с — не в сети"
     );
 }
+
+/// Задача 014: большой и маленький принтер — каждая станция берёт только свои задания.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn station_takes_only_its_size(pool: PgPool) {
+    let w = world(pool).await;
+    let post = |size: Option<&str>| {
+        let mut body = json!({ "op_id": op(), "items": [{ "product_id": w.item, "copies": 1 }] });
+        if let Some(s) = size {
+            body["size"] = json!(s);
+        }
+        body
+    };
+    let (s, _) = w
+        .api
+        .call(
+            "POST",
+            "/api/v1/label-jobs",
+            &w.admin_a,
+            None,
+            Some(post(Some("huge"))),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let small = w
+        .api
+        .ok(
+            "POST",
+            "/api/v1/label-jobs",
+            &w.admin_a,
+            None,
+            post(Some("small")),
+        )
+        .await;
+    let big = w
+        .api
+        .ok("POST", "/api/v1/label-jobs", &w.admin_a, None, post(None))
+        .await;
+    let size: String = sqlx::query_scalar("select size from label_jobs where id = $1")
+        .bind(Uuid::parse_str(&id(&big)).unwrap())
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(size, "big", "без size — большой");
+    let st = w
+        .api
+        .get(
+            &format!("/api/v1/label-jobs/{}", id(&small)),
+            &w.admin_a,
+            None,
+        )
+        .await;
+    assert_eq!(st["size"], json!("small"));
+    assert_eq!(st["station_online"], json!(false));
+
+    // Станция без size — большая (станция задачи 006): берёт большое, маленькое не трогает.
+    let sb = op();
+    let got = take(&w, &w.admin_a, sb).await;
+    assert_eq!(got["job"]["id"], big["id"]);
+    assert_eq!(take(&w, &w.admin_a, sb).await["job"], Value::Null);
+    let st = w
+        .api
+        .get(
+            &format!("/api/v1/label-jobs/{}", id(&small)),
+            &w.admin_a,
+            None,
+        )
+        .await;
+    assert_eq!(st["status"], json!("queued"));
+    assert_eq!(
+        st["station_online"],
+        json!(false),
+        "большая станция — не маленькая"
+    );
+
+    let ss = op();
+    let got = w
+        .api
+        .ok(
+            "POST",
+            "/api/v1/label-jobs/take",
+            &w.admin_a,
+            None,
+            json!({ "station_id": ss, "size": "small" }),
+        )
+        .await;
+    assert_eq!(got["job"]["id"], small["id"]);
+    w.api
+        .ok(
+            "POST",
+            &format!("/api/v1/label-jobs/{}/done", id(&small)),
+            &w.admin_a,
+            None,
+            json!({ "station_id": ss }),
+        )
+        .await;
+    let st = w
+        .api
+        .get(
+            &format!("/api/v1/label-jobs/{}", id(&small)),
+            &w.admin_a,
+            None,
+        )
+        .await;
+    assert_eq!(st["station_online"], json!(true));
+    let station_size: String = sqlx::query_scalar("select size from label_stations where id = $1")
+        .bind(ss)
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(station_size, "small", "отметка done размер не сбрасывает");
+    let list = w
+        .api
+        .get("/api/v1/label-jobs?size=small", &w.admin_a, None)
+        .await;
+    assert_eq!(list["station_online"], json!(true));
+}
+
+/// Задача 014: настройки маленькой этикетки — отдельно от большой, по умолчанию 30×20 без названия.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn small_label_settings_apart(pool: PgPool) {
+    let w = world(pool).await;
+    let owner = w.api.login("owner", "owner-pass-1").await;
+    let small = w
+        .api
+        .get("/api/v1/settings/labels?size=small", &owner, Some(w.a))
+        .await;
+    assert_eq!(
+        (small["width_mm"].clone(), small["height_mm"].clone()),
+        (json!(30), json!(20))
+    );
+    assert_eq!(small["show_name"], json!(false));
+    assert_eq!(small["show_price"], json!(true));
+    let mut body = small.clone();
+    body["width_mm"] = json!(9);
+    let (s, _) = w
+        .api
+        .call(
+            "PUT",
+            "/api/v1/settings/labels?size=small",
+            &owner,
+            Some(w.a),
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "меньше 10 мм");
+    body["width_mm"] = json!(32);
+    w.api
+        .ok(
+            "PUT",
+            "/api/v1/settings/labels?size=small",
+            &owner,
+            Some(w.a),
+            body,
+        )
+        .await;
+    let small = w
+        .api
+        .get("/api/v1/settings/labels?size=small", &owner, Some(w.a))
+        .await;
+    assert_eq!(small["width_mm"], json!(32));
+    let big = w
+        .api
+        .get("/api/v1/settings/labels", &owner, Some(w.a))
+        .await;
+    assert_eq!(
+        (big["width_mm"].clone(), big["height_mm"].clone()),
+        (json!(58), json!(40))
+    );
+    let (s, _) = w
+        .api
+        .call(
+            "GET",
+            "/api/v1/settings/labels?size=x",
+            &owner,
+            Some(w.a),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}

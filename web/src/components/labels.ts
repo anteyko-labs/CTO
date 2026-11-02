@@ -1,7 +1,5 @@
-// Печать этикеток со штрихкодом через диалог печати браузера (SPEC-02, ADR-010).
-import { printInFrame } from '../lib/printFrame'
+// Этикетки со штрихкодом: HTML для станции этикеток склада (SPEC-02, ADR-010, задача 014).
 import JsBarcode from 'jsbarcode'
-import { get } from '../lib/api'
 import { labelPrice, labelText } from '../lib/labelText'
 import type { LabelSettings, Product } from '../lib/types'
 
@@ -57,40 +55,38 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     // строку названия и строку «бренд · характеристики — цена» (проверка 20.10.2026).
     const compact = s.height_mm <= 25
     const meta = [t.brand, t.spec].filter(Boolean).join(' · ')
+    // Без названия и бренда (маленькая 30×20, задача 014) — штрихкод и под ним цена крупно.
+    const bare = !t.name && !meta
     const html = compact
-      ? `<div class="label">${t.name ? `<div class="name one">${escapeHtml(t.name)}</div>` : ''}<div class="code">${svg}</div>` +
-        `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">Цена: ${escapeHtml(labelPrice(product))}</span>` : ''}</div></div>`
+      ? bare
+        ? `<div class="label"><div class="code">${svg}</div>${s.show_price ? `<div class="price big">Цена: ${escapeHtml(labelPrice(product))}</div>` : ''}</div>`
+        : `<div class="label">${t.name ? `<div class="name one">${escapeHtml(t.name)}</div>` : ''}<div class="code">${svg}</div>` +
+          `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">Цена: ${escapeHtml(labelPrice(product))}</span>` : ''}</div></div>`
       : `<div class="label">${brand}${name}${spec}${article}<div class="code">${svg}</div>${price}</div>`
     for (let i = 0; i < copies; i++) {
       labels.push(html)
     }
   }
+  // Текст и штрихкод растут вместе с этикеткой: шрифты подобраны под 40×30, на 58×40 — крупнее.
+  const k = Math.min(2.5, Math.max(1, Math.min(s.width_mm / 40, s.height_mm / 30)))
+  const pt = (n: number) => `${(n * k).toFixed(1)}pt`
   return `<!doctype html><html><head><meta charset="utf-8"><title>Этикетки</title><style>
     @page { size: ${s.width_mm}mm ${s.height_mm}mm; margin: 0; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; }
     .label { width: ${s.width_mm}mm; height: ${s.height_mm}mm; padding: 1.5mm; overflow: hidden;
              display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; }
-    .brand { font-size: 7pt; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
-    .name { font-size: 8pt; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
-    .spec { font-size: 8pt; font-weight: bold; line-height: 1.1; }
-    .small { font-size: 7pt; }
+    .brand { font-size: ${pt(7)}; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
+    .name { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
+    .spec { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; }
+    .small { font-size: ${pt(7)}; }
     .name.one { font-size: 7pt; white-space: nowrap; text-overflow: ellipsis; max-height: none; }
     .code { flex: 1; min-height: ${Math.min(9, Math.max(6, s.height_mm * 0.45))}mm; display: flex; align-items: center; justify-content: center; }
     .code svg { width: 100%; height: 100%; }
-    .price { font-size: 11pt; font-weight: bold; text-align: right; }
+    .price { font-size: ${pt(11)}; font-weight: bold; text-align: right; }
     .foot { display: flex; align-items: baseline; justify-content: space-between; gap: 1mm; }
     .foot .meta { font-size: 6.5pt; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .foot .price { font-size: 9pt; white-space: nowrap; }
+    .price.big { font-size: 10pt; text-align: center; white-space: nowrap; }
   </style></head><body>${labels.join('')}</body></html>`
-}
-
-/** Печатает этикетки через скрытый фрейм. Возвращает число этикеток. */
-export async function printLabels(items: LabelItem[]): Promise<number> {
-  const settings = await get<LabelSettings>('/settings/labels')
-  const printable = items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
-  const count = printable.reduce((acc, i) => acc + i.copies, 0)
-  if (count === 0) return 0
-  printInFrame(labelsHtml(printable, settings))
-  return count
 }

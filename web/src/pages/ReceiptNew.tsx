@@ -13,7 +13,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
-import { LabelTargetSwitch } from '../components/labelTarget'
 import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -1131,7 +1130,6 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-4">
                 <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
-                <LabelTargetSwitch />
                 {!stockIn && (
                 <div className="flex flex-wrap items-center gap-3 text-sm" role="radiogroup" aria-label="Расчёт с поставщиком">
                   {(

@@ -1,7 +1,15 @@
-// Печать этикеток на складском принтере через очередь (задача 006, ADR-177): выбор «Здесь» /
-// «На складе», плашка статуса задания и опрос сервера до итога.
+// Печать этикеток на складском принтере через очередь (задача 006, ADR-177; два размера —
+// задача 014): плашка статуса задания и опрос сервера до итога.
 
-export type LabelTarget = 'here' | 'station'
+/** Размер этикетки — какой принтер склада печатает (задача 014): прежний или 30×20 мм. */
+export type LabelSize = 'big' | 'small'
+
+export const SIZE_BUTTON: Record<LabelSize, string> = { big: 'Большой штрихкод', small: 'Маленький штрихкод' }
+
+/** Размер станции из адреса `/label-station?size=small`; иначе — большой. */
+export function sizeFromSearch(search: string): LabelSize {
+  return new URLSearchParams(search).get('size') === 'small' ? 'small' : 'big'
+}
 
 export type JobStatus = 'queued' | 'printing' | 'done' | 'failed'
 
@@ -11,6 +19,7 @@ export interface LabelJob {
   status: JobStatus
   error: string | null
   copies: number
+  size: LabelSize
   created_by_name: string
   what: string
   created_at: string
@@ -25,18 +34,6 @@ export const POLL_MAX_MS = 120_000
 export const STATION_TICK_MS = 3_000
 /** Копий в одном задании не больше (сервер отвечает 422). */
 export const MAX_JOB_COPIES = 500
-
-/** Телефон — узкий экран или сенсорный ввод без мыши. */
-export function isPhoneDevice(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-  return window.matchMedia('(max-width: 640px)').matches || window.matchMedia('(pointer: coarse)').matches
-}
-
-/** Кнопка по умолчанию: на телефоне — из настройки (по умолчанию «На складе»), на компьютере — «Здесь». */
-export function defaultTarget(remoteDefault: string | undefined, phone: boolean): LabelTarget {
-  if (!phone) return 'here'
-  return remoteDefault === 'here' ? 'here' : 'station'
-}
 
 export type PlateKind = 'queued' | 'printing' | 'done' | 'failed' | 'offline' | 'timeout'
 
@@ -100,8 +97,9 @@ export async function pollJob(id: string, deps: PollDeps): Promise<Plate | null>
 }
 
 /** Номер этой станции: один на браузер, хранится между перезапусками. */
-export function stationId(storage: Pick<Storage, 'getItem' | 'setItem'>, make: () => string): string {
-  const key = 'avtodom.labelStation.id'
+export function stationId(storage: Pick<Storage, 'getItem' | 'setItem'>, make: () => string, size: LabelSize = 'big'): string {
+  // У маленькой станции — свой номер: два окна в одном профиле браузера не путаются.
+  const key = size === 'small' ? 'avtodom.labelStation.small.id' : 'avtodom.labelStation.id'
   const have = storage.getItem(key)
   if (have) return have
   const id = make()

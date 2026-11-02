@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { defaultTarget, plateFor, pollJob, POLL_MAX_MS, POLL_MS, stationId, type LabelJob, type Plate } from './labelJob'
+import { plateFor, sizeFromSearch, pollJob, POLL_MAX_MS, POLL_MS, stationId, type LabelJob, type Plate } from './labelJob'
 
 const job = (over: Partial<LabelJob>): LabelJob => ({
   id: 'j1',
   status: 'queued',
   error: null,
   copies: 3,
+  size: 'big',
   created_by_name: 'Админ',
   what: 'Фильтр',
   created_at: '2026-11-02T10:00:00Z',
@@ -36,18 +37,18 @@ describe('плашка задания на складе', () => {
     expect(plateFor(job({ status: 'printing', station_online: false }), 0).kind).toBe('printing')
   })
 
-  it('по умолчанию: телефон — из настройки, компьютер — «Здесь»', () => {
-    expect(defaultTarget(undefined, true)).toBe('station')
-    expect(defaultTarget('station', true)).toBe('station')
-    expect(defaultTarget('here', true)).toBe('here')
-    expect(defaultTarget('station', false)).toBe('here')
+  it('размер станции из адреса: по умолчанию большой', () => {
+    expect(sizeFromSearch('')).toBe('big')
+    expect(sizeFromSearch('?size=small')).toBe('small')
+    expect(sizeFromSearch('?size=x')).toBe('big')
   })
-
   it('номер станции хранится между запусками', () => {
     const m = new Map<string, string>()
     const st = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }
     const a = stationId(st, () => 'a')
     expect(stationId(st, () => 'b')).toBe(a)
+    expect(stationId(st, () => 'c', 'small')).toBe('c')
+    expect(stationId(st, () => 'd', 'small')).toBe('c')
   })
 })
 
