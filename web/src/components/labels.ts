@@ -74,8 +74,11 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     @page { size: ${s.width_mm}mm ${s.height_mm}mm; margin: 0; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; }
-    .label { width: ${s.width_mm}mm; height: ${s.height_mm}mm; padding: 1.5mm; overflow: hidden;
+    /* На 1 мм ниже наклейки: ровно в её высоту Chrome переносит низ этикетки (цифры штрихкода)
+       на следующую наклейку (проверка на XP-365B 03.11.2026). */
+    .label { width: ${s.width_mm}mm; height: ${s.height_mm - 1}mm; padding: 1.5mm; overflow: hidden;
              display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; }
+    .label:last-child { page-break-after: auto; }
     .brand { font-size: ${pt(7)}; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
     .name { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
     .spec { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; }
