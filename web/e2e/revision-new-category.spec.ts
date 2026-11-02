@@ -82,6 +82,12 @@ test('ревизия: у строки — «Этикетка на склад»',
   await scanner.press('Enter')
   await expect(page.locator(`[data-total="${p.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
   await expect(page.locator(`[data-issue-code="${p.id}"]`)).toHaveText('🏷 Этикетка на склад')
+  // Сначала — сколько этикеток (по умолчанию — сколько посчитано), потом печать на складе.
+  await page.locator(`[data-issue-code="${p.id}"]`).click()
+  await expect(page.locator('#label-copies')).toHaveValue('1')
+  await page.locator('#label-copies').fill('3')
+  await page.getByTestId('label-copies').getByRole('button', { name: 'Печатать 3' }).click()
+  await expect(page.getByText(/В очереди|Склад не в сети|Печатается/).first()).toBeVisible()
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
 })
