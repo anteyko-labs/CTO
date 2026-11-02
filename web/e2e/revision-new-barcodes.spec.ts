@@ -40,5 +40,8 @@ test('ревизия: новый товар с четырьмя штрихкод
     expect([...p.barcodes].sort()).toEqual(codes)
   }
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
-  for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {} })
+  for (const r of list.filter((x) => x.status === 'draft')) {
+    const res = await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
+    expect(res.ok(), await res.text()).toBeTruthy()
+  }
 })
