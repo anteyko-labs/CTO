@@ -9,10 +9,14 @@ const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e006' }
 const RUN = Date.now().toString().slice(-8)
 
-/** Печать через скрытый iframe: print() окна фрейма записывает HTML в window.__prints. */
+/** Печать через скрытый iframe или страницей (станция): print() записывает HTML в window.__prints. */
 const PRINT_STUB = () => {
   const w = window as unknown as { __prints: string[] }
   w.__prints = []
+  // Станция печатает страницей: этикетка подложена в [data-print-page] на время print().
+  w.print = () => {
+    if (document.querySelector('[data-print-page]')) w.__prints.push(document.documentElement.outerHTML)
+  }
   const desc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')
   const getter = desc?.get
   if (!getter) return

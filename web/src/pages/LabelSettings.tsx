@@ -199,7 +199,10 @@ function Editor({ initial, size }: { initial: LabelSettings; size: LabelSize }) 
 
 export default function LabelSettingsPage() {
   const [size, setSize] = useState<LabelSize>('big')
-  const data = useLoad(() => get<LabelSettings>(`/settings/labels${qs({ size })}`), [size])
+  // Ответ помечен своим размером: пока грузится другая вкладка, прежние цифры не попадают в
+  // её форму (иначе «Сохранить» записывал большой этикетке размер маленькой, 03.11.2026).
+  const data = useLoad(() => get<LabelSettings>(`/settings/labels${qs({ size })}`).then((s) => ({ size, s })), [size])
+  const loaded = data.data && data.data.size === size ? data.data.s : null
   return (
     <div>
       <PageHeader title="Этикетки" />
@@ -218,7 +221,7 @@ export default function LabelSettingsPage() {
         ))}
       </div>
       <ErrorBox error={data.error} />
-      {data.loading && !data.data ? <Loading /> : data.data && <Editor key={size} size={size} initial={data.data} />}
+      {loaded ? <Editor key={size} size={size} initial={loaded} /> : !data.error && <Loading />}
     </div>
   )
 }
