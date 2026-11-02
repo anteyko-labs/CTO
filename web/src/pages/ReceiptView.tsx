@@ -1,10 +1,11 @@
 // Просмотр прихода, сторно и печать этикеток (SPEC-03); оплата накладной в долг по частям и история
 // платежей (SPEC-27); фото накладной (SPEC-29 §3).
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ReceiptAcceptance } from '../components/Acceptances'
 import { CorrectionLinks, FixButton } from '../components/Correction'
-import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
+import { LabelTargetSwitch } from '../components/labelTarget'
+import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
 import { ReceiptPhotos } from '../components/ReceiptPhotos'
 import { ExportButton } from '../components/ExportButton'
 import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
@@ -75,10 +76,21 @@ export default function ReceiptView() {
         if (copies <= 0) continue
         items.push({ product: await get<Product>(`/products/${l.product_id}`), copies })
       }
-      const n = await sendLabels(items)
-      if (n === 0) throw new Error('Нет этикеток для печати: у товаров нет штрихкодов')
+      // Список с числом на каждую позицию — правится перед печатью (задача 007).
+      setLabelList(items)
     })
   }
+  const [labelList, setLabelList] = useState<LabelListItem[] | null>(null)
+  // Пришли сразу после проведения с «Печатать этикетки» — список открывается сам.
+  const autoLabels = params.get('labels') === '1'
+  const [autoDone, setAutoDone] = useState(false)
+  useEffect(() => {
+    if (autoLabels && r && !autoDone) {
+      setAutoDone(true)
+      doPrint()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoLabels, r, autoDone])
 
   if (receipt.loading && !r) return <Loading />
   if (!r) return <ErrorBox error={receipt.error ?? 'Документ не найден'} />
@@ -90,6 +102,7 @@ export default function ReceiptView() {
 
   return (
     <div className="flex flex-col gap-4">
+      {labelList && <LabelListModal items={labelList} onClose={() => setLabelList(null)} />}
       <PageHeader
         title={`${isReversal ? 'Сторно прихода' : 'Приход'} № ${r.number}`}
         actions={

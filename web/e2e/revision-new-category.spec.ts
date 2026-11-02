@@ -64,7 +64,7 @@ test('ревизия: новая категория из окна товара, 
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {} })
 })
 
-test('ревизия: у строки — «🖨 Этикетка» с кодом товара', async ({ page }) => {
+test('ревизия: у строки — «Этикетка на склад»', async ({ page }) => {
   await login(page)
   const H = { 'X-Device-Id': '00000000-0000-4000-8000-0000000c0de1' }
   const cat = (await (await page.request.post('/api/v1/categories', { data: { name: `Этикетки ${RUN}`, kind: 'other' }, headers: H })).json()) as { id: string }
@@ -81,7 +81,41 @@ test('ревизия: у строки — «🖨 Этикетка» с кодо�
   await scanner.fill(p.barcodes[0])
   await scanner.press('Enter')
   await expect(page.locator(`[data-total="${p.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
-  await expect(page.locator(`[data-issue-code="${p.id}"]`)).toHaveText('🖨 Этикетка')
+  await expect(page.locator(`[data-issue-code="${p.id}"]`)).toHaveText('🏷 Этикетка на склад')
+  // Сначала — сколько этикеток (по умолчанию — сколько посчитано), потом печать на складе.
+  await page.locator(`[data-issue-code="${p.id}"]`).click()
+  await expect(page.locator('#label-copies')).toHaveValue('1')
+  await page.locator('#label-copies').fill('3')
+  await page.getByTestId('label-copies').getByRole('button', { name: 'Печатать 3' }).click()
+  await expect(page.getByText(/В очереди|Склад не в сети|Печатается/).first()).toBeVisible()
+  const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
+  for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
+})
+
+test('ревизия: после поиска одного товара скан другого показывает отсканированный', async ({ page }) => {
+  await login(page)
+  const H = { 'X-Device-Id': '00000000-0000-4000-8000-0000000c0de2' }
+  const post = async <T,>(path: string, data: unknown): Promise<T> => {
+    const r = await page.request.post(`/api/v1${path}`, { data, headers: H })
+    expect(r.ok(), await r.text()).toBeTruthy()
+    return (await r.json()) as T
+  }
+  const cat = await post<{ id: string }>('/categories', { name: `Скан после поиска ${RUN}`, kind: 'other' })
+  const a = await post<{ id: string; barcodes: string[] }>('/products', { op_id: crypto.randomUUID(), category_id: cat.id, name: `Щётка А ${RUN}`, sale_price_tyiyn: 10_000 })
+  const b = await post<{ id: string; barcodes: string[] }>('/products', { op_id: crypto.randomUUID(), category_id: cat.id, name: `Лампа Б ${RUN}`, sale_price_tyiyn: 10_000 })
+  await page.goto('/revision')
+  await page.getByLabel('Что пересчитываем').selectOption({ label: `Скан после поиска ${RUN}` })
+  await page.getByRole('button', { name: 'Начать ревизию' }).click()
+  await page.locator('[data-view="own"]').click()
+  // Нашли «Щётку» поиском — в поле поиска её название.
+  await page.getByPlaceholder('Название, артикул или вязкость').fill(`Щётка А ${RUN}`)
+  await page.getByTestId('revision-search-hits').getByRole('button', { name: 'Посчитать' }).first().click()
+  await expect(page.locator(`[data-count="${a.id}"]`)).toBeVisible()
+  // Скан «Лампы» — на экране она, со своим числом.
+  const scanner = page.getByPlaceholder('Сканируйте штрихкод')
+  await scanner.fill(b.barcodes[0])
+  await scanner.press('Enter')
+  await expect(page.locator(`[data-total="${b.id}"]`)).toContainText('моё 1', { timeout: 15_000 })
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })
 })

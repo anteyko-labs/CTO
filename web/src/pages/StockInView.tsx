@@ -1,9 +1,10 @@
 // Просмотр оприходования без поставщика (SPEC-29 §8, ADR-086): строки, комментарий, кто и когда;
 // сторно всего документа с причиной, «Исправить» у владельца, печать этикеток.
-import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { CorrectionLinks, FixButton } from '../components/Correction'
-import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
+import { LabelTargetSwitch } from '../components/labelTarget'
+import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
 import { ExportButton } from '../components/ExportButton'
 import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
@@ -37,7 +38,18 @@ export default function StockInView() {
   const [opId] = useState(newOpId)
   const reverse = useAction()
   const labels = useAction()
+  const [labelList, setLabelList] = useState<LabelListItem[] | null>(null)
+  // Пришли сразу после проведения с «Печатать этикетки» — список открывается сам (задача 007).
+  const [params] = useSearchParams()
+  const [autoDone, setAutoDone] = useState(false)
   const d = doc.data
+  useEffect(() => {
+    if (params.get('labels') === '1' && d && !autoDone) {
+      setAutoDone(true)
+      void labels.run(async () => setLabelList(await labelItems(d.lines)))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, d, autoDone])
 
   if (doc.loading && !d) return <Loading />
   if (!d) return <ErrorBox error={doc.error ?? 'Документ не найден'} />
@@ -52,20 +64,12 @@ export default function StockInView() {
       navigate(`/stock-ins/${out.id}`)
     })
 
-  const doPrint = () =>
-    void labels.run(async () => {
-      const items: { product: Product; copies: number }[] = []
-      for (const l of d.lines) {
-        const copies = l.unit === 'piece' ? l.qty : l.unit === 'ml' && l.container_ml ? Math.trunc(l.qty / l.container_ml) : 0
-        if (copies <= 0) continue
-        items.push({ product: await get<Product>(`/products/${l.product_id}`), copies })
-      }
-      const n = await sendLabels(items)
-      if (n === 0) throw new Error('Нет этикеток для печати: у товаров нет штрихкодов')
-    })
+  // Список с числом на каждую позицию — правится перед печатью (задача 007).
+  const doPrint = () => void labels.run(async () => setLabelList(await labelItems(d.lines)))
 
   return (
     <div className="flex flex-col gap-4">
+      {labelList && <LabelListModal items={labelList} onClose={() => setLabelList(null)} />}
       <PageHeader
         title={`${isReversal ? 'Сторно оприходования' : 'Оприходование'} № ${d.number}`}
         subtitle="Без поставщика: без накладной и без денег"
@@ -208,3 +212,14 @@ const STOCK_IN_COLS: ExportCol<StockInLine>[] = [
   { label: 'Цена продажи', value: (l) => xl.maybeMoney(l.sale_price_tyiyn) },
   { label: 'Сумма', value: (l) => xl.money(l.cost_tyiyn) },
 ]
+
+/** Этикетки по строкам оприходования: штуки — по количеству, масло — по канистрам. */
+async function labelItems(lines: { product_id: string; unit: string; qty: number; container_ml: number | null }[]): Promise<LabelListItem[]> {
+  const items: LabelListItem[] = []
+  for (const l of lines) {
+    const copies = l.unit === 'piece' ? l.qty : l.unit === 'ml' && l.container_ml ? Math.trunc(l.qty / l.container_ml) : 0
+    if (copies <= 0) continue
+    items.push({ product: await get<Product>(`/products/${l.product_id}`), copies })
+  }
+  return items
+}

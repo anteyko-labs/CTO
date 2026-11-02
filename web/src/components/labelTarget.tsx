@@ -115,7 +115,7 @@ function watchJob(id: string, items: LabelItem[]) {
   })
 }
 
-async function sendToStation(items: LabelItem[]): Promise<number> {
+export async function sendToStation(items: LabelItem[]): Promise<number> {
   const printable = items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
   const count = printable.reduce((acc, i) => acc + i.copies, 0)
   if (count === 0) return 0

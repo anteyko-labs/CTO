@@ -13,7 +13,8 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
-import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
+import { LabelTargetSwitch } from '../components/labelTarget'
+import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText, type PickHow } from '../components/ProductPicker'
@@ -396,13 +397,14 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     if (k !== kind) setKind(k)
   }
 
-  /** Этикетки на товар строки: столько же, сколько принимаем. */
+  const [labelList, setLabelList] = useState<LabelListItem[] | null>(null)
+  /** Этикетки на товар строки: столько же, сколько принимаем; число правится в окне. */
   const printLine = (l: Line) => {
     const c = calcOf(l)
     const copies = typeof c === 'string' ? 1 : c.n
     // На этикетке — цена, которую товар получит этим приходом (проверка 20.10.2026).
     const product = typeof c === 'string' ? l.product : { ...l.product, sale_price_tyiyn: c.salePrice }
-    void labels.run(() => sendLabels([{ product, copies }]))
+    setLabelList([{ product, copies }])
   }
 
   const updateLine = (key: string, patch: Partial<Line>) =>
@@ -562,14 +564,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         const failed = await uploadPhotos(r.id, photos)
         if (failed.length) toast(`Приход проведён, но фото не загрузились — прикрепите в накладной: ${failed.join('; ')}`, 'error')
       }
-      if (print) {
-        try {
-          await sendLabels(copies)
-        } catch (err) {
-          console.error(err)
-        }
-      }
-      navigate(`/receipts/${r.id}`)
+      // «Печатать этикетки» — в накладной откроется список: сколько на каждую позицию (задача 007).
+      navigate(`/receipts/${r.id}${print && copies.length ? '?labels=1' : ''}`)
     })
   }
 
@@ -595,14 +591,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       const id = fix
         ? (await postCorrection({ op_id: opId, kind: 'stock_in', original_id: fix.originalId, comment: fixComment.trim(), doc })).new_id
         : (await post<StockIn>('/stock-ins', { op_id: opId, ...doc })).id
-      if (print) {
-        try {
-          await sendLabels(copies)
-        } catch (err) {
-          console.error(err)
-        }
-      }
-      navigate(`/stock-ins/${id}`)
+      navigate(`/stock-ins/${id}${print && copies.length ? '?labels=1' : ''}`)
     })
   }
 
@@ -624,6 +613,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
 
   return (
     <div className={lines.length > 0 ? 'pb-20 md:pb-0' : ''}>
+      {labelList && <LabelListModal items={labelList} onClose={() => setLabelList(null)} />}
       <PageHeader
         title={fix ? `Исправление ${stockIn ? 'оприходования' : 'прихода'}${fix.number ? ` № ${fix.number}` : ''}` : 'Новый приход'}
         actions={

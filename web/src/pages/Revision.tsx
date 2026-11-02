@@ -10,7 +10,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
-import { sendLabels } from '../components/labelTarget'
+import { sendToStation } from '../components/labelTarget'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -645,7 +645,12 @@ function Draft({
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
   /** Товар без штрихкода (не из Умага, старая карточка): программа выдаёт свой код, этикетка —
    *  на принтер; дальше товар сканируется (задача 007). */
-  const issueCode = (l: Line) =>
+  /** Окно «Сколько этикеток» перед печатью на складе (задача 007). */
+  const [labelFor, setLabelFor] = useState<{ line: Line; copies: string } | null>(null)
+  const askLabels = (l: Line) =>
+    // По умолчанию — сколько штук посчитано (на вес и масло — одна).
+    setLabelFor({ line: l, copies: String(l.unit === 'piece' && l.counted_qty && l.counted_qty > 0 ? Math.min(l.counted_qty, 500) : 1) })
+  const issueCode = (l: Line, copies: number) =>
     void act.run(async () => {
       if (l.barcodes.length === 0) {
         const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
@@ -653,7 +658,8 @@ function Draft({
         toast(`Выдан код ${r.code}`)
       }
       const product = await get<Product>(`/products/${l.product_id}`)
-      await sendLabels([{ product, copies: 1 }])
+      // Этикетка — на складской принтер (станция этикеток, задача 006).
+      await sendToStation([{ product, copies }])
     })
 
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
@@ -726,6 +732,11 @@ function Draft({
    *  тот же товар в другом месте может считать другой человек. */
   const countLine = (l: Line) => {
     act.setError(null)
+    // Отсканированный товар — всегда на экране: прежний поиск или отбор по вязкости его не прячут
+    // (задача 007: «сканирую, а он ничего не делает»).
+    openLine(l.product_id)
+    setFilter(l.name)
+    setVisc('')
     const tare = oilTare(l)
     // Прибавка, а не «своё число + 1»: другие устройства считают ту же строку (задача 003, Н14).
     // Каждый скан — новый ввод со своим op_id; его повтор (автоматический после обрыва и из
@@ -1046,15 +1057,17 @@ function Draft({
                     </div>
                     {l.article && <div className="text-xs text-slate-500">{l.article}</div>}
                     {draft && !readOnly && mayUmag && (
-                      <button
-                        type="button"
-                        className="mt-1 rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
-                        data-issue-code={l.product_id}
-                        title="Этикетка со штрихкодом на принтер; нет кода — программа выдаст свой"
-                        onClick={() => issueCode(l)}
-                      >
-                        {l.barcodes.length === 0 ? '🖨 Выдать код и этикетку' : '🖨 Этикетка'}
-                      </button>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                          data-issue-code={l.product_id}
+                          title="Этикетка на складской принтер (станция этикеток); нет кода — программа выдаст свой"
+                          onClick={() => askLabels(l)}
+                        >
+                          {l.barcodes.length === 0 ? '🏷 Выдать код и этикетку на склад' : '🏷 Этикетка на склад'}
+                        </button>
+                      </div>
                     )}
                   </td>
                   {!blind && (
@@ -1300,6 +1313,38 @@ function Draft({
                 }}
               >
                 {ask.qty === null ? 'Убрать строку' : `Записать итог ${countText(ask.line, ask.qty)}`}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {labelFor && (
+        <Modal title="Сколько этикеток напечатать?" onClose={() => setLabelFor(null)}>
+          <div className="flex flex-col gap-3" data-testid="label-copies">
+            <div className="text-sm text-slate-700">{labelFor.line.name} — на складской принтер</div>
+            <Field label="Этикеток, шт">
+              <input
+                id="label-copies"
+                autoFocus
+                inputMode="numeric"
+                value={labelFor.copies}
+                onChange={(e) => setLabelFor({ ...labelFor, copies: e.target.value.replace(/\D/g, '') })}
+              />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setLabelFor(null)}>
+                Отмена
+              </Button>
+              <Button
+                disabled={!(Number(labelFor.copies) >= 1 && Number(labelFor.copies) <= 500)}
+                onClick={() => {
+                  const n = Number(labelFor.copies)
+                  const l = labelFor.line
+                  setLabelFor(null)
+                  issueCode(l, n)
+                }}
+              >
+                Печатать {Number(labelFor.copies) >= 1 ? Number(labelFor.copies) : ''}
               </Button>
             </div>
           </div>
