@@ -8,6 +8,7 @@ import { productTitle } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
+import { defaultLineKind } from '../lib/oilKind'
 import { PAYMENT_LABELS, type Employee, type Party, type Product, type Sale, type SaleLineKind, type Shift } from '../lib/types'
 import { ClientPicker } from './ClientPicker'
 import { ProductPicker } from './ProductPicker'
@@ -49,7 +50,7 @@ function lineSum(l: Line): number | null {
   return defaultSum(l.product, l.kind, qty)
 }
 
-export function NoReceiptReturn({ onClose, touch = false }: { onClose: () => void; touch?: boolean }) {
+export function NoReceiptReturn({ onClose, touch = false, barrelOverL = 150 }: { onClose: () => void; touch?: boolean; barrelOverL?: number }) {
   const shift = useLoad(() => get<Shift | null>('/shifts/current'), [])
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
   const [lines, setLines] = useState<Line[]>([])
@@ -64,13 +65,13 @@ export function NoReceiptReturn({ onClose, touch = false }: { onClose: () => voi
 
   const add = (p: Product) =>
     setLines((ls) => {
-      const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
+      const kind = defaultLineKind(p, barrelOverL)
       const same = ls.find((l) => l.product.id === p.id && l.kind === kind && (kind === 'piece' || kind === 'container'))
       if (same)
         return ls.map((l) =>
           l === same ? { ...l, qtyText: kind === 'weight' ? litersInput((lineQty(l) ?? 0) + 1000) : String((lineQty(l) ?? 0) + 1) } : l,
         )
-      return [...ls, { key: randomId(), product: p, kind, qtyText: kind === 'weight' ? '' : '1', sumText: '' }]
+      return [...ls, { key: randomId(), product: p, kind, qtyText: kind === 'weight' || kind === 'pour' ? '' : '1', sumText: '' }]
     })
   const update = (key: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 

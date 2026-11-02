@@ -109,6 +109,8 @@ export interface CashierSettings {
   /** «Продажа только при открытой смене» (задача 005 Н4): при связи без смены чек не пробивается
    *  (по умолчанию да — прямая просьба заказчика). */
   sale_requires_shift: boolean
+  /** Бочка (задача 007): товар в литрах с тарой больше стольких литров — в чек розливом; 0 — канистрой. */
+  barrel_pour_over_l: number
 }
 
 export const DEFAULT_CASHIER: CashierSettings = {
@@ -125,6 +127,7 @@ export const DEFAULT_CASHIER: CashierSettings = {
   print_shift_profit: false,
   sale_cost_on_till: false,
   sale_requires_shift: true,
+  barrel_pour_over_l: 150,
 }
 
 export const buttonDef = (id: ButtonId): ButtonDef | undefined => BUTTONS.find((b) => b.id === id)

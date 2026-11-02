@@ -12888,10 +12888,15 @@ async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
     assert_eq!(v["sale_cost_on_till"], false);
     assert_eq!(v["tiles_dvh"], 24);
     assert_eq!(v["admin_limit_pct"], Value::Null);
+    assert_eq!(
+        v["barrel_pour_over_l"], 150,
+        "бочка — больше 150 л (задача 007)"
+    );
     let body = json!({ "op_id": Uuid::now_v7(),
                        "buttons": [{ "id": "bonus", "place": "total" },
                                    { "id": "battery_sell", "place": "hidden" }],
-                       "admin_limit_pct": 10, "print_shift_profit": true });
+                       "admin_limit_pct": 10, "print_shift_profit": true,
+                       "barrel_pour_over_l": 250 });
     let (s, _, _) = call(
         &app,
         "PUT",
@@ -12924,6 +12929,7 @@ async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
     assert_eq!(logged[0]["after"]["admin_limit_pct"], 10);
     let (_, _, v) = call(&app, "GET", "/api/v1/settings/cashier", Some(&admin), None).await;
     assert_eq!(v["print_shift_profit"], true);
+    assert_eq!(v["barrel_pour_over_l"], 250);
     let place = |v: &Value, id: &str| {
         v["buttons"]
             .as_array()
@@ -12942,6 +12948,7 @@ async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
         json!({ "op_id": Uuid::now_v7(), "buttons": [{ "id": "exit", "place": "hidden" }] }),
         json!({ "op_id": Uuid::now_v7(), "admin_limit_pct": 150 }),
         json!({ "op_id": Uuid::now_v7(), "notes": 5 }),
+        json!({ "op_id": Uuid::now_v7(), "barrel_pour_over_l": -1 }),
     ] {
         let (s, _, v) = call(
             &app,

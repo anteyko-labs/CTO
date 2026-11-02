@@ -221,6 +221,22 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
           </Notice>
         </Card>
 
+        <Card data-testid="cashier-barrel">
+          <CardTitle>Бочка</CardTitle>
+          <Field label="Продавать литрами, если тара больше, л" hint="По умолчанию 150; 0 — всегда канистрой">
+            <input
+              id="barrel-pour-over"
+              inputMode="numeric"
+              value={String(s.barrel_pour_over_l)}
+              onChange={(e) => set({ barrel_pour_over_l: Math.min(10_000, Number(e.target.value.replace(/\D/g, '').slice(0, 5) || 0)) })}
+            />
+          </Field>
+          <p className="mt-2 text-sm text-slate-500">
+            Товар в литрах с такой тарой попадает в чек сразу «Розлив, л» — кассир вводит литры. Тара не больше порога — канистрой, как прежде;
+            переключить можно у строки.
+          </p>
+        </Card>
+
         <Card data-testid="cashier-shift">
           <CardTitle>Смена</CardTitle>
           <label className="inline-flex items-center gap-2 text-sm">

@@ -8,6 +8,7 @@ import { CashToBankModal, useCanFixPay } from '../components/PayChange'
 import { DiscountModal, type DiscountLine } from '../components/DiscountModal'
 import { printShift } from '../components/shiftPrint'
 import { NoReceiptReturn } from '../components/NoReceiptReturn'
+import { defaultLineKind } from '../lib/oilKind'
 import { ShiftOpenModal } from '../components/ShiftOpen'
 import { CorrectionBanner } from '../components/Correction'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
@@ -863,7 +864,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (!keep) setDone(null)
     loadAnalogs(p)
     askGift(p)
-    const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
+    const kind = defaultLineKind(p, cs.barrel_pour_over_l)
+    if (kind === 'pour') {
+      // Бочка (задача 007): одна строка розлива, литры вводит кассир — фокус в них.
+      const same = lines.find((l) => l.product?.id === p.id && l.kind === 'pour')
+      const key = same?.key ?? nextKey()
+      if (!same) setLines((ls) => [...ls, { key, kind, product: p, qtyText: '', priceText: somInput(listPrice({ kind, product: p })) }])
+      focusAfterRender(`[data-liters="${key}"]`)
+      return
+    }
     setLines((ls) => {
       const same = ls.find((l) => l.product?.id === p.id && l.kind === kind)
       if (same) {
@@ -2603,6 +2612,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         <input
                           className={`min-h-12 text-center text-lg ${touch ? 'w-[4.5rem] rounded-lg text-xl font-semibold' : 'w-16 rounded-none'}`}
                           data-weight={l.kind === 'weight' ? l.key : undefined}
+                          data-liters={l.kind === 'pour' ? l.key : undefined}
                           // Подпись вокруг поля относится к первой кнопке «−», поэтому у поля своя.
                           aria-label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
                           {...(l.kind === 'pour' || l.kind === 'weight'
@@ -3420,7 +3430,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           }}
         />
       )}
-      {noReceipt && <NoReceiptReturn touch={touch} onClose={() => setNoReceipt(false)} />}
+      {noReceipt && <NoReceiptReturn touch={touch} barrelOverL={cs.barrel_pour_over_l} onClose={() => setNoReceipt(false)} />}
       {discountOpen && (
         <DiscountModal
           lines={discLines}
