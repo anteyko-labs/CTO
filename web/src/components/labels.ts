@@ -53,14 +53,14 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     const name = t.name ? `<div class="name">${escapeHtml(t.name)}</div>` : ''
     const spec = t.spec ? `<div class="spec">${escapeHtml(t.spec)}</div>` : ''
     const article = s.show_article && product.article ? `<div class="small">${escapeHtml(product.article)}</div>` : ''
-    const price = s.show_price ? `<div class="price">${escapeHtml(formatSom(product.sale_price_tyiyn))}</div>` : ''
+    const price = s.show_price ? `<div class="price">Цена: ${escapeHtml(formatSom(product.sale_price_tyiyn))}</div>` : ''
     // Маленькая этикетка (до 25 мм в высоту): штрихкоду — не меньше 9 мм, текст ужимается в
     // строку названия и строку «бренд · характеристики — цена» (проверка 20.10.2026).
     const compact = s.height_mm <= 25
     const meta = [t.brand, t.spec].filter(Boolean).join(' · ')
     const html = compact
       ? `<div class="label">${t.name ? `<div class="name one">${escapeHtml(t.name)}</div>` : ''}<div class="code">${svg}</div>` +
-        `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">${escapeHtml(formatSom(product.sale_price_tyiyn))}</span>` : ''}</div></div>`
+        `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">Цена: ${escapeHtml(formatSom(product.sale_price_tyiyn))}</span>` : ''}</div></div>`
       : `<div class="label">${brand}${name}${spec}${article}<div class="code">${svg}</div>${price}</div>`
     for (let i = 0; i < copies; i++) {
       labels.push(html)
