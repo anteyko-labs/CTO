@@ -149,7 +149,8 @@ export default function Products() {
     const p: Record<string, string | boolean | number | undefined> = {
       q: query,
       category_id: categoryId,
-      archived: archived || undefined,
+      // «Показать архив» — только товары в архиве (задача 020).
+      archived: archived ? 'only' : undefined,
       sort: sort.key,
       dir: sort.desc ? 'desc' : undefined,
       stock: chip === 'all' ? undefined : chip,
@@ -281,7 +282,12 @@ export default function Products() {
       list.reload()
     })
 
-  const emptyText = CHIPS.find((c) => c.key === chip)?.empty ?? 'Товары не найдены'
+  const narrowed = !!query || !!categoryId || chip !== 'all' || Object.values(attrs).some((v) => v.trim())
+  const emptyText = archived
+    ? narrowed
+      ? 'В архиве ничего не найдено'
+      : 'В архиве товаров нет'
+    : (CHIPS.find((c) => c.key === chip)?.empty ?? 'Товары не найдены')
   const sortValue = `${sort.key}:${sort.desc ? 'desc' : 'asc'}`
 
   return (
@@ -313,7 +319,7 @@ export default function Products() {
                         query && `поиск «${query}»`,
                         category && `категория «${category.name}»`,
                         chip !== 'all' && (CHIPS.find((c) => c.key === chip)?.label ?? ''),
-                        archived && 'архив',
+                        archived && 'только архив',
                       ],
                       total: totalBy(cols, {
                         Название: `Итого: ${totals?.count ?? res.items.length}`,

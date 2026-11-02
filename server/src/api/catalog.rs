@@ -586,13 +586,41 @@ fn inherit() -> String {
     "inherit".into()
 }
 
+/// Какие товары по архиву: в продаже, все или только архив (задача 020).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArchiveScope {
+    #[default]
+    Active,
+    All,
+    Only,
+}
+
+impl ArchiveScope {
+    /// `archived=true` — с архивными, `archived=only` — только архив («Товары» → «Показать архив»).
+    pub fn parse(s: Option<&String>) -> Self {
+        match s.map(String::as_str) {
+            Some("true") => Self::All,
+            Some("only") => Self::Only,
+            _ => Self::Active,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::All => "all",
+            Self::Only => "only",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ProductFilter {
     pub q: Option<String>,
     pub category_id: Option<Uuid>,
     pub attrs: Option<Value>,
     pub ids: Option<Vec<Uuid>>,
-    pub include_archived: bool,
+    pub archived: ArchiveScope,
     pub low_only: bool,
     /// Вид категории (`oil`, `filter`, `battery`, `other`).
     pub kind: Option<String>,
@@ -671,7 +699,7 @@ async fn query_products_raw(
              and ($3::uuid is null or p.category_id = $3)
              and ($4::jsonb is null or p.attrs @> $4)
              and ($5::uuid[] is null or p.id = any($5))
-             and (not p.archived or $6)
+             and case $6::text when 'all' then true when 'only' then p.archived else not p.archived end
              and (not $7 or coalesce(bp.stock_qty, 0) < coalesce(bp.min_stock, 0))
              and ($9::text is null or c.kind = $9)
            -- Найденное по тексту (SPEC-30 §13): точный штрихкод или артикул, потом название
@@ -688,7 +716,7 @@ async fn query_products_raw(
         f.category_id,
         f.attrs,
         f.ids.as_deref(),
-        f.include_archived,
+        f.archived.as_str(),
         f.low_only,
         if f.no_limit {
             i64::MAX
@@ -764,7 +792,7 @@ pub async fn product_by_id(
 ) -> AppResult<ProductOut> {
     let f = ProductFilter {
         ids: Some(vec![id]),
-        include_archived: true,
+        archived: ArchiveScope::All,
         limit: 1,
         ..Default::default()
     };
@@ -806,7 +834,7 @@ async fn search_products(
         category_id,
         attrs: attr_filter(&params),
         ids: None,
-        include_archived: params.get("archived").is_some_and(|v| v == "true"),
+        archived: ArchiveScope::parse(params.get("archived")),
         low_only: params.get("low").is_some_and(|v| v == "true"),
         kind,
         limit: params
@@ -1238,7 +1266,7 @@ async fn list_products(
         q: params.get("q").cloned(),
         category_id,
         attrs: attr_filter(&params),
-        include_archived: params.get("archived").is_some_and(|v| v == "true"),
+        archived: ArchiveScope::parse(params.get("archived")),
         limit: params
             .get("limit")
             .and_then(|v| v.parse().ok())
@@ -1276,7 +1304,7 @@ async fn list_products(
             q: f.q.clone(),
             category_id: f.category_id,
             attrs: f.attrs.clone(),
-            include_archived: f.include_archived,
+            archived: f.archived,
             limit: 2000,
             stock: f.stock,
             ..Default::default()
