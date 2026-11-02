@@ -73,3 +73,17 @@ describe('скидка на кассе (задача 003 Н3)', () => {
     expect(overLimit(d.discount, d.list, { pct: null, tyiyn: 9_999 })).toBe('sum')
   })
 })
+
+describe('скидка: строка в метрах — как на вес (ADR-175)', () => {
+  it('сумма — цена за м × мм / 1000, скидка чека раскладывается без потерь', () => {
+    expect(lineSum('length', 1500, 20_000)).toBe(30_000)
+    expect(lineSum('weight', 2500, 10_000)).toBe(25_000)
+    const lines: DiscLine[] = [
+      { key: 'hose', kind: 'length', qty: 1500, list: 20_000, price: 20_000 },
+      { key: 'filter', kind: 'piece', qty: 1, list: 65_000, price: 65_000 },
+    ]
+    const r = spreadDiscount(lines, 5_000, { services: true })
+    expect(r.discount).toBe(5_000)
+    expect(total(lines, r.prices)).toBe(95_000 - 5_000)
+  })
+})

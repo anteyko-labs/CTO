@@ -96,6 +96,7 @@ describe('исправление чека: исходный чек в кассу
 
   it('количество текстом', () => {
     expect(qtyInput('weight', 1250)).toBe('1,25')
+    expect(qtyInput('length', 1500)).toBe('1,5')
     expect(qtyInput('container', 2)).toBe('2')
   })
 })

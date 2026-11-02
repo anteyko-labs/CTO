@@ -44,5 +44,6 @@ describe('кабинет: покупки в Excel', () => {
   it('количество словами — как на экране', () => {
     expect(cabinetQtyText({ name: '', kind: 'container', qty: 2, unit: 'ml', container_ml: 4_000, amount_tyiyn: 0 })).toBe('2 кан. × 4 л')
     expect(cabinetQtyText({ name: '', kind: 'piece', qty: 3, unit: 'piece', container_ml: null, amount_tyiyn: 0 })).toBe('3 шт')
+    expect(cabinetQtyText({ name: '', kind: 'length', qty: 1500, unit: 'mm', container_ml: null, amount_tyiyn: 0 })).toBe('1,5\u00a0м')
   })
 })
