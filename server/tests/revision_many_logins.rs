@@ -165,11 +165,12 @@ impl World {
                 json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": name, "sale_price_tyiyn": 10_000 }),
             )
             .await;
-        // Ревизию начинает сотрудник своим входом, остальные присоединяются к тому же черновику.
+        // Ревизию начинает владелец, сотрудники своими входами присоединяются к тому же черновику
+        // (задача 019).
         let rev = self
-            .ok(&self.people[0], "POST", "/api/v1/revisions", json!({}))
+            .ok(&self.owner, "POST", "/api/v1/revisions", json!({}))
             .await;
-        for who in &self.people[1..] {
+        for who in &self.people {
             let same = self.ok(who, "POST", "/api/v1/revisions", json!({})).await;
             assert_eq!(same["head"]["id"], rev["head"]["id"], "{}", who.name);
         }
@@ -595,9 +596,7 @@ async fn owner_sees_cost_and_sale_of_counted(pool: PgPool) {
         )
         .await;
     let item = p["id"].as_str().unwrap().to_string();
-    let rev = w
-        .ok(&w.people[0], "POST", "/api/v1/revisions", json!({}))
-        .await;
+    let rev = w.ok(&w.owner, "POST", "/api/v1/revisions", json!({})).await;
     let rid = rev["head"]["id"].as_str().unwrap().to_string();
     w.ok(
         &w.people[0],

@@ -2975,6 +2975,7 @@ async fn revision_count_adds_or_replaces(pool: PgPool) {
     // Товар на двух полках: 5 и 3 — в ревизии 8, а не 3; «заменить» записывает как есть (ADR-059).
     let app = setup(pool.clone()).await;
     let admin = login(&app, "admin", "admin-pass-1").await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
     let (_, _, cat) = call(
         &app,
         "POST",
@@ -2990,7 +2991,7 @@ async fn revision_count_adds_or_replaces(pool: PgPool) {
         &app,
         "POST",
         "/api/v1/revisions",
-        Some(&admin),
+        Some(&owner),
         Some(json!({ "category_id": null })),
     )
     .await;
@@ -8949,7 +8950,7 @@ async fn revision_takes_a_product_not_in_the_program(pool: PgPool) {
         &app,
         "POST",
         "/api/v1/revisions",
-        Some(&admin),
+        Some(&owner),
         Some(json!({ "category_id": null })),
     )
     .await;
@@ -11347,6 +11348,15 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
     // Право, метод, адрес и тело запроса (каждый раз со своим `op_id`).
     type Case = (&'static str, &'static str, String, Box<dyn Fn() -> Value>);
     let op = Uuid::now_v7;
+    // Ревизию начинает владелец (задача 019): администратор с правом лишь присоединяется.
+    call(
+        &app,
+        "POST",
+        "/api/v1/revisions",
+        Some(&owner),
+        Some(json!({ "category_id": null })),
+    )
+    .await;
     let cases: Vec<Case> = vec![
         (
             "sale_return",

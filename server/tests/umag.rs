@@ -468,9 +468,8 @@ async fn product_from_umag_row_is_linked_and_needs_the_right(pool: PgPool) {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     // Ревизия заводит карточки по своему праву, но строку Умага без права не связывает.
-    let rev = t
-        .ok("POST", "/api/v1/revisions", &t.noprod, json!({}))
-        .await;
+    // Начинает ревизию владелец (задача 019).
+    let rev = t.ok("POST", "/api/v1/revisions", &t.owner, json!({})).await;
     let mut in_rev = card.clone();
     in_rev["counted_qty"] = json!(2);
     let (s, v) = t
@@ -1932,9 +1931,7 @@ async fn revision_card_ties_row_by_its_own_code_without_the_right(pool: PgPool) 
     ]))
     .await;
     let cat = t.category("Масла", "other").await;
-    let rev = t
-        .ok("POST", "/api/v1/revisions", &t.noprod, json!({}))
-        .await;
+    let rev = t.ok("POST", "/api/v1/revisions", &t.owner, json!({})).await;
     let rev = rev["head"]["id"].as_str().unwrap().to_string();
     let card = json!({ "op_id": Uuid::now_v7(), "category_id": cat, "name": "Масло канистра",
                        "barcodes": ["4600000000555"], "sale_price_tyiyn": 1_000, "counted_qty": 2 });

@@ -408,7 +408,7 @@ async fn create(
     Json(req): Json<CreateReq>,
 ) -> AppResult<Json<RevisionOut>> {
     let mut tx = state.pool.begin().await?;
-    // Ревизия — право администратора `revision` (ADR-097).
+    // Ревизия — право администратора `revision` (ADR-097); начать новую — только владелец (ADR-186).
     crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     if let Some(cid) = req.category_id {
         sqlx::query_scalar!("select id from categories where id = $1", cid)
@@ -448,6 +448,10 @@ async fn create(
         let out = load(&mut tx, &ctx.user, o.id).await?;
         tx.commit().await?;
         return Ok(Json(out));
+    }
+    // Новый черновик заводит только владелец; администратор присоединяется к начатой (ADR-186).
+    if !ctx.user.is_owner() {
+        return Err(AppError::ForbiddenWith("Ревизию начинает владелец".into()));
     }
     let number = ops::next_counter(&mut tx, ctx.user.branch_id, "revision").await?;
     let id = new_id();
@@ -1246,8 +1250,13 @@ async fn cancel(
     ctx: Ctx,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
+    // Отмена стирает весь пересчёт — только владелец (задача 019, ADR-186).
+    if !ctx.user.is_owner() {
+        return Err(AppError::ForbiddenWith(
+            "Отменить ревизию может только владелец".into(),
+        ));
+    }
     let mut tx = state.pool.begin().await?;
-    crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     lock_draft(&mut tx, ctx.user.branch_id, id).await?;
     sqlx::query!(
         "update revisions set status = 'cancelled' where id = $1",

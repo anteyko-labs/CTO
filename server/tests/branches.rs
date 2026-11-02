@@ -375,6 +375,15 @@ async fn fill_branch(w: &World, branch: Uuid, admin: &str, tag: &str) -> String 
         json!({ "op_id": op(), "product_id": w.item, "qty": 1, "reason": tag, "no_supplier": true }),
     )
     .await;
+    // Ревизию начинает владелец в филиале, администратор присоединяется (задача 019).
+    api.ok(
+        "POST",
+        "/api/v1/revisions",
+        owner,
+        at,
+        json!({ "category_id": null }),
+    )
+    .await;
     api.ok(
         "POST",
         "/api/v1/revisions",

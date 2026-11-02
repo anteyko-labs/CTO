@@ -59,7 +59,7 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'stock_in', label: 'Оприходование', hint: 'Товар без накладной', opens: 'Меню «Оприходование»', group: 'Склад', default: true },
   { key: 'supplier_returns', label: 'Возврат поставщику', opens: 'Меню «Возврат поставщику»', group: 'Склад', default: true },
   { key: 'defects', label: 'Отметка брака', opens: 'Кнопка «Брак» в карточке товара', group: 'Склад', default: true },
-  { key: 'revision', label: 'Ревизия', hint: 'Пересчёт товара; проводит ревизию владелец', opens: 'Меню «Ревизия»', group: 'Склад', default: true },
+  { key: 'revision', label: 'Ревизия', hint: 'Пересчёт товара в ревизии, которую начал владелец; начинает, отменяет и проводит — владелец', opens: 'Меню «Ревизия»', group: 'Склад', default: true },
   {
     key: 'oil_transfer',
     label: 'Перелив масла',

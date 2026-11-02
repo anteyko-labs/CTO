@@ -20,6 +20,7 @@ import { formatDateTime, formatSom, plural } from '../lib/format'
 import { countText, oilFields, parseOil, parseQty, qtyInputText, unitShort, viscosityFromName, viscosityKey, type StockUnit } from '../lib/units'
 import { errorText, useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
+import { startMode, WAIT_OWNER } from '../lib/revisionStart'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { sameCode } from '../lib/umagCodes'
 import { retrySame } from '../lib/retrySame'
@@ -1233,18 +1234,21 @@ function Draft({
       )}
       {draft && (
         <div className="flex flex-wrap justify-end gap-2">
-          <Button
-            variant="secondary"
-            disabled={act.busy}
-            onClick={() =>
-              void act.run(async () => {
-                await post(`/revisions/${rev.head.id}/cancel`)
-                onChanged()
-              })
-            }
-          >
-            Отменить ревизию
-          </Button>
+          {/* Отменить и провести — только владелец (задача 019, ADR-186). */}
+          {owner && (
+            <Button
+              variant="secondary"
+              disabled={act.busy}
+              onClick={() =>
+                void act.run(async () => {
+                  await post(`/revisions/${rev.head.id}/cancel`)
+                  onChanged()
+                })
+              }
+            >
+              Отменить ревизию
+            </Button>
+          )}
           {owner ? (
             <Button disabled={act.busy || countedAll.length === 0} onClick={() => setPosting({ comment: '', opId: newOpId() })}>
               Провести
@@ -1494,6 +1498,8 @@ function Revision() {
   const [category, setCategory] = useState('')
   const act = useAction()
   const owner = useUser().role === 'owner'
+  // Начинает ревизию владелец, остальные присоединяются к начатой (задача 019, ADR-186).
+  const mode = startMode(owner, list.data ?? [])
   const settings = useLoad(() => get<{ stale_days: number; oil_norm_bp: number }>('/settings/stock'), [])
   const [norm, setNorm] = useState<string | null>(null)
   const normBp = norm === null ? null : parsePercentBp(norm)
@@ -1598,24 +1604,41 @@ function Revision() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Ревизия" />
-      <Card className="flex flex-wrap items-end gap-3">
-        <Field label="Что пересчитываем">
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">Весь склад</option>
-            {(categories.data ?? []).map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Button disabled={act.busy} onClick={start}>
-          Начать ревизию
-        </Button>
-        <div className="text-xs text-slate-500">
-          Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются. Начали несколько человек — все считают в одной ревизии.
-        </div>
-      </Card>
+      {mode.kind === 'start' ? (
+        <Card className="flex flex-wrap items-end gap-3">
+          <Field label="Что пересчитываем">
+            <select value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">Весь склад</option>
+              {(categories.data ?? []).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Button disabled={act.busy} onClick={start}>
+            Начать ревизию
+          </Button>
+          <div className="text-xs text-slate-500">
+            Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются. Начали несколько человек — все считают в одной ревизии.
+          </div>
+        </Card>
+      ) : mode.kind === 'join' ? (
+        <Card className="flex flex-wrap items-center gap-3">
+          {mode.drafts.map((d) => (
+            <Button key={d.id} onClick={() => setOpenId(d.id)}>
+              {d.label}
+            </Button>
+          ))}
+          <div className="text-xs text-slate-500">Ревизию начал владелец — откройте её и считайте сканером, проведёт владелец.</div>
+        </Card>
+      ) : (
+        list.data && (
+          <Notice>
+            <span data-testid="revision-wait-owner">{WAIT_OWNER}</span>
+          </Notice>
+        )
+      )}
       {lostClosed.length > 0 && (
         <Notice tone="rose">
           <div className="flex flex-wrap items-center gap-3">
@@ -1706,12 +1729,16 @@ function Revision() {
           <Empty
             icon="revision"
             action={
-              <Button disabled={act.busy} onClick={start}>
-                Начать первую ревизию
-              </Button>
+              mode.kind === 'start' && (
+                <Button disabled={act.busy} onClick={start}>
+                  Начать первую ревизию
+                </Button>
+              )
             }
           >
-            Ревизий ещё не было. Выберите, что пересчитываем, и начните — пересчёт идёт сканером.
+            {mode.kind === 'start'
+              ? 'Ревизий ещё не было. Выберите, что пересчитываем, и начните — пересчёт идёт сканером.'
+              : 'Ревизий ещё не было. Ревизию начинает владелец.'}
           </Empty>
         ) : (
           <Table head={['№', 'Что', 'Дата', 'Пересчитано', 'Статус', '']}>

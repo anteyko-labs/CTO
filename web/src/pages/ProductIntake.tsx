@@ -10,6 +10,7 @@ import { createOrTaken, TAKEN_ADDED, TAKEN_EXISTS } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
 import { expectedBody, InputOps, qtyInUnits, type Seen, type ShelfInput } from '../lib/revisionCount'
 import { useUser } from '../lib/auth'
+import { WAIT_OWNER } from '../lib/revisionStart'
 import { OilCountInput } from '../components/OilCountInput'
 import { stockText } from '../components/ProductPicker'
 import { formatDateTime, formatSom, parseLiters, parseSom, plural } from '../lib/format'
@@ -128,7 +129,17 @@ export default function ProductIntake() {
   // Выключенный Умаг (SPEC-36 §15): ни списка, ни загрузки, ни подсказок.
   const umagOn = stats.data?.enabled === true
   const [revisionOn, setRevision] = useState(read(MODE_KEY) === '1')
-  const revision = revisionOn && mayCount
+  // Ревизию начинает владелец (задача 019, ADR-186): администратор считает, только пока открыт
+  // черновик «весь склад».
+  const openWhole = useLoad(
+    () =>
+      owner || !mayCount
+        ? Promise.resolve(true)
+        : get<{ status: string; category_id: string | null }[]>('/revisions').then((l) => l.some((r) => r.status === 'draft' && r.category_id === null)),
+    [owner, mayCount],
+  )
+  const mayStart = owner || openWhole.data === true
+  const revision = revisionOn && mayCount && mayStart
   const [text, setText] = useState('')
   const [hits, setHits] = useState<Hit[]>([])
   const [found, setFound] = useState<Product | null>(null)
@@ -307,7 +318,10 @@ export default function ProductIntake() {
       return r.counted_qty
     } catch (e) {
       // Ревизию провели или отменили: следующий пересчёт откроет новую; сообщение — с сервера.
-      if (e instanceof ApiError && e.code === 'revision_closed') revisionId.current = null
+      if (e instanceof ApiError && e.code === 'revision_closed') {
+        revisionId.current = null
+        openWhole.reload()
+      }
       throw e
     }
   }
@@ -443,9 +457,13 @@ export default function ProductIntake() {
         subtitle={`Сканируйте штрихкод — товар найдётся у нас${umagOn ? ' или в списке старой программы' : ''}. Enter не нужен.`}
         actions={
           mayCount && (
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm">
-              <input type="checkbox" checked={revision} onChange={(e) => setRevision(e.target.checked)} />
+            <label
+              className={`inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm ${mayStart ? 'cursor-pointer' : 'text-slate-400'}`}
+              title={mayStart ? undefined : WAIT_OWNER}
+            >
+              <input type="checkbox" checked={revision} disabled={!mayStart} onChange={(e) => setRevision(e.target.checked)} />
               Пересчёт (ревизия)
+              {!mayStart && openWhole.data === false && <span data-testid="intake-wait-owner">· ревизию начинает владелец</span>}
             </label>
           )
         }
