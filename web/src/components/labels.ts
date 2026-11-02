@@ -67,8 +67,8 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
       labels.push(html)
     }
   }
-  // Текст и штрихкод растут вместе с этикеткой: шрифты подобраны под 40×30, на 58×40 — крупнее.
-  const k = Math.min(2.5, Math.max(1, Math.min(s.width_mm / 40, s.height_mm / 30)))
+  // Текст и штрихкод растут вместе с этикеткой: на 40×30 — в 1,3 раза крупнее прежнего, на 58×40 — в 1,8.
+  const k = Math.min(2.5, Math.max(1, Math.min(s.width_mm / 30, s.height_mm / 22)))
   const pt = (n: number) => `${(n * k).toFixed(1)}pt`
   return `<!doctype html><html><head><meta charset="utf-8"><title>Этикетки</title><style>
     @page { size: ${s.width_mm}mm ${s.height_mm}mm; margin: 0; }
