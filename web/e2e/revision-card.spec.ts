@@ -130,6 +130,9 @@ test('администратор без права «Товары и штрих�
   await a.goto('/revision')
   await a.getByRole('row', { name: new RegExp(w.catName) }).first().click()
   await expect(a.getByRole('heading', { name: new RegExp(`Ревизия № ${rev.head.number}`) })).toBeVisible()
+  // Свой вид сотрудника (задача 007): строку открывает поиск «Посчитать».
+  await a.getByPlaceholder('Название, артикул или вязкость').fill(w.name)
+  await a.getByTestId('revision-search-hits').getByRole('button', { name: 'Посчитать' }).first().click()
   await a.getByRole('row', { name: new RegExp(w.name) }).getByTestId('revision-card').click()
   const dialog = a.getByRole('dialog', { name: 'Товар' })
   await expect(dialog.locator('#product-name')).toHaveValue(w.name)

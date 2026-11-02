@@ -56,6 +56,12 @@ async function cancelDraft(request: APIRequestContext, categoryId: string) {
   for (const r of list.filter((x) => x.status === 'draft' && x.category_id === categoryId)) await api(request, 'post', `/revisions/${r.id}/cancel`, {})
 }
 
+/** Свой вид (задача 007): в списке только посчитанное собой — товар находят поиском и «Посчитать». */
+async function findToCount(page: Page, name: string) {
+  await page.getByPlaceholder('Название, артикул или вязкость').fill(name)
+  await page.getByTestId('revision-search-hits').getByRole('button', { name: 'Посчитать' }).first().click()
+}
+
 const total = (page: Page, id: string) => page.locator(`[data-total="${id}"]`)
 
 test('ревизия двумя входами: Азиз вписал 6, Алексей 4 — каждый видит своё, владелец — 10 и кто сколько; «= моё» исправляет своё', async ({ page, browser }) => {
@@ -81,6 +87,9 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
     [aziz, '6'],
     [aleksey, '4'],
   ] as const) {
+    // Чужое и непосчитанное в списке не показывается: строку открывает поиск.
+    await expect(who.getByRole('row', { name: new RegExp(name) })).toHaveCount(0)
+    await findToCount(who, name)
     const row = who.getByRole('row', { name: new RegExp(name) })
     await expect(row.locator('[data-mode="add"]')).toHaveAttribute('aria-pressed', 'true')
     // Слепой пересчёт: учётного остатка сотрудник не видит.
@@ -118,6 +127,7 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
   await openRevision(page, category)
   await expect(total(page, p.id)).toHaveText(text('итого 7 шт'), { timeout: 15_000 })
   // 0 в «+ добавить» непосчитанной строки — «не нашли»: у Азиза — 0, у владельца — посчитано 0.
+  await findToCount(aziz, `Свеча нет на полке ${RUN}`)
   const zero = aziz.locator(`[data-count="${missing.id}"]`)
   await zero.fill('0')
   await zero.press('Enter')
@@ -162,13 +172,15 @@ test('ревизия: поиск по названию — строка Умаг
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
   await expect(dialog).toBeHidden()
 
-  // Товар заведён, связан со строкой Умага и посчитан: у второго входа — тот же итог.
+  // Товар заведён, связан со строкой Умага и посчитан; второй вход чужой строки не видит (задача 007).
   const hits = (await (await page.request.get(`/api/v1/old-catalog/search?barcode=${umagCode}`)).json()) as { exact: boolean; product_id: string | null }[]
   const linked = hits.find((h) => h.exact)?.product_id
   expect(linked).toBeTruthy()
   await expect(total(aziz, linked!)).toHaveText(text('моё 3 шт'), { timeout: 15_000 })
   await noRight.getByPlaceholder('Название, артикул или вязкость').fill('')
-  await expect(total(noRight, linked!)).toHaveText(text('моё 3 шт'), { timeout: 15_000 })
+  await noRight.reload()
+  await expect(noRight.getByRole('row', { name: new RegExp(umagName) })).toHaveCount(0)
+  await expect(total(noRight, linked!)).toHaveCount(0)
   // Строка заведена — в Умаге её больше не предлагают.
   await aziz.getByPlaceholder('Название, артикул или вязкость').fill(`Антифриз Умаг поиск ${RUN}`)
   await aziz.waitForTimeout(1_000)

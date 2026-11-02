@@ -237,7 +237,12 @@ function Draft({
     counted_qty: null,
   })
 
+  /** Свой вид: строки, которые человек открыл сам (поиск «Посчитать», товар на вес после скана), —
+   *  видны, пока он их не посчитал (задача 007). */
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const openLine = (id: string) => setOpened((o) => (o.has(id) ? o : new Set(o).add(id)))
   const focusLine = (l: Line) => {
+    openLine(l.product_id)
     setFilter(l.name)
     setVisc('')
     setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
@@ -664,7 +669,13 @@ function Draft({
     if (v && !viscs.has(viscosityKey(v.v))) viscs.set(viscosityKey(v.v), v.v)
   }
   const viscOptions = [...viscs.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru', { numeric: true }))
-  const lines = allLines.filter((l) => {
+  // Свой вид — только своё: посчитанное этим входом, открытое им самим и его неотправленные сканы;
+  // чужие строки и непосчитанный склад не показываются, их находят сканером или поиском (задача 007).
+  const pendingIds = new Set(unsentByLine(queue, fresh).keys())
+  const shownLines = ownView
+    ? allLines.filter((l) => l.counted_qty !== null || opened.has(l.product_id) || edits[l.product_id] !== undefined || pendingIds.has(l.product_id))
+    : allLines
+  const lines = shownLines.filter((l) => {
     const v = viscosityOf(l)
     if (visc && (!v || viscosityKey(v.v) !== visc)) return false
     if (!q) return true
@@ -686,6 +697,7 @@ function Draft({
     else if (tare) scanAdd(l, tare)
     else {
       if (editsNow.current[l.product_id] === undefined) switchMode(l, 'add')
+      openLine(l.product_id)
       const at = lines.findIndex((x) => x.product_id === l.product_id)
       if (at >= 0) pager.setPage(Math.floor(at / pager.size))
       // Поле появится после перехода на страницу.
@@ -886,8 +898,8 @@ function Draft({
             )}
             {ownView ? (
               <>
-                Вы пересчитали {counted.length} из {allLines.length}
-                {!blind && <>, расхождений {diffs.length}</>}. В строках — только ваш пересчёт, чужие числа не видны; итог по каждой строке
+                Вы посчитали товаров: {counted.length}
+                {!blind && <>, расхождений {diffs.length}</>}. В списке — только то, что посчитали вы: сканируйте или найдите товар в поиске («Посчитать»); чужие числа не видны; итог по каждой строке
                 складывается из пересчёта всех. Число в строке — «+ добавить»: прибавится к вашему. Пробили лишнее — «= моё» и впишите,
                 сколько нашли вы. 0 в непосчитанной строке — «не нашли».
                 {owner && ' Итог всех и проведение — «Все вместе».'}
@@ -908,7 +920,7 @@ function Draft({
         <RevisionSearchHits
           text={filter}
           version={addedCount}
-          shown={new Set(allLines.map((l) => l.product_id))}
+          shown={new Set(shownLines.map((l) => l.product_id))}
           fits={fitsRevision}
           mayUmag={mayUmag}
           onCount={goTo}
