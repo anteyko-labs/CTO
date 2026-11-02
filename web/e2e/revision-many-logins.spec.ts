@@ -134,7 +134,7 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
   await expect(total(page, p.id)).toHaveText(text('итого 10 шт'), { timeout: 15_000 })
   // Владелец в «Все вместе» видит, сколько это в деньгах: 10 × 300 с; закупки нет — не в итоге.
   await expect(page.getByRole('row', { name: new RegExp(name) }).getByTestId('line-money')).toContainText(text('продажа 3 000'))
-  await expect(page.getByTestId('revision-money')).toContainText('Валовая прибыль')
+  await expect(page.getByTestId('revision-money')).toContainText('Ожидаемая прибыль')
   await expect(page.getByTestId('revision-money')).toContainText('Без закупки (не вошли в итог): 1')
   // Азиз пробил лишнее: «= моё 3» — у него 3, у Алексея по-прежнему 4, итог 7.
   const row = aziz.getByRole('row', { name: new RegExp(name) })

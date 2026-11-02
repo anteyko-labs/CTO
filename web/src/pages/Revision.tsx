@@ -1365,7 +1365,7 @@ function Draft({
   )
 }
 
-/** Итог насчитанного у владельца в «Все вместе» (задача 007): закупка, продажа, валовая прибыль,
+/** Итог насчитанного у владельца в «Все вместе» (задача 007): закупка, продажа, ожидаемая прибыль,
  *  средняя наценка (прибыль к закупке) — по строкам, где закупка известна. */
 function RevisionMoney({ lines }: { lines: Line[] }) {
   const priced = lines.filter((l) => l.sale_value_tyiyn !== undefined && l.cost_value_tyiyn !== undefined)
@@ -1379,7 +1379,7 @@ function RevisionMoney({ lines }: { lines: Line[] }) {
       <div className="font-semibold">Насчитано в деньгах</div>
       <div>Закупка: {formatSom(cost)}</div>
       <div>Продажа: {formatSom(sale)}</div>
-      <div className="font-medium text-emerald-700">Валовая прибыль: {formatSom(profit)}</div>
+      <div className="font-medium text-emerald-700">Ожидаемая прибыль: {formatSom(profit)}</div>
       <div>Средняя наценка: {markup === null ? '—' : `${markup} %`}</div>
       {noCost > 0 && <div className="text-xs text-slate-500">Без закупки (не вошли в итог): {noCost}</div>}
     </Card>
