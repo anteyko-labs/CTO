@@ -574,7 +574,10 @@ test('ревизия: скан наклейки с нулём впереди (в
   await scanner.fill(`97${RUN}`)
   await scanner.press('Enter')
   await expect(counted(other.id)).toHaveText(/итого 1\sшт/)
-  await expect(counted(oil.id)).toHaveText(/итого 2\sшт/)
+  // На экране — отсканированный товар (задача 007); у первого итог прежний.
+  await scanner.fill(umagCode)
+  await scanner.press('Enter')
+  await expect(counted(oil.id)).toHaveText(/итого 3\sшт/)
   await expect(scanner).toBeFocused()
   // Черновик ревизии не оставляем: объединение карточек ждёт проведения или отмены.
   await page.getByRole('button', { name: 'Отменить ревизию' }).click()
