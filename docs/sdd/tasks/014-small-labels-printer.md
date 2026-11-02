@@ -22,7 +22,7 @@
 Выбор принтера из программы (браузер этого не умеет — только через профиль Chrome). Третий размер. Ценники на полку.
 
 ## Затронутые файлы
-`server/migrations/0100_label_size.sql`; `deploy/windows/install-label-station.ps1`; `server/src/api/label_jobs.rs` (create, take:279, station_online:72, seen:240), `server/src/api/refs.rs:1338,1581` (второй набор, `GET/PUT /settings/labels?size=`); `web/src/components/{labels.ts,labelTarget.tsx}`, `web/src/lib/labelJob.ts`, `web/src/pages/{LabelStation,LabelSettings,Products,ReceiptNew,ReceiptView,StockInView}.tsx`; tier2 (label-jobs: `size`, последняя миграция 0100), SPEC-02, ADR-182.
+`server/migrations/0100_label_size.sql`; `deploy/windows/install-label-station.ps1`; `server/src/api/label_jobs.rs` (create, take:279, station_online:72, seen:240), `server/src/api/refs.rs:1338,1581` (второй набор, `GET/PUT /settings/labels?size=`); `web/src/components/{labels.ts,labelTarget.tsx}`, `web/src/lib/labelJob.ts`, `web/src/pages/{LabelStation,LabelSettings,Products,ReceiptNew,ReceiptView,StockInView}.tsx`; tier2 (label-jobs: `size`, последняя миграция 0100), SPEC-02, ADR-183.
 
 ## Проверка
 - `server/tests/label_jobs.rs`: задание `small` не берёт станция `big` и наоборот; без `size` → `big`; `station_online` по размеру; настройки `small` сохраняются отдельно, границы 10..200 мм.

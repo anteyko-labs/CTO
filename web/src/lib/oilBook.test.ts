@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bookGroups, categorySlotText, lineNextText, lineTitle, titleOf, overdueSlots, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
+import { bookGroups, categorySlotText, lineNextText, lineTitle, titleOf, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
 import { oilBookHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
@@ -43,7 +43,6 @@ describe('масляная книжка по строкам', () => {
     }
     expect(slotNextText(b.slots![0])).toBe('на 93 000 км')
     expect(slotsWithNext(b).map((n) => n.slot)).toEqual(['oil', 'air_filter'])
-    expect(overdueSlots(b, '2026-10-16').map((n) => n.slot)).toEqual(['air_filter'])
   })
 })
 
@@ -69,14 +68,14 @@ describe('строка книжки категории', () => {
 })
 
 describe('следующая замена — только пробег (ADR-115)', () => {
-  it('строка с пробегом — без даты; без пробега — «по сроку до»', () => {
+  it('строка с пробегом — без даты; без пробега — пусто, дат нет (задача 013)', () => {
     expect(slotNextText({ next_km: 258_000, next_mileage: 258_000, unit: 'km', next_date: '2026-11-26' })).toBe('на 258 000 км')
-    expect(slotNextText({ next_km: null, next_date: '2027-04-12' })).toBe('по сроку до 12.04.2027')
+    expect(slotNextText({ next_km: null, next_date: '2027-04-12' })).toBe('')
     expect(slotNextText({ next_km: null, next_date: null })).toBe('')
     const line = { slot: 'oil' as const, text: 'Масло', target_set: true, next_mileage: 225_000, next_unit: 'km' as const, next_date: '2027-01-05' }
     expect(lineNextText(line)).toBe('следующая замена на 225 000 км')
     expect(lineNextText({ ...line, next_unit: 'mi' })).toBe('следующая замена на 225 000 миль')
-    expect(lineNextText({ ...line, next_mileage: null })).toBe('следующая замена по сроку до 05.01.2027')
+    expect(lineNextText({ ...line, next_mileage: null })).toBe('')
     expect(lineNextText({ ...line, next_mileage: null, next_date: null })).toBe('')
   })
 })

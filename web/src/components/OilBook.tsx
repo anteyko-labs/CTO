@@ -6,7 +6,7 @@ import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNot
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { lineNextText, lineTitle, nextText, overdueSlots, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, lineTitle, nextText, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
@@ -30,18 +30,16 @@ export function OilHint({ book: b }: { book: VehicleBook | null }) {
         {notesLine}
       </div>
     )
-  const overdue = overdueSlots(b, todayBishkek())
   const next = slotsWithNext(b)
   return (
-    <div className={`rounded-md px-3 py-2 text-xs ${overdue.length ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`} data-testid="oil-hint">
+    <div className={`rounded-md px-3 py-2 text-xs bg-slate-50 text-slate-700`} data-testid="oil-hint">
       Прошлая замена {formatDate(last.change_date)}: {recordText(last) || '—'}
       {recordMileage(last) !== null && `, ${recordMileage(last)}`}.
       {next.length > 0 && (
         <ul className="mt-1">
           {next.map((n) => (
-            <li key={slotKey(n)} className={overdue.includes(n) ? 'font-medium' : ''}>
+            <li key={slotKey(n)}>
               {slotTitle(n)}: следующая {slotNextText(n)}
-              {overdue.includes(n) && ' — пора менять'}
             </li>
           ))}
         </ul>
@@ -76,23 +74,40 @@ const SLOT_ORDER = Object.keys(BOOK_SLOT_LABELS) as BookSlot[]
 
 type ManualForm = { date: string; mileage: string } & Record<BookSlot, string>
 
+/** Правка записи книжки (задача 013): пробег, строки и комментарий; даты нет. `index` — номер
+ *  строки в записи на сервере, у новой строки — нет. */
+type RecordEdit = { id: string; mileage: string; comment: string; lines: { index: number | null; slot: BookSlot; text: string }[] }
+
+function recordEdit(r: OilRecord, unit: MileageUnit): RecordEdit {
+  const before = r.mileage ?? r.mileage_km
+  // У старой записи без строк книжки строки — из текста масла и фильтра: на сервере их нет, это новые.
+  const own = Boolean(r.lines && r.lines.length > 0)
+  return {
+    id: r.id,
+    mileage: before !== null && before !== undefined && (r.mileage_unit ?? 'km') === unit ? String(before) : '',
+    comment: r.comment ?? '',
+    lines: recordLines(r).map((l, i) => ({ index: own ? i : null, slot: l.slot, text: l.text })),
+  }
+}
+
 const emptyManual = (): ManualForm => ({
   date: todayBishkek(),
   mileage: '',
   ...(Object.fromEntries(SLOT_ORDER.map((s) => [s, ''])) as Record<BookSlot, string>),
 })
 
-/** Интервал строки в единице машины: «каждые 8 000 км или 31 дн.», «каждые 3 000 миль …»;
+/** Интервал строки в единице машины: «каждые 8 000 км», «каждые 3 000 миль»;
  *  у прочих работ без интервала — «срок не задан». Интервал хранится в км (ADR-084). */
 function intervalText(n: SlotNext, unit: MileageUnit): string {
-  if (n.interval_km === null || n.interval_days === null) return 'срок не задан'
-  return `каждые ${mileageText(fromKm(n.interval_km, unit), unit)} или ${n.interval_days} дн.${n.own_interval ? ', у этой машины' : ''}`
+  if (n.interval_km === null) return 'срок не задан'
+  return `каждые ${mileageText(fromKm(n.interval_km, unit), unit)}${n.own_interval ? ', у этой машины' : ''}`
 }
 
 function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; editable: boolean; partyId?: string; onChanged: () => void }) {
   const [interval, setInterval] = useState<{ slot: BookSlot; km: string; days: string; own: boolean } | null>(null)
   const [manual, setManual] = useState<ManualForm | null>(null)
   const [editing, setEditing] = useState(false)
+  const [recEdit, setRecEdit] = useState<RecordEdit | null>(null)
   const act = useAction()
   // Пробег машины — в км или милях; интервалы в книжке хранятся в км (ADR-084).
   const unit: MileageUnit = b.mileage_unit ?? 'km'
@@ -152,7 +167,6 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
         <table className="w-full text-sm" data-testid="book-slots">
           <tbody className="divide-y divide-slate-100">
             {slots.map((n) => {
-              const late = n.next_date !== null && n.next_date < todayBishkek()
               return (
                 <tr key={slotKey(n)}>
                   <td className="py-1 pr-2">
@@ -160,10 +174,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                     <span className="font-medium">{slotTitle(n)}</span>
                     {slotTitle(n) !== n.label && <span className="block text-xs text-slate-500">{n.label}</span>}
                   </td>
-                  <td className={`py-1 pr-2 ${late ? 'font-medium text-amber-800' : ''}`}>
-                    {slotNextText(n) || '—'}
-                    {late && ' — пора менять'}
-                  </td>
+                  <td className="py-1 pr-2">{slotNextText(n) || '—'}</td>
                   <td className="py-1 pr-2 text-xs text-slate-500">{intervalText(n, unit)}</td>
                   <td className="py-1 text-right">
                     {/* У услуги «прочее» интервал — у самой услуги (экран «Услуги»), не у машины. */}
@@ -216,20 +227,8 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 </span>
               </span>
               {editable && (
-                <Button
-                  variant="ghost"
-                  className="px-2 py-1 text-xs"
-                  onClick={() => {
-                    const before = r.mileage ?? r.mileage_km
-                    const v = window.prompt(`Пробег, ${unitLabel(unit)}`, before !== null && before !== undefined && (r.mileage_unit ?? 'km') === unit ? String(before) : '')
-                    if (v === null || !/^\d+$/.test(v.trim())) return
-                    void act.run(async () => {
-                      await patch(`/oil-changes/${r.id}`, { mileage: Number(v.trim()), mileage_unit: unit })
-                      onChanged()
-                    })
-                  }}
-                >
-                  Пробег
+                <Button variant="ghost" className="px-2 py-1 text-xs" data-testid="book-record-edit" onClick={() => setRecEdit(recordEdit(r, unit))}>
+                  Изменить
                 </Button>
               )}
             </li>
@@ -279,7 +278,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
               <Field label={`Каждые, ${unitLabel(unit)}`}>
                 <input inputMode="numeric" value={interval.km} onChange={(e) => setInterval({ ...interval, km: e.target.value })} />
               </Field>
-              <Field label="Или каждые, дней">
+              <Field label="Напоминать клиенту через, дней" hint="Только для напоминаний в боте: на экране и в печати дат нет">
                 <input inputMode="numeric" value={interval.days} onChange={(e) => setInterval({ ...interval, days: e.target.value })} />
               </Field>
             </div>
@@ -337,6 +336,74 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
             onChanged()
           }}
         />
+      )}
+      {recEdit && (
+        <Modal title={`Запись книжки · ${b.plate}`} onClose={() => setRecEdit(null)}>
+          <div className="flex flex-col gap-3">
+            <Field label={`Пробег, ${unitLabel(unit)}`}>
+              <input id="book-edit-mileage" inputMode="numeric" value={recEdit.mileage} onChange={(e) => setRecEdit({ ...recEdit, mileage: e.target.value })} />
+            </Field>
+            {recEdit.lines.map((l, i) => (
+              <div key={i} className="flex gap-2" data-testid="book-edit-line">
+                <select
+                  aria-label="Что меняли"
+                  value={l.slot}
+                  onChange={(e) => setRecEdit({ ...recEdit, lines: recEdit.lines.map((x, j) => (j === i ? { ...x, slot: e.target.value as BookSlot } : x)) })}
+                >
+                  {SLOT_ORDER.map((s) => (
+                    <option key={s} value={s}>
+                      {slotLabel(s)}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="min-w-0 flex-1"
+                  aria-label="Что залили или поставили"
+                  value={l.text}
+                  onChange={(e) => setRecEdit({ ...recEdit, lines: recEdit.lines.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)) })}
+                />
+                <Button variant="secondary" aria-label="Убрать строку" onClick={() => setRecEdit({ ...recEdit, lines: recEdit.lines.filter((_, j) => j !== i) })}>
+                  ×
+                </Button>
+              </div>
+            ))}
+            <div>
+              <Button variant="secondary" className="text-xs" onClick={() => setRecEdit({ ...recEdit, lines: [...recEdit.lines, { index: null, slot: 'other', text: '' }] })}>
+                + строка
+              </Button>
+            </div>
+            <Field label="Комментарий">
+              <input value={recEdit.comment} onChange={(e) => setRecEdit({ ...recEdit, comment: e.target.value })} />
+            </Field>
+            <ErrorBox error={act.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setRecEdit(null)}>
+                Отмена
+              </Button>
+              <Button
+                disabled={
+                  act.busy ||
+                  !recEdit.lines.some((l) => l.text.trim()) ||
+                  (recEdit.mileage.trim() !== '' && !/^\d+$/.test(recEdit.mileage.trim()))
+                }
+                onClick={() =>
+                  void act.run(async () => {
+                    await patch(`/oil-changes/${recEdit.id}`, {
+                      ...(recEdit.mileage.trim() ? { mileage: Number(recEdit.mileage.trim()), mileage_unit: unit } : {}),
+                      comment: recEdit.comment,
+                      lines: recEdit.lines.map((l) => ({ ...(l.index !== null ? { index: l.index } : {}), slot: l.slot, text: l.text })),
+                    })
+                    setRecEdit(null)
+                    onChanged()
+                    toast('Запись изменена')
+                  })
+                }
+              >
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
       {manual && (
         <Modal title={`Запись из тетради · ${b.plate}`} onClose={() => setManual(null)}>
@@ -465,9 +532,7 @@ const VEHICLE_COLS: ExportCol<VehicleBook>[] = [
   { label: 'Модель', value: (b) => b.model },
   { label: 'Следующая замена масла', value: (b) => nextText(b) },
   { label: 'Следующая, км', value: (b) => (b.next_km !== null ? xl.int(b.next_km) : null) },
-  { label: 'Следующая, дата', value: (b) => xl.date(b.next_date) },
   { label: 'Интервал, км', value: (b) => xl.int(b.interval_km) },
-  { label: 'Интервал, дней', value: (b) => xl.int(b.interval_days) },
   { label: 'Пометка', value: (b) => b.comment ?? '' },
   { label: 'Состояние', value: (b) => (b.active === false ? 'убрана клиентом' : '') },
 ]
