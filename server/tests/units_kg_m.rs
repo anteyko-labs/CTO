@@ -194,7 +194,14 @@ async fn meters_receipt_sale_kinds_and_revision(pool: PgPool) {
                 "payments": [{ "method": "cash", "amount_tyiyn": 45_000 }] })
     };
     for (kind, pid) in [("piece", &hose), ("weight", &hose), ("length", &grease)] {
-        let (s, v) = call(&app, "POST", "/api/v1/sales", Some(&admin), Some(sale(kind, pid))).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/v1/sales",
+            Some(&admin),
+            Some(sale(kind, pid)),
+        )
+        .await;
         assert_eq!(s, StatusCode::CONFLICT, "{kind}: {v}");
     }
     assert_eq!(stock(&pool, &hose).await, (3_500, 70_000));
