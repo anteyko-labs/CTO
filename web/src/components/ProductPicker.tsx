@@ -354,7 +354,7 @@ export function ProductPicker({
                 <span className="shrink-0 text-right text-xs text-slate-500">
                   {formatSom(p.sale_price_tyiyn)}
                   <br />
-                  {/* Остаток 0 и меньше — «нет в наличии» (задача 015): касса такой товар в чек не кладёт. */}
+                  {/* Остаток 0 и меньше — «нет в наличии» (задача 018): касса такой товар в чек не кладёт. */}
                   {p.stock_qty > 0 ? stockText(p) : <span className="text-red-600">нет в наличии</span>}
                 </span>
               </button>

@@ -911,7 +911,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const addProduct = (p: Product) => putProduct(p, false)
   const putProduct = (p: Product, keep: boolean) => {
     // Без «Продажи в минус» товар с остатком 0 встаёт красной строкой с аналогом, но чек с ним не
-    // провести (задача 015); «Исправить» — как было.
+    // провести (задача 018); «Исправить» — как было.
     if (!fix && !canAddToCart(p, cs.sale_allow_negative)) toast(`Нет в наличии: ${p.name} — уберите строку или возьмите аналог`)
     if (hold(() => putProduct(p, true))) return
     if (!keep) setDone(null)
@@ -1284,7 +1284,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]', 'товары'],
     [lines.length === 0 || valid, 'количество и цены в строках', undefined, 'кол-во и цены'],
-    // Сверх остатка (задача 015): касса сверяет по остатку с сервера или снимка, решает сервер (409).
+    // Сверх остатка (задача 018): касса сверяет по остатку с сервера или снимка, решает сервер (409).
     [short.length === 0, `товара на складе: ${short.map((p) => `${p.name} (остаток ${stockText(p)})`).join(', ')}`, undefined, `товара: ${short.map((p) => p.name).join(', ')}`],
     [Boolean(cashierId), 'кассира', '#cashier-select', 'кассир'],
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select', 'мастер'],
@@ -2435,7 +2435,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <ProductPicker
                 onPick={addProduct}
                 // Незнакомый код — окно привязки: право «Товары и штрихкоды» или «Привязывать коды
-                // на кассе» (задача 005 Н3). Новый товар на кассе не заводится (задача 015).
+                // на кассе» (задача 005 Н3). Новый товар на кассе не заводится (задача 018).
                 onUnknownCode={can(user, 'products') || can(user, 'till_barcode') ? setUnknownCode : undefined}
               />
             </div>

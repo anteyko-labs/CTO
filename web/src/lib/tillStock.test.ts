@@ -6,7 +6,7 @@ const filter = { id: 'f', name: 'Фильтр', stock_qty: 3 }
 const cable = { id: 'c', name: 'Провод', stock_qty: 1500 } // мм
 const nails = { id: 'n', name: 'Гвозди', stock_qty: 0 } // г
 
-describe('остаток на кассе (задача 015)', () => {
+describe('остаток на кассе (задача 018)', () => {
   it('товар с нулём не кладётся, без запрета — кладётся', () => {
     expect(canAddToCart(nails, false)).toBe(false)
     expect(canAddToCart({ stock_qty: -2 }, false)).toBe(false)

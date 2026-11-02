@@ -525,7 +525,7 @@ async fn topup_in_service_sale_not_in_book(pool: PgPool) {
 }
 
 /// Эти проверки продают сверх остатка (минус, себестоимость без цены): прежнее поведение кассы —
-/// «Продажа в минус на кассе» включена (задача 015). Запрет по умолчанию — `tests/till_stock.rs`.
+/// «Продажа в минус на кассе» включена (задача 018). Запрет по умолчанию — `tests/till_stock.rs`.
 async fn allow_negative(pool: &PgPool) {
     sqlx::query(
         r#"insert into settings (branch_id, key, value)
