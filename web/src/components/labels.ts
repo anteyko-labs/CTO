@@ -67,20 +67,23 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
       labels.push(html)
     }
   }
+  // Текст и штрихкод растут вместе с этикеткой: шрифты подобраны под 40×30, на 58×40 — крупнее.
+  const k = Math.min(2.5, Math.max(1, Math.min(s.width_mm / 40, s.height_mm / 30)))
+  const pt = (n: number) => `${(n * k).toFixed(1)}pt`
   return `<!doctype html><html><head><meta charset="utf-8"><title>Этикетки</title><style>
     @page { size: ${s.width_mm}mm ${s.height_mm}mm; margin: 0; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; }
     .label { width: ${s.width_mm}mm; height: ${s.height_mm}mm; padding: 1.5mm; overflow: hidden;
              display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; }
-    .brand { font-size: 7pt; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
-    .name { font-size: 8pt; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
-    .spec { font-size: 8pt; font-weight: bold; line-height: 1.1; }
-    .small { font-size: 7pt; }
+    .brand { font-size: ${pt(7)}; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
+    .name { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
+    .spec { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; }
+    .small { font-size: ${pt(7)}; }
     .name.one { font-size: 7pt; white-space: nowrap; text-overflow: ellipsis; max-height: none; }
     .code { flex: 1; min-height: ${Math.min(9, Math.max(6, s.height_mm * 0.45))}mm; display: flex; align-items: center; justify-content: center; }
     .code svg { width: 100%; height: 100%; }
-    .price { font-size: 11pt; font-weight: bold; text-align: right; }
+    .price { font-size: ${pt(11)}; font-weight: bold; text-align: right; }
     .foot { display: flex; align-items: baseline; justify-content: space-between; gap: 1mm; }
     .foot .meta { font-size: 6.5pt; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .foot .price { font-size: 9pt; white-space: nowrap; }

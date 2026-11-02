@@ -617,7 +617,7 @@ async fn small_label_settings_apart(pool: PgPool) {
         .await;
     assert_eq!(
         (big["width_mm"].clone(), big["height_mm"].clone()),
-        (json!(40), json!(30))
+        (json!(58), json!(40))
     );
     let (s, _) = w
         .api

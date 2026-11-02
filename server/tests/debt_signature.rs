@@ -411,3 +411,37 @@ async fn owner_signature_for_debt_docs(pool: PgPool) {
     let docs = w.get("/api/v1/settings/debt-docs").await;
     assert_eq!(docs["has_owner_signature"], false);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn extra_documents_saved_with_debt_docs(pool: PgPool) {
+    let w = W::new(pool).await;
+    let uri = "/api/v1/settings/debt-docs";
+    // Ещё не сохраняли — `null`, экран берёт шаблоны по умолчанию.
+    assert_eq!(w.get(uri).await["extra"], Value::Null);
+    let extra = json!([{ "title": "Трудовой договор", "text": "Работодатель: {{продавец}}" }]);
+    w.ok("PUT", uri, json!({ "seller": {}, "extra": extra }))
+        .await;
+    assert_eq!(w.get(uri).await["extra"], extra);
+    // Удалили все — пустой список, а не шаблоны по умолчанию.
+    w.ok("PUT", uri, json!({ "seller": {}, "extra": [] })).await;
+    assert_eq!(w.get(uri).await["extra"], json!([]));
+    // Без названия — 422; администратор — 403.
+    let (s, _, v) = call(
+        &w.app,
+        "PUT",
+        uri,
+        Some(&w.owner),
+        Some(json!({ "seller": {}, "extra": [{ "title": " ", "text": "x" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, _, _) = call(
+        &w.app,
+        "PUT",
+        uri,
+        Some(&w.admin),
+        Some(json!({ "seller": {}, "extra": [] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
