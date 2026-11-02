@@ -237,7 +237,7 @@ export default function TopProducts() {
                   {' · '}прибыль: <span className="font-semibold tabular-nums">{formatSom(profit)}</span>
                 </>
               )}
-              <div className="text-xs text-slate-500">Продажи за вычетом возвратов, без подарков. Масло — в литрах (канистры и розлив вместе), весовой товар — в кг.</div>
+              <div className="text-xs text-slate-500">Продажи за вычетом возвратов, без подарков. Масло — в литрах (канистры и розлив вместе), весовой товар — в кг, провод и шланг — в метрах.</div>
             </div>
           </>
         )}

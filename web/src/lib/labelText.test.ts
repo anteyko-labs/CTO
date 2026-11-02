@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { labelText, previewPick, specText } from './labelText'
+import { labelPrice, labelText, previewPick, specText } from './labelText'
 
 const on = { show_name: true, show_brand: true, show_spec: true }
 
@@ -37,5 +37,15 @@ describe('образец для предпросмотра этикетки', ()
     expect(previewPick([rag, oilNoBrand, oilNoCode, oil])).toBe(oil)
     expect(previewPick([rag, oilNoCode])).toBe(oilNoCode)
     expect(previewPick([rag, oilNoBrand])).toBeNull()
+  })
+})
+
+describe('цена на этикетке (ADR-175)', () => {
+  it('кг и м — с единицей, масло и штуки — только цена', () => {
+    const nb = (x: string) => x.replace(/\u00a0/g, ' ')
+    expect(nb(labelPrice({ unit: 'g', sale_price_tyiyn: 30_000 }))).toBe('300 с за кг')
+    expect(nb(labelPrice({ unit: 'mm', sale_price_tyiyn: 12_000 }))).toBe('120 с за м')
+    expect(nb(labelPrice({ unit: 'piece', sale_price_tyiyn: 12_000 }))).toBe('120 с')
+    expect(nb(labelPrice({ unit: 'ml', sale_price_tyiyn: 200_000 }))).toBe('2 000 с')
   })
 })

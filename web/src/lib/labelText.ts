@@ -1,7 +1,7 @@
 // Что пишется на этикетке (SPEC-02, SPEC-29 §6): бренд, название и главное о товаре — у масла
 // вязкость и объём тары, у фильтра тип, у аккумулятора ёмкость и пусковой ток.
 import { productTitle } from './battery'
-import { formatLiters } from './format'
+import { formatLiters, formatSom } from './format'
 import type { LabelSettings, Product } from './types'
 
 export interface LabelText {
@@ -11,6 +11,12 @@ export interface LabelText {
 }
 
 type LabelProduct = Pick<Product, 'name' | 'brand' | 'attrs' | 'unit' | 'container_ml'> & { category_kind?: string }
+
+/** Цена на этикетке: у товара в кг и м — «300 с за кг», «120 с за м»; масло и штуки — только цена. */
+export function labelPrice(p: Pick<Product, 'unit' | 'sale_price_tyiyn'>): string {
+  const per = p.unit === 'g' ? ' за кг' : p.unit === 'mm' ? ' за м' : ''
+  return `${formatSom(p.sale_price_tyiyn)}${per}`
+}
 
 /** Характеристики строкой: «5W-30 · 4 л», «масляный», «60 А·ч · 540 А». */
 export function specText(p: LabelProduct): string {

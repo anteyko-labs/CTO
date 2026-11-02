@@ -77,10 +77,11 @@ type CostProduct = Pick<Product, 'unit' | 'container_ml' | 'stock_qty' | 'sale_p
   cost_pending?: boolean
 }
 
-/** Единица цены закупки в подписи: «за канистру 4 л», «за кг», «за шт». */
+/** Единица цены закупки в подписи: «за канистру 4 л», «за кг», «за м», «за шт». */
 export function costPer(p: Pick<Product, 'unit' | 'container_ml'>): string {
   if (p.unit === 'ml' && p.container_ml) return `за канистру ${formatLiters(p.container_ml)}`
   if (p.unit === 'g') return 'за кг'
+  if (p.unit === 'mm') return 'за м'
   if (p.unit === 'ml') return 'за л'
   return 'за шт'
 }
@@ -122,10 +123,9 @@ export function costSummary(p: CostProduct): CostSummary {
   const value = p.stock_value_tyiyn ?? 0
   const stockValue = p.stock_qty > 0 ? `${countText(p, p.stock_qty)} — ${formatSom(value)}` : null
   const last = p.last_purchase_price_tyiyn
-  // Средняя из avgPrice — за канистру, штуку или кг, как цена продажи; прошлая закупка в списке
-  // товара на вес — за грамм (сервер: тара или 1), переводим в кг.
-  const lastPerSale = last != null && p.unit === 'g' ? last * 1000 : last
-  const base = avg ? avg.tyiyn : lastPerSale
+  // Средняя из avgPrice — за канистру, штуку, кг или м, как цена продажи; прошлая закупка — сервер
+  // отдаёт за единицу цены (`catalog::price_unit`: кг, м, канистра, штука), как есть (задача 006).
+  const base = avg ? avg.tyiyn : last
   const m = base != null ? markupPermille(base, p.sale_price_tyiyn) : null
   const markup = m === null ? null : `цена продажи ${formatSom(p.sale_price_tyiyn)} — наценка ${formatPermille(m)} к ${avg ? 'средней' : 'последней закупке'}`
   let note: string | null = null

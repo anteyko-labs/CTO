@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { groupQty, groupRows, rowQty, rowViscosity, stockSheetHtml, stockTotal } from './stockSheet'
+import { groupQty, groupRows, pricePer, rowQty, rowViscosity, stockSheetHtml, stockTotal } from './stockSheet'
 import type { CategoryTotal, ProductRow } from './types'
 import { formatSomExact } from './format'
 
@@ -46,6 +46,9 @@ describe('«Склад → Остатки» (SPEC-36 §14)', () => {
     expect(rowQty({ unit: 'ml', container_ml: 4000, stock_qty: 2_500 })).toBe('2,5 л')
     expect(rowQty({ unit: 'g', container_ml: null, stock_qty: 12_350 })).toBe('12,35 кг')
     expect(rowQty({ unit: 'piece', container_ml: null, stock_qty: -2 })).toBe('-2 шт')
+    expect(rowQty({ unit: 'mm', container_ml: null, stock_qty: 1250 })).toBe('1,25\u00a0м')
+    expect(pricePer({ unit: 'mm', container_ml: null })).toBe('за м')
+    expect(pricePer({ unit: 'g', container_ml: null })).toBe('за кг')
   })
 
   it('подытог группы: одна тара — «кан. + л», разная — только литры', () => {
@@ -56,8 +59,12 @@ describe('«Склад → Остатки» (SPEC-36 §14)', () => {
       pieces: 5,
       ml: 1000,
       grams: 0,
+      mm: 0,
       container_ml: null,
     })
+    // Метры — отдельным итогом (ADR-175).
+    expect(groupQty(total({ grams: 2500, mm: 1250 }))).toBe('2,5\u00a0кг · 1,25\u00a0м')
+    expect(stockTotal([total({ mm: 1000 }), total({ mm: 250 }), total({})]).mm).toBe(1250)
   })
 
   it('строки — по группам в порядке подытогов', () => {
