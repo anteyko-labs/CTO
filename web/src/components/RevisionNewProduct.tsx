@@ -49,6 +49,8 @@ interface Form {
   umagId: string | null
   /** Не масло — в килограммах (ADR-174): на полке и цена — за кг. */
   kg?: boolean
+  /** Цена продажи масла введена за канистру (по умолчанию) или за литр (задача 007). */
+  pricePer?: 'can' | 'l'
   /** Вязкость масла; не выбрана — берётся из названия (задача 007). */
   viscosity?: string
 }
@@ -152,7 +154,10 @@ export function RevisionNewProduct({
       toast(`Категория «${c.name}» создана`)
     })
   const ml = oil && form ? parseLiters(form.liters) : null
-  const price = form?.price.trim() ? parseSom(form.price) : 0
+  const entered = form?.price.trim() ? parseSom(form.price) : 0
+  const perLiter = oil && form?.pricePer === 'l'
+  // Цена канистры: введена за литр — литр × объём тары.
+  const price = perLiter ? (ml && entered !== null ? Math.round((entered * ml) / 1000) : null) : entered
   const pour = ml && price ? canisterPourPrice(price, ml) : null
 
   // Скан незнакомого кода — сразу ищем его в старой базе Умаг: связанная строка — её товар
@@ -229,7 +234,7 @@ export function RevisionNewProduct({
         container_ml: oil ? ml : null,
         ...(kg ? { unit: 'g' } : {}),
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
-        sale_price_tyiyn: parseSom(form.price) ?? 0,
+        sale_price_tyiyn: price ?? 0,
         ...(viscosity ? { attrs: { viscosity } } : {}),
         initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
         ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
@@ -420,8 +425,32 @@ export function RevisionNewProduct({
                   </select>
                 </Field>
               )}
-              <Field label={oil ? 'Цена канистры, с' : kg ? 'Цена продажи за кг, с' : 'Цена продажи, с'} hint={pour !== null ? `на розлив: ${formatSom(pour)} за л` : undefined}>
-                <input id="revnew-price" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
+              <Field
+                label={oil ? (perLiter ? 'Цена продажи за литр, с' : 'Цена канистры, с') : kg ? 'Цена продажи за кг, с' : 'Цена продажи, с'}
+                hint={
+                  oil && price
+                    ? perLiter
+                      ? `канистра: ${formatSom(price)}`
+                      : pour !== null
+                        ? `на розлив: ${formatSom(pour)} за л`
+                        : undefined
+                    : undefined
+                }
+              >
+                <div className="flex gap-2">
+                  <input id="revnew-price" className="min-w-0 flex-1" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
+                  {oil && (
+                    <select
+                      data-testid="revnew-price-per"
+                      aria-label="Цена продажи за"
+                      value={perLiter ? 'l' : 'can'}
+                      onChange={(e) => set('pricePer', e.target.value as 'can' | 'l')}
+                    >
+                      <option value="can">за канистру</option>
+                      <option value="l">за литр</option>
+                    </select>
+                  )}
+                </div>
               </Field>
               <PurchasePriceInput
                 id="revnew-cost"
@@ -430,7 +459,7 @@ export function RevisionNewProduct({
                 shown={costShown}
                 containerMl={oil ? ml : null}
                 unitWord={oil ? 'за канистру' : kg ? 'за кг' : 'за шт'}
-                sale={parseSom(form.price)}
+                sale={price}
                 hint="По ней ревизия оценит найденное"
                 onChange={(e) => setForm((f) => (f ? { ...f, cost: e.text, costPer: e.per } : f))}
                 onShown={setCostShown}

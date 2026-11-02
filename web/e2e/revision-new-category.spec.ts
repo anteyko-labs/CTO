@@ -38,7 +38,10 @@ test('ревизия: новая категория из окна товара, 
   // Вязкость — из названия.
   await expect(dialog.getByTestId('revnew-viscosity')).toHaveValue('5W-30')
   await dialog.locator('#revnew-liters').fill('4')
-  await dialog.locator('#revnew-price').fill('3000')
+  // Цена продажи — за литр: 800 с × 4 л = канистра 3 200 с.
+  await dialog.getByTestId('revnew-price-per').selectOption('l')
+  await dialog.locator('#revnew-price').fill('800')
+  await expect(dialog.getByText(/канистра: 3\s200/)).toBeVisible()
   await dialog.locator('#revnew-cost').fill('2500')
   await dialog.locator('#revnew-count').fill('2')
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
@@ -49,6 +52,7 @@ test('ревизия: новая категория из окна товара, 
   await expect(dialog).toBeHidden()
   const found = (await (await page.request.get(`/api/v1/products?q=${encodeURIComponent(RUN)}`)).json()) as { name: string; attrs: Record<string, string> }[]
   expect(found.find((p) => p.name === name)?.attrs.viscosity).toBe('5W-30')
+  expect((found.find((p) => p.name === name) as unknown as { sale_price_tyiyn: number }).sale_price_tyiyn).toBe(320_000)
   // Черновик «весь склад» не оставляем.
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {} })
