@@ -43,7 +43,7 @@ function initialForm(
   presetCategoryId?: string,
   preset?: CardPreset,
 ): Form {
-  const oil = p?.unit === 'ml'
+  const oil = p?.unit === 'ml' || p?.unit === 'g'
   const toLiters = litersInput
   return {
     category_id: p?.category_id ?? (preset?.categoryId || presetCategoryId) ?? '',
@@ -127,9 +127,12 @@ export function ProductFormModal({
   )
   // Единица — у товара (задача 002, П4): новый товар — по виду категории, пока не выбрали другую;
   // у заведённого — его единица, меняется окном «Единица и объём канистры» (только владелец).
-  const [unitChoice, setUnitChoice] = useState<'ml' | 'piece' | null>(null)
+  // Килограммы — у любого товара (ADR-174): из строки Умага «кг» — сразу в килограммах.
+  const [unitChoice, setUnitChoice] = useState<'ml' | 'piece' | 'g' | null>(preset?.unit ?? null)
   const [unitOpen, setUnitOpen] = useState(false)
-  const isOil = product ? product.unit === 'ml' : (unitChoice ?? (category?.kind === 'oil' ? 'ml' : 'piece')) === 'ml'
+  const unitNow = product ? product.unit : (unitChoice ?? (category?.kind === 'oil' ? 'ml' : 'piece'))
+  const isOil = unitNow === 'ml'
+  const isKg = unitNow === 'g'
   const isFilter = category?.kind === 'filter'
   // Баллы товара (задача 002, П1): меняет владелец.
   const [points, setPoints] = useState<PointsDraft>(() => pointsDraft(product?.points_mode, product?.points_value))
@@ -200,7 +203,7 @@ export function ProductFormModal({
   const parsed = () => {
     const sale = parseSom(form.sale_price || '0')
     const container = isOil ? parseLiters(form.container_l) : null
-    const min = isOil ? parseLiters(form.min_stock || '0') : /^\d+$/.test(form.min_stock.trim() || '0') ? Number(form.min_stock || 0) : null
+    const min = isOil || isKg ? parseLiters(form.min_stock || '0') : /^\d+$/.test(form.min_stock.trim() || '0') ? Number(form.min_stock || 0) : null
     if (sale === null) throw new Error('Неверная цена продажи')
     if (isOil && (!container || container <= 0)) throw new Error('Укажите объём канистры в литрах')
     if (min === null) throw new Error('Неверный минимальный остаток')
@@ -600,18 +603,19 @@ export function ProductFormModal({
           </div>
         )}
         {!editing && category && (
-          <Field label="Учитывать" hint="Масло — в литрах; что продаётся только целиком — в штуках">
+          <Field label="Учитывать" hint="Масло — в литрах; что продаётся только целиком — в штуках; на вес — в килограммах">
             <select
               data-testid="product-unit"
-              value={isOil ? 'ml' : 'piece'}
-              onChange={(e) => setUnitChoice(e.target.value as 'ml' | 'piece')}
+              value={unitNow}
+              onChange={(e) => setUnitChoice(e.target.value as 'ml' | 'piece' | 'g')}
             >
               <option value="ml">в литрах (канистра и розлив)</option>
               <option value="piece">в штуках</option>
+              <option value="g">в килограммах (цена за кг)</option>
             </select>
           </Field>
         )}
-        {editing && product && product.unit !== 'g' && (
+        {editing && product && (
           <Field
             label="Учитывается"
             hint={owner ? 'Единицу и объём канистры меняет владелец: остаток пересчитается' : 'Единицу меняет владелец'}
@@ -661,7 +665,7 @@ export function ProductFormModal({
           </Field>
         ))}
         <Field
-          label={isOil ? 'Цена канистры, с' : product?.unit === 'g' ? 'Цена продажи за кг, с' : 'Цена продажи, с'}
+          label={isOil ? 'Цена канистры, с' : isKg ? 'Цена продажи за кг, с' : 'Цена продажи, с'}
           required
           hint={
             branchPrices ? (
@@ -698,19 +702,19 @@ export function ProductFormModal({
             entry={cost}
             shown={costPer}
             containerMl={costTare}
-            unitWord={isOil ? 'за канистру' : 'за шт'}
+            unitWord={isOil ? 'за канистру' : isKg ? 'за кг' : 'за шт'}
             sale={shownSale}
             hint="Необязательно: по ней продажа без остатка возьмёт себестоимость; с первым приходом — средняя"
             onChange={setCost}
             onShown={setCostShown}
           />
         )}
-        <Field label={isOil ? 'Минимальный остаток, л' : 'Минимальный остаток, шт'}>
+        <Field label={isOil ? 'Минимальный остаток, л' : isKg ? 'Минимальный остаток, кг' : 'Минимальный остаток, шт'}>
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
         <PointsRuleField
           inheritLabel="как в категории"
-          unit={product?.unit ?? (isOil ? 'ml' : 'piece')}
+          unit={unitNow}
           draft={points}
           onChange={setPoints}
           disabled={!owner}

@@ -16,7 +16,12 @@ export interface CardPreset {
   /** Цена продажи и закупка в сомах строкой — за штуку или канистру. */
   price: string
   cost: string
+  /** Строка Умага «кг»/«килограмм» — товар в килограммах, цена и закупка за кг (ADR-174). */
+  unit?: 'g'
 }
+
+/** Единица «килограмм» в старой программе: «кг», «килограмм». */
+export const isKgUnit = (unit: string): boolean => /^(кг|килограмм[а-я]*)\.?$/.test(unit.trim().toLowerCase())
 
 /** Единица «литр» в старой программе: «л», «литр», «Литр». */
 export const isLiterUnit = (unit: string): boolean => /литр|^л\.?$|л$/i.test(unit.trim())
@@ -55,5 +60,6 @@ export function presetFromHit(h: OldCatalogHit, categories: Category[], sticky =
     liters: ml ? litersInput(ml) : '',
     price: h.price_tyiyn && !unknownTare ? somInput(per(h.price_tyiyn)) : '',
     cost: h.cost_tyiyn && !unknownTare ? somInput(per(h.cost_tyiyn)) : '',
+    ...(isKgUnit(h.unit) ? { unit: 'g' as const } : {}),
   }
 }
