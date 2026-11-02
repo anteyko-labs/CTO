@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { get, qs } from '../lib/api'
-import { ACT_PERIODS, actDocLink, actLines, actPeriod, actVerdict, printReconciliation, type ActPeriod, type DebtDocSettings, type Reconciliation, type Seller } from '../lib/debtDocs'
+import { ACT_PERIODS, actDocLink, actLines, actPeriod, actVerdict, pngDataUrl, printReconciliation, type ActPeriod, type DebtDocSettings, type Reconciliation, type Seller } from '../lib/debtDocs'
 import { formatSom, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
@@ -35,6 +35,7 @@ export function ReconciliationModal({
         // Пока настройка не пришла — период не выбран (без настройки — всё время, как раньше).
         defaultPeriod={settings.loading && !settings.data ? null : (settings.data?.act_period ?? 'all')}
         seller={settings.data?.seller}
+        ownerSigned={Boolean(settings.data?.has_owner_signature)}
         error={settings.error}
         links
         onClose={onClose}
@@ -54,6 +55,7 @@ export function ReconciliationView({
   source,
   defaultPeriod,
   seller,
+  ownerSigned = false,
   error,
   links = false,
   onClose,
@@ -62,6 +64,8 @@ export function ReconciliationView({
   source: string
   defaultPeriod: ActPeriod | null
   seller: Seller | undefined
+  /** Подпись руководителя задана — встаёт в печатный акт (задача 008); кабинет клиента — без неё. */
+  ownerSigned?: boolean
   error?: string | null
   links?: boolean
   onClose?: () => void
@@ -150,7 +154,7 @@ export function ReconciliationView({
         <Button variant="secondary" disabled={!a} data-testid="act-download" onClick={() => a && download(a)}>
           Скачать
         </Button>
-        <Button disabled={!a || !seller} onClick={() => a && seller && printReconciliation(a, seller)}>
+        <Button disabled={!a || !seller} onClick={() => a && seller && void (ownerSigned ? pngDataUrl('/settings/debt-docs/signature') : Promise.resolve(null)).then((sig) => printReconciliation(a, seller, sig))}>
           Печать
         </Button>
       </div>

@@ -85,3 +85,22 @@ describe('карточка из старой программы', () => {
     expect(presetFromHit(hit({}), cats).unit).toBeUndefined()
   })
 })
+
+describe('масло из Умага — в свою категорию масел (задача 007)', () => {
+  const withSlot = (id: string, name: string, kind: Category['kind'], book_slot: string) => ({ ...cat(id, name, kind), book_slot }) as unknown as Category
+  const list = [
+    withSlot('af', 'АНТИФРИЗЫ', 'oil', 'antifreeze'),
+    withSlot('gear', 'ТРАНСМИСИОННЫЕ МАСЛА', 'oil', 'gear_oil'),
+    withSlot('motor', 'МОТОРНЫЕ МАСЛА', 'oil', 'oil'),
+    withSlot('chem', 'АВТОХИМИЯ', 'other', 'none'),
+  ]
+  it('без категории в Умаге — моторные, а не первая по алфавиту', () => {
+    expect(presetFromHit(hit({ name: 'LIQUI MOLY 5W40 4L', unit: 'литр', category: 'Незаданные' }), list).categoryId).toBe('motor')
+  })
+  it('категория Умага — масла: она', () => {
+    expect(presetFromHit(hit({ name: 'AZMOL ATF 4L', unit: 'литр', category: 'ТРАНСМИСИОННЫЕ МАСЛА' }), list).categoryId).toBe('gear')
+  })
+  it('категория Умага — не масла (литры автохимии): моторные', () => {
+    expect(presetFromHit(hit({ name: 'Очиститель 5Л', unit: 'литр', category: 'АВТОХИМИЯ' }), list).categoryId).toBe('motor')
+  })
+})

@@ -1602,6 +1602,7 @@ async fn post_new(
     kind: Kind,
     doc: &Value,
     original: &Doc,
+    original_id: Uuid,
 ) -> AppResult<(Uuid, Option<i64>)> {
     Ok(match kind {
         Kind::Sale => {
@@ -1630,6 +1631,7 @@ async fn post_new(
             req.client_time = None;
             req.correction = Some(crate::api::sales::SaleCorrection {
                 business_date: date,
+                signature_from: Some(original_id),
                 replay: None,
             });
             let out = crate::api::sales::post_sale_tx(conn, ctx, req).await?;
@@ -1817,7 +1819,8 @@ pub async fn correct_tx(
     )
     .await?;
     let deferred = crate::api::supplier_debts::end_deferral(&mut *conn).await?;
-    let (new_doc_id, new_number) = post_new(&mut *conn, ctx, kind, &req.doc, &before).await?;
+    let (new_doc_id, new_number) =
+        post_new(&mut *conn, ctx, kind, &req.doc, &before, req.original_id).await?;
     crate::api::supplier_debts::allocate_deferred(&mut *conn, &deferred).await?;
     if kind == Kind::Receipt {
         let mut lines = Vec::new();

@@ -251,6 +251,8 @@ export interface LabelSettings {
   show_brand?: boolean
   /** Характеристики: вязкость и объём масла, тип фильтра, ёмкость и ток аккумулятора. */
   show_spec?: boolean
+  /** Кнопка по умолчанию на телефоне: «На складе» или «Здесь» (задача 006 Н5). */
+  remote_default?: 'here' | 'station'
 }
 
 export interface ReceiptLine {
@@ -525,6 +527,8 @@ export interface Sale {
   returns: { id: string; number: number; total_tyiyn: number }[]
   /** Масляная книжка чека «В сервис» для печати (SPEC-34 §4). */
   book?: SaleBook | null
+  /** Клиент расписался за долг на экране покупателя (задача 008). */
+  has_debt_signature?: boolean
 }
 
 /** Масляная книжка в печатном чеке: машина, пробег сейчас и следующие замены (SPEC-34 §4). */

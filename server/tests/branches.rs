@@ -42,7 +42,7 @@ impl Api {
         let req = match body {
             Some(b) => req
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(b.to_string())),
+                .body(Body::from(with_debt_signature(uri, b).to_string())),
             None => req.body(Body::empty()),
         }
         .unwrap();
@@ -1540,4 +1540,19 @@ async fn owner_moves_admin_to_another_branch_with_permissions(pool: PgPool) {
         )
         .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// Чек с долгом онлайн требует подписи клиента (задача 008): тесты, где она не проверяется,
+/// расписываются за клиента.
+fn with_debt_signature(uri: &str, mut b: Value) -> Value {
+    if uri.ends_with("/sales")
+        && let Some(o) = b.as_object_mut()
+        && !o.contains_key("debt_signature_png")
+    {
+        o.insert(
+            "debt_signature_png".into(),
+            Value::from("iVBORw0KGgpzaWctb25lIQ=="),
+        );
+    }
+    b
 }

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update label_jobs set status = 'printing', taken_at = now(), station_id = $2\n           where id = (select id from label_jobs\n                       where branch_id = $1 and status = 'queued'\n                       order by created_at limit 1\n                       for update skip locked)\n           returning id, items, copies, created_by",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "items",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "copies",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_by",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dca08f34b8ffa85acd0958f384ba64e1f32aaa3d58a9a0fb8c427cf6e847032e"
+}

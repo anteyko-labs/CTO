@@ -59,6 +59,13 @@ pub struct RevisionLine {
     /// Стоимость расхождения — только владельцу (инвариант 13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value_delta_tyiyn: Option<i64>,
+    /// Насчитанное по закупке и по цене продажи — только владельцу, в черновике (задача 007):
+    /// «скок получает с позиции». Закупка — средняя себестоимость остатка, без остатка — последняя
+    /// закупка; не знаем — нет.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_value_tyiyn: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale_value_tyiyn: Option<i64>,
     /// Масло: расхождение больше нормы (вопрос 32, ADR-052).
     #[serde(default)]
     pub over_norm: bool,
@@ -119,7 +126,12 @@ async fn count_log(
         let log = &mut line.entries;
         match log.last_mut() {
             Some(last)
-                if r.mode == "add" && last.mode == "add" && last.user_id == Some(r.user_id) =>
+                // Исправление «= моё» вниз — отдельной записью: экран по ней видит, что своё убрано.
+                if r.mode == "add"
+                    && last.mode == "add"
+                    && last.user_id == Some(r.user_id)
+                    && r.qty >= 0
+                    && last.qty >= 0 =>
             {
                 last.qty = last.qty.saturating_add(r.qty);
             }
@@ -247,6 +259,8 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             over_norm: over_norm(&r.unit, r.expected_qty, Some(r.counted_qty), norm),
             counted_qty: Some(r.counted_qty),
             value_delta_tyiyn: owner.then_some(r.value_delta_tyiyn),
+            cost_value_tyiyn: None,
+            sale_value_tyiyn: None,
             unit: r.unit,
             viscosity: r.viscosity,
             counted_by: r.counted_by,
@@ -262,7 +276,9 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
                       coalesce((select array_agg(b.code order by b.code) from product_barcodes b
                                 where b.product_id = p.id), '{}') as "barcodes!",
                       coalesce(l.stock_at_count, bp.stock_qty, 0) as "expected!", l.counted_qty as "counted?",
-                      u.full_name as "counted_by?"
+                      u.full_name as "counted_by?", coalesce(bp.sale_price_tyiyn, p.sale_price_tyiyn) as "sale_price_tyiyn!",
+                      coalesce(bp.stock_qty, 0) as "stock_qty!", coalesce(bp.stock_value_tyiyn, 0) as "stock_value!",
+                      coalesce(bp.last_cost_tyiyn, 0) as "last_cost!", coalesce(bp.last_cost_qty, 0) as "last_cost_qty!"
                from products p
                left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
                left join revision_lines l on l.product_id = p.id and l.revision_id = $1
@@ -281,6 +297,15 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
         .into_iter()
         .map(|r| {
             let lg = log.remove(&r.id).unwrap_or_default();
+            let sale_value = r.counted.filter(|_| owner).and_then(|q| {
+                // Цена — за штуку, за канистру (масло) или за кг (граммы).
+                let per = match r.unit.as_str() {
+                    "ml" => r.container_ml.filter(|c| *c > 0)?,
+                    "g" | "mm" => 1000,
+                    _ => 1,
+                };
+                div_round(i128::from(q) * i128::from(r.sale_price_tyiyn), i128::from(per))
+            });
             RevisionLine {
             product_id: r.id,
             name: r.name,
@@ -292,6 +317,15 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             expected_qty: r.expected,
             counted_qty: r.counted,
             value_delta_tyiyn: None,
+            cost_value_tyiyn: r.counted.filter(|_| owner).and_then(|q| {
+                let (num, den) = if r.stock_qty > 0 && r.stock_value > 0 {
+                    (r.stock_value, r.stock_qty)
+                } else {
+                    (r.last_cost, r.last_cost_qty)
+                };
+                (den > 0).then(|| div_round(i128::from(q) * i128::from(num), i128::from(den))).flatten()
+            }),
+            sale_value_tyiyn: sale_value,
             viscosity: r.viscosity,
             counted_by: r.counted_by,
             counted_log: lg.entries,
@@ -608,6 +642,10 @@ enum CountMode {
     #[default]
     Set,
     Add,
+    /// «= моё» (задача 007): своё число строки — N. Каждый видит только свой пересчёт, итог
+    /// строки — сумма всех; сервер прибавляет разницу с тем, что этот вход уже добавил после
+    /// последнего «= итог» или «убрал» (может быть меньше нуля — «пробил лишнее»).
+    Mine,
 }
 
 /// Сколько уже пересчитано по товару в черновике: экран «Работа с товарами» показывает это
@@ -635,6 +673,49 @@ async fn get_line(
     let version = line_version(&mut conn, id, product_id).await?;
     conn.commit().await?;
     Ok(Json(json!({ "counted_qty": counted, "version": version })))
+}
+
+/// Сколько этот вход добавил в строку после последнего «= итог» или «убрал» (задача 007):
+/// своё число строки, когда каждый видит только свой пересчёт.
+async fn my_count(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce(sum(qty), 0)::bigint as "n!" from revision_line_adds
+           where revision_id = $1 and product_id = $2 and user_id = $3 and mode = 'add'
+             and seq > coalesce((select max(seq) from revision_line_adds
+                                 where revision_id = $1 and product_id = $2 and mode <> 'add'), 0)"#,
+        id,
+        product_id,
+        ctx.user.id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Строку после последнего «= итог»/«убрал» считали другие входы или кто-то записал «= итог».
+async fn others_counted(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists(select 1 from revision_line_adds
+                         where revision_id = $1 and product_id = $2
+                           and (user_id <> $3 or mode = 'set')
+                           and seq >= coalesce((select max(seq) from revision_line_adds
+                                                where revision_id = $1 and product_id = $2 and mode <> 'add'), 0)
+                           and mode <> 'clear') as "v!""#,
+        id,
+        product_id,
+        ctx.user.id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 /// Посчитано по строке сейчас; строки нет — `None` (не путать с посчитанным 0).
@@ -700,7 +781,13 @@ async fn put_line(
     // Товар уже посчитан в другом открытом черновике: вторая строка вычла бы остаток дважды.
     // Тот черновик проводят — замок выше ждёт конца проведения, остаток ниже — уже после него.
     counted_elsewhere(&mut tx, ctx.user.branch_id, id, &[req.product_id]).await?;
-    let add = req.mode == CountMode::Add;
+    // «= моё» — прибавка разницы со своим числом строки; дальше — как «+ добавить».
+    let qty = if req.mode == CountMode::Mine {
+        req.counted_qty - my_count(&mut tx, &ctx, id, req.product_id).await?
+    } else {
+        req.counted_qty
+    };
+    let add = req.mode != CountMode::Set;
     // Записи строк одной ревизии идут по очереди (замок черновика выше): посчитанное сейчас —
     // точное, проверка итога на экране не гоняется с чужой прибавкой.
     if !add {
@@ -732,7 +819,29 @@ async fn put_line(
     // пересчёта, такая продажа вычлась бы дважды (её нет на полке и нет в остатке) — ложная
     // недостача. Продажа с ещё не посчитанной полки, наоборот, даст недостачу на проданное;
     // поэтому одну позицию лучше пересчитывать подряд (SPEC-15, ADR-059).
-    let counted = sqlx::query_scalar!(
+    // «= моё» вниз: строка уже есть (своё число больше нуля), вставка с минусом не прошла бы
+    // проверку строки ещё до «on conflict» — только обновление; итог ниже нуля — отказ.
+    let lowered = if qty < 0 {
+        Some(
+            sqlx::query_scalar!(
+                r#"update revision_lines set counted_qty = counted_qty + $3, user_id = $4, updated_at = now()
+                   where revision_id = $1 and product_id = $2 and counted_qty + $3 >= 0
+                   returning counted_qty"#,
+                id,
+                req.product_id,
+                qty,
+                ctx.user.id
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| invalid("итог строки меньше нуля: строку изменили — обновите страницу"))?,
+        )
+    } else {
+        None
+    };
+    let counted = match lowered {
+        Some(c) => c,
+        None => sqlx::query_scalar!(
         r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
            values ($1, $2, $3, $4, $5)
            on conflict (revision_id, product_id)
@@ -744,26 +853,49 @@ async fn put_line(
            returning counted_qty"#,
         id,
         req.product_id,
-        req.counted_qty,
+        qty,
         ctx.user.id,
         stock_now,
         add
     )
     .fetch_one(&mut *tx)
-    .await?;
+    .await?,
+    };
     if counted > 1_000_000_000 {
         return Err(invalid("пересчитано слишком много"));
+    }
+    // «= моё 0» (крестик у своей строки, задача 007): строку больше никто не считал — убираем её
+    // совсем, а не «посчитано 0», иначе проведение списало бы весь остаток как недостачу.
+    let removed = req.mode == CountMode::Mine
+        && req.counted_qty == 0
+        && counted == 0
+        && !others_counted(&mut tx, &ctx, id, req.product_id).await?;
+    if removed {
+        sqlx::query!(
+            "delete from revision_lines where revision_id = $1 and product_id = $2",
+            id,
+            req.product_id
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     let version = log_count(
         &mut tx,
         &ctx,
         id,
         req.product_id,
-        if add { "add" } else { "set" },
-        req.counted_qty,
+        if removed {
+            "clear"
+        } else if add {
+            "add"
+        } else {
+            "set"
+        },
+        if removed { 0 } else { qty },
         req.op_id,
     )
     .await?;
+    let counted: Option<i64> = (!removed).then_some(counted);
     let out = json!({ "ok": true, "counted_qty": counted, "version": version });
     if let Some(op_id) = req.op_id {
         ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into sale_signatures (sale_id, signature_png)\n               select $1, signature_png from sale_signatures where sale_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "272f37a7ec82bf31aac8f86b2ec004388b81a2c691b9b3d3181b60f4ed67d498"
+}

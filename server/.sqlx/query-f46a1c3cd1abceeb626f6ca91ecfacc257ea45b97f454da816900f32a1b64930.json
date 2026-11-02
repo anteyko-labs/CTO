@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into sale_signatures (sale_id, signature_png) values ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f46a1c3cd1abceeb626f6ca91ecfacc257ea45b97f454da816900f32a1b64930"
+}

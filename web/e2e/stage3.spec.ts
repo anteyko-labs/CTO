@@ -1,6 +1,7 @@
 // Этап 3 в браузере: услуги и мастер, продажа в долг с распиской, оплата долга, подарки,
 // перелив масла, акт сверки и запрет продажи ниже закупки (SPEC-10, SPEC-11, SPEC-14, ADR-043).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { drawSignature, SIGNATURE_PNG, signDebtAtTill } from './sign'
 import { ownerSafe } from './safe'
 import { pickCashier, pickMaster } from './cashier'
 
@@ -156,6 +157,7 @@ async function debtSale(request: APIRequestContext, cashierId: string, partyId: 
     comment: '',
     lines: [{ kind: 'piece', gift: false, product_id: productId, service_id: null, qty: 1, unit_price_tyiyn: price }],
     payments: [{ method: 'debt', amount_tyiyn: price }],
+    debt_signature_png: SIGNATURE_PNG,
   })
 }
 
@@ -250,11 +252,15 @@ test('продажа в долг: ПИН из кассы и печать рас�
   await expect(page.getByText(`ПИН ${pin}`)).toBeVisible()
   await expect(page.getByText('ПИН / ИНН клиента для документа о долге')).toHaveCount(0)
   await submit.click()
+  // Без подписи клиента долг не проводится (задача 008): экрана покупателя нет — окно кассы.
+  await signDebtAtTill(page)
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 
   await expect.poll(async () => (await prints(page)).length, { message: 'расписка ушла на печать' }).toBeGreaterThan(0)
   const html = (await prints(page)).join('\n')
   expect(html).toContain('РАСПИСКА')
+  // Подпись клиента — в обоих экземплярах.
+  expect(html.match(/<img src="data:image\/png;base64,/g)?.length).toBe(2)
   expect(html).toContain(client)
   expect(html).toContain(pin)
   expect(html).toContain(seller)
@@ -294,6 +300,7 @@ test('повторный долг: в расписке прежний долг �
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
   await payButton(page, 'В долг').click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
+  await signDebtAtTill(page)
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 
   await expect.poll(async () => (await prints(page)).length, { message: 'расписка ушла на печать' }).toBeGreaterThan(0)
@@ -303,6 +310,62 @@ test('повторный долг: в расписке прежний долг �
   expect(html).toMatch(/400,00/)
   expect(html).toMatch(/900,00/)
   expect(html).toContain('Девятьсот сом 00 тыйын')
+})
+
+test('долг с экрана покупателя: подпись пером на втором мониторе, без подписи — не проводится', async ({ page }) => {
+  await login(page)
+  const cashier = `Кассир экрана ${RUN}`
+  await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
+  const code = `27${RUN}303`
+  const product = `Фильтр экран ${RUN}`
+  await pieceProduct(page.request, product, code, 70_000, 30_000)
+  const client = `Экранов Тест ${RUN}`
+  await apiPost<Party>(page.request, '/parties', { role: 'customer', kind: 'person', name: client, phone: '+996555000333', inn: `2${RUN}77777` })
+  const ownerSign = await page.request.put('/api/v1/settings/debt-docs/signature', { data: { signature_png: SIGNATURE_PNG }, headers: DEVICE })
+  expect(ownerSign.ok(), await ownerSign.text()).toBeTruthy()
+
+  // Экран покупателя — второе окно того же браузера.
+  const screen = await page.context().newPage()
+  await screen.goto('/customer-screen')
+  await expect(screen.getByTestId('customer-idle')).toBeVisible()
+
+  await page.goto('/')
+  await scan(page, code)
+  await expect(page.getByText(product)).toBeVisible()
+  await pickCashier(page, cashier)
+  await page.locator('[data-client-input]').fill(client)
+  await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
+  // Экран покупателя дублирует чек кассы.
+  await expect(screen.getByTestId('customer-cart')).toContainText(product)
+  await expect(screen.getByTestId('customer-cart-total')).toContainText(money('700 с'))
+  await payButton(page, 'В долг').click()
+  await page.getByRole('button', { name: 'Провести чек' }).click()
+
+  // Касса ждёт подпись, на экране покупателя — сумма долга и поле подписи.
+  await expect(page.getByTestId('debt-sign-wait')).toContainText('Ждём подпись клиента на экране покупателя')
+  const sign = screen.getByTestId('customer-sign')
+  await expect(sign).toContainText(money('Подпишите: в долг 700 с'))
+  await expect(sign).toContainText(client)
+  // Отмена — чек не проведён, на экране снова чек кассы.
+  await page.getByTestId('debt-sign-wait').getByRole('button', { name: 'Отмена' }).click()
+  await expect(screen.getByTestId('customer-cart')).toBeVisible()
+  await expect(page.getByText(/Чек № \d+ проведён/)).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Провести чек' }).click()
+  await expect(sign).toBeVisible()
+  await expect(sign.getByRole('button', { name: 'Подписать' })).toBeDisabled()
+  await drawSignature(screen, sign)
+  await sign.getByRole('button', { name: 'Подписать' }).click()
+  await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+  await expect(screen.getByTestId('customer-idle')).toBeVisible()
+
+  await expect.poll(async () => (await prints(page)).length, { message: 'расписка ушла на печать' }).toBeGreaterThan(0)
+  const html = (await prints(page)).join('\n')
+  // Подпись клиента и руководителя — в каждом из двух экземпляров.
+  expect(html.match(/РАСПИСКА/g)?.length).toBe(2)
+  expect(html.match(/<img src="data:image\/png;base64,/g)?.length).toBe(4)
+  await screen.close()
+  await page.request.delete('/api/v1/settings/debt-docs/signature', { headers: DEVICE })
 })
 
 test('оплата долга из кассы попадает в смену', async ({ page }) => {

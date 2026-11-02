@@ -8,6 +8,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import { ownerSafe } from './safe'
 import { choosePerson, pickMaster, shiftOnTill } from './cashier'
 
+/** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
+const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
+
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e356' }
@@ -325,19 +328,21 @@ for (const mode of [
       // названием услуги со своим сроком.
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка'))).toBe(true)
       const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка')) ?? '')
-      const done = [
-        `${s.service} ${s.oilName} · 1 кан. × 4 л Следующая замена — на 225 000 км`,
-        `${s.shaft} Следующая замена — на 237 000 км`,
-        `${s.gur} Следующая замена — на 300 000 км`,
-      ]
-      for (const t of done) expect(book).toContain(t)
+      expect(book).toMatch(inOrder(`${s.service}: ${s.oilName} · 1 кан. × 4 л`, 'Следующая замена', `${s.service} — на 225 000 км`))
+      for (const t of [`${s.shaft} — на 237 000 км`, `${s.gur} — на 300 000 км`]) expect(book).toContain(t)
       for (const no of ['Масло двигателя', 'Антифриз']) expect(book).not.toContain(no)
 
       // Печатный чек: блок «Масляная книжка» — то же.
       await hit(page.getByRole('button', { name: 'Печать чека' }))
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Товарный чек'))).toBe(true)
       const receipt = plain((await prints(page)).filter((h) => h.includes('Товарный чек')).at(-1) ?? '')
-      for (const t of done) expect(receipt).toContain(t)
+      // Товарный чек — прежний блок книжки (задача 009 меняет только чек книжки).
+      for (const t of [
+        `${s.service} ${s.oilName} · 1 кан. × 4 л Следующая замена — на 225 000 км`,
+        `${s.shaft} Следующая замена — на 237 000 км`,
+        `${s.gur} Следующая замена — на 300 000 км`,
+      ])
+        expect(receipt).toContain(t)
       expect(receipt).not.toContain('Масло двигателя')
 
       // Книжка машины: строка у каждой услуги «прочее» со своей целью; ни ATF, ни антифриза.

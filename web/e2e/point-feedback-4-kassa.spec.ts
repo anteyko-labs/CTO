@@ -2,6 +2,7 @@
 // по всему тексту, «Остатки» ведут на «Товары», окно оплаты долга открывается на клиенте чека,
 // баллы у клиентов всего.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { SIGNATURE_PNG } from './sign'
 import { ownerSafe } from './safe'
 import { ensureShift } from './cashier'
 
@@ -148,6 +149,7 @@ test('оплата долга на кассе открывается на кли
     comment: '',
     lines: [{ kind: 'piece', gift: false, product_id: p.id, service_id: null, qty: 1, unit_price_tyiyn: 425_000 }],
     payments: [{ method: 'debt', amount_tyiyn: 425_000 }],
+    debt_signature_png: SIGNATURE_PNG,
   })
 
   // Наличные принимаются в открытую смену.

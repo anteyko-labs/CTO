@@ -10,7 +10,6 @@ import { formatDate } from './format'
 import { OIL_BOOK_DEFAULTS, type OilBookSettings } from './oilBookSettings'
 import {
   bookGroups,
-  bookGroupsHtml,
   isFluid,
   lineGroup,
   lineTitle,
@@ -22,6 +21,7 @@ import {
   slotsOfSale,
   slotsWithNext,
   slotTitle,
+  type BookItem,
   type BookLine,
   type OilRecord,
   type SlotNext,
@@ -96,22 +96,71 @@ function printedLine(r: OilRecord, s: BookPrint): (l: BookLine) => boolean {
   return (l) => isFluid(l.slot) || (filters && isFilter(l.slot)) || (l.slot === 'other' && Boolean(l.service_id ?? l.service))
 }
 
-/** Чек книжки после чека (ADR-116, задача 003 Н5): машина, дата, пробег и что поменяли по видам
- *  замены — товаром («Mobil 1 5W-30 · 4 л», «W712 (масляный) · 1 шт») — со следующей заменой по
- *  пробегу. */
+/** Наклейка Xprinter XP-Q80A 58×40 мм (задача 009): драйвер POS80 в режиме «Label Paper» — одна
+ *  страница на наклейку. Разметка подобрана пробной печатью на кассе 02.11.2026. */
+const LABEL_STYLE = `<style>
+    @page { size: 58mm 40mm; margin: 0; }
+    body { font-family: Arial, sans-serif; margin: 0; }
+    .lbl { width: 58mm; height: 40mm; box-sizing: border-box; padding: 2.5mm 3mm; overflow: hidden; page-break-after: always; break-after: page; }
+    .lbl:last-child { page-break-after: auto; break-after: auto; }
+    .lbl.nx { padding-top: 1.5mm; }
+    .hd { display: flex; justify-content: space-between; align-items: baseline; font-size: 7.5pt; }
+    .hd b { font-size: 9pt; }
+    .plate { font-size: 13pt; font-weight: bold; text-align: center; border: 1.4px solid #000; padding: 0.6mm; margin: 1.5mm 0 0.5mm; line-height: 1.1; }
+    .car { font-size: 8pt; text-align: center; margin-bottom: 3.5mm; }
+    .row { display: flex; justify-content: space-between; font-size: 9pt; line-height: 1.35; }
+    .ttl { font-size: 9pt; font-weight: bold; margin-bottom: 1mm; }
+    .ln { font-size: 7.5pt; line-height: 1.25; margin-bottom: 0.5mm; }
+    .two { display: flex; gap: 1.5mm; }
+    .two .txt { flex: 1; min-width: 0; }
+    .qr svg { width: 24mm; height: 24mm; display: block; shape-rendering: crispEdges; }
+    .qrt { font-size: 5.5pt; text-align: center; width: 24mm; line-height: 1.1; margin-top: 0.5mm; }
+  </style>`
+
+/** Наклейки книжки: что залито и что менять дальше по видам замены. Пустой вид — без строки. */
+export function labelLines(items: readonly BookItem[]) {
+  const groups = bookGroups(items)
+  const filled = groups.flatMap((g) => {
+    const titles = g.items.map((i) => i.title).filter((t) => t !== g.head)
+    return [g.head ? `${g.head}${titles.length ? ': ' + titles.join(', ') : ''}` : titles.join(', ')].filter(Boolean)
+  })
+  const next = groups.flatMap((g) =>
+    g.next ? [`${g.head || g.items[0]?.title || ''} — ${g.next}`] : g.items.filter((i) => i.next).map((i) => `${i.title} — ${i.next}`),
+  )
+  return { filled, next }
+}
+
+/** Чек книжки после чека (ADR-116, задача 003 Н5, задача 009): три наклейки 58×40 мм — на первой
+ *  машина, дата и пробег, на второй что залито, на третьей следующая замена по видам и QR. */
 async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link: string | null, s: BookPrint): Promise<string> {
   const printed = printedLine(r, s)
   const all = recordLines(r)
   const next = new Map(slotsOfSale(b, saleId).map((n) => [slotKey(n), slotNextText(n)]))
   const items = all.filter(printed).map((l) => ({ title: lineTitle(l), group: lineGroup(l, all), next: next.get(slotKey(l)) ?? '' }))
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title>${STYLE}</head><body>
-    <h1>Avtodom</h1>
-    <h2>Масляная книжка</h2>
-    ${plateHtml(b)}
-    ${row('Дата', formatDate(r.change_date))}
-    ${recordMileage(r) !== null ? row('Пробег', recordMileage(r) ?? '') : ''}
-    ${bookGroupsHtml(bookGroups(items))}
-    ${await qrHtml(link)}
+  const { filled, next: nexts } = labelLines(items)
+  const mileage = recordMileage(r)
+  const car = [b.brand, b.model].filter(Boolean).join(' ')
+  // QR — крупно и с простым кодом: мелкий на термонаклейке телефон не читал (проба 02.11.2026).
+  const qr = link ? await QRCode.toString(link, { type: 'svg', margin: 0, errorCorrectionLevel: 'L' }) : ''
+  const lines = (list: readonly string[]) => list.map((t) => `<div class="ln">${esc(t)}</div>`).join('')
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title>${LABEL_STYLE}</head><body>
+    <div class="lbl">
+      <div class="hd"><b>Avtodom</b><span>Масляная книжка</span></div>
+      <div class="plate">${esc(b.plate)}</div>
+      <div class="car">${esc(car)}</div>
+      ${row('Дата', formatDate(r.change_date))}
+      ${mileage !== null ? row('Пробег', mileage ?? '') : ''}
+    </div>
+    <div class="lbl">
+      <div class="ttl">Залито и заменено · ${esc(b.plate)}</div>
+      ${lines(filled)}
+    </div>
+    <div class="lbl nx">
+      <div class="two">
+        <div class="txt"><div class="ttl">Следующая замена</div>${nexts.length ? lines(nexts) : '<div class="ln">—</div>'}</div>
+        ${qr ? `<div><div class="qr">${qr}</div><div class="qrt">История и напоминание в Телеграм</div></div>` : ''}
+      </div>
+    </div>
   </body></html>`
 }
 

@@ -6,6 +6,7 @@ import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { can } from '../lib/permissions'
 import { POLARITY_LABELS } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
+import { viscosityFromName } from '../lib/units'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { addCodes, pickCross, type CrossPickResult } from '../lib/crossPick'
@@ -212,6 +213,13 @@ export function ProductFormModal({
     return { sale, container, min, rule }
   }
 
+  // Вязкость масла, не выбранная руками, — из названия (задача 007): «5W30» → «5W-30».
+  const nameVisc =
+    category?.kind === 'oil' && category.attributes.some((a) => a.key === 'viscosity' && a.enabled !== false) && form.attrs.viscosity === undefined
+      ? viscosityFromName(form.name)
+      : null
+  const attrsOut = nameVisc ? { ...form.attrs, viscosity: nameVisc } : form.attrs
+
   /** Новая категория создаётся здесь же и сразу выбирается в товаре. */
   const createCategory = () =>
     categoryAction.run(async () => {
@@ -250,7 +258,7 @@ export function ProductFormModal({
             brand: form.brand,
             article: form.article,
             container_ml: v.container,
-            attrs: form.attrs,
+            attrs: attrsOut,
             barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
             sale_price_tyiyn: v.sale,
             min_stock: v.min,
@@ -272,7 +280,7 @@ export function ProductFormModal({
           name: form.name,
           brand: form.brand,
           article: form.article,
-          attrs: form.attrs,
+          attrs: attrsOut,
           ...(owner && pointsChanged(points, product.points_mode, product.points_value) ? { points: v.rule } : {}),
         })
         const prices: Record<string, number | boolean> = {}
@@ -647,9 +655,9 @@ export function ProductFormModal({
         {category?.attributes.filter((a) => a.enabled !== false && !(isFilter && a.key === 'cross')).map((a) => (
           <Field key={a.key} label={a.label}>
             {a.type === 'select' ? (
-              <select value={form.attrs[a.key] ?? ''} onChange={(e) => set('attrs', { ...form.attrs, [a.key]: e.target.value })}>
+              <select value={attrsOut[a.key] ?? ''} onChange={(e) => set('attrs', { ...form.attrs, [a.key]: e.target.value })}>
                 <option value="">—</option>
-                {a.options?.map((o) => (
+                {[...new Set([...(a.options ?? []), ...(a.key === 'viscosity' && nameVisc ? [nameVisc] : [])])].map((o) => (
                   <option key={o} value={o}>
                     {a.key === 'polarity' ? (POLARITY_LABELS[o] ?? o) : o}
                   </option>

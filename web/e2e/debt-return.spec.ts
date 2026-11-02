@@ -1,6 +1,7 @@
 // Возврат долгового чека (SPEC-36 §8): окно само делит сумму — сначала с долга, не больше долга по
 // чеку и долга клиента сейчас, остаток деньгами тем способом, которым платили; обе суммы правятся.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { SIGNATURE_PNG } from './sign'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -70,6 +71,7 @@ async function debtSale(page: Page, tag: string, payments: { method: string; amo
     comment: '',
     lines: [{ kind: 'piece', gift: false, product_id: p.id, service_id: null, qty: 1, unit_price_tyiyn: 100_000 }],
     payments,
+    debt_signature_png: SIGNATURE_PNG,
   })
   return { sale, party }
 }

@@ -9,6 +9,8 @@ import { colsIf, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib
 import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
+import { CameraScanButton } from '../components/CameraScan'
+import { sendToStation } from '../components/labelTarget'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -25,6 +27,8 @@ import {
   appendCount,
   countLogText,
   countSummary,
+  countedBy,
+  mineOf,
   defaultCountMode,
   expectedBody,
   expectedQuery,
@@ -93,6 +97,9 @@ interface Line {
   counted_log?: CountEntry[]
   /** Номер последней записи строки на сервере: показывается только ответ новее показанного. */
   version?: number
+  /** Насчитанное по закупке и по цене продажи — владельцу в черновике (задача 007). */
+  cost_value_tyiyn?: number
+  sale_value_tyiyn?: number
 }
 
 /** Ответ записи строки: общий итог (убрали строку — нет) и номер записи. */
@@ -149,6 +156,9 @@ const countInput = (l: Line, q: number): string => (l.unit === 'ml' ? litersInpu
 const REFRESH_MS = 5_000
 
 /** Вязкость строки: из карточки; у масла без неё — из названия, с пометкой. */
+/** Вид ревизии у владельца на этом устройстве: `all` — «Все вместе», иначе «Моё» (задача 007). */
+const VIEW_KEY = 'avtodom.revision.view'
+
 function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string; fromName: boolean } | null {
   if (l.viscosity) return { v: l.viscosity, fromName: false }
   if (l.unit !== 'ml') return null
@@ -197,14 +207,34 @@ function Draft({
   const [card, setCard] = useState<Product | null>(null)
   const act = useAction()
   const draft = rev.head.status === 'draft'
+  /** Владелец смотрит «Все вместе» — итог строк и кто сколько; иначе каждый видит только свой
+   *  пересчёт (задача 007). */
+  // Вид владельца: «Моё» (own), «Все вместе» (all — объединённая ревизия) или пересчёт одного
+  // сотрудника (его вход) — только смотреть; запоминается на устройстве.
+  const [view, setViewState] = useState(() => (owner ? (localStorage.getItem(VIEW_KEY) ?? 'own') : 'own'))
+  const setView = (v: string) => {
+    localStorage.setItem(VIEW_KEY, v)
+    setViewState(v)
+  }
+  const allView = owner && view === 'all'
+  const ownView = draft && !allView
+  /** Чей пересчёт на экране в своём виде: свой или выбранного владельцем сотрудника. */
+  const viewUser = owner && view !== 'all' && view !== 'own' ? view : me.id
+  /** Владелец смотрит чужой пересчёт — без ввода. */
+  const readOnly = ownView && viewUser !== me.id
+  /** Сотрудник во время пересчёта не видит учётного остатка и расхождений — слепой пересчёт. */
+  const blind = draft && !owner
   // Строка, появившаяся до перечитывания, — новее загруженной, пока перечитывание её не догонит.
-  const allLines = [
+  const rawLines = [
     ...rev.lines.map((x) => {
       const e = extra.find((y) => y.product_id === x.product_id)
       return e && (e.version ?? -1) > (x.version ?? -1) ? e : x
     }),
     ...extra.filter((e) => !rev.lines.some((x) => x.product_id === e.product_id)),
   ]
+  // Свой вид: в строке — своё число (сумма своих прибавок), а не общий итог (задача 007).
+  const allLines = ownView ? rawLines.map((x) => ({ ...x, counted_qty: mineOf(x.counted_log ?? [], viewUser), counted_by: null })) : rawLines
+  const people = owner && draft ? countedBy(rawLines) : []
 
   /** Товар этой ревизии: весь склад или её категория. */
   const fitsRevision = (p: Pick<Product, 'category_id'>) => !rev.head.category_id || p.category_id === rev.head.category_id
@@ -220,7 +250,12 @@ function Draft({
     counted_qty: null,
   })
 
+  /** Свой вид: строки, которые человек открыл сам (поиск «Посчитать», товар на вес после скана), —
+   *  видны, пока он их не посчитал (задача 007). */
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const openLine = (id: string) => setOpened((o) => (o.has(id) ? o : new Set(o).add(id)))
   const focusLine = (l: Line) => {
+    openLine(l.product_id)
     setFilter(l.name)
     setVisc('')
     setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
@@ -254,7 +289,9 @@ function Draft({
   const [ops] = useState(() => new InputOps(newOpId))
   /** op_id записей, которые ещё идут: тот же ввод второй раз не отправляется. */
   const inflight = useRef(new Set<string>())
-  const modeOf = (l: Line): CountMode => modesNow.current[l.product_id] ?? defaultCountMode()
+  /** Режим, допустимый в этом виде: в своём — «+ добавить» и «= моё», в общем — «+ добавить» и «= итог». */
+  const fitMode = (m: CountMode | undefined): CountMode => (!m || (ownView ? m === 'set' : m === 'mine') ? defaultCountMode() : m)
+  const modeOf = (l: Line): CountMode => fitMode(modesNow.current[l.product_id])
   const putMode = (id: string, m: CountMode) => {
     modesNow.current = { ...modesNow.current, [id]: m }
     setModes(modesNow.current)
@@ -398,12 +435,18 @@ function Draft({
   /** Своя запись записана: итог строки — из ответа, в журнале строки — своя запись. */
   const applySaved = (id: string, qty: number | null, mode: CountMode, res: Saved) => {
     const total = res.counted_qty
-    const entry: CountEntry = qty === null ? { by: me.full_name, user_id: me.id, mode: 'clear', qty: 0 } : { by: me.full_name, user_id: me.id, mode, qty }
+    // «= моё» сервер записал прибавкой разницы со своим числом строки — так же и в журнал на экране.
+    const entryOf = (x: Line): CountEntry =>
+      qty === null || (mode === 'mine' && total === null)
+        ? { by: me.full_name, user_id: me.id, mode: 'clear', qty: 0 }
+        : mode === 'mine'
+          ? { by: me.full_name, user_id: me.id, mode: 'add', qty: qty - (mineOf(x.counted_log ?? [], me.id) ?? 0) }
+          : { by: me.full_name, user_id: me.id, mode, qty }
     setLine(id, res.version, (x) => ({
       ...x,
       counted_qty: total,
       counted_by: total === null ? null : me.full_name,
-      counted_log: appendCount(x.counted_log ?? [], entry),
+      counted_log: appendCount(x.counted_log ?? [], entryOf(x)),
     }))
     // Строки не было в загруженном списке — перечитываем, чтобы она стала настоящей.
     if (!rev.lines.some((x) => x.product_id === id)) void reload()
@@ -426,7 +469,7 @@ function Draft({
     // из очереди ушла бы после итога и прибавилась к нему. Сканы уходят первыми в той же цепочке
     // записей строки и, записавшись, входят в сверку как свои (человек их видел с отметкой ⏳);
     // не ушли — итог не записывается, число остаётся в поле.
-    const before = mode === 'set' ? writer.current.filter((x) => x.productId === id).map((x) => x.opId) : []
+    const before = mode !== 'add' ? writer.current.filter((x) => x.productId === id).map((x) => x.opId) : []
     for (const s of writer.current) if (before.includes(s.opId) && !inflight.current.has(s.opId)) void sendScan(s, 0)
     const gate =
       before.length === 0
@@ -600,10 +643,42 @@ function Draft({
 
   /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
+  /** Товар без штрихкода (не из Умага, старая карточка): программа выдаёт свой код, этикетка —
+   *  на принтер; дальше товар сканируется (задача 007). */
+  /** Окно «Сколько этикеток» перед печатью на складе (задача 007). */
+  const [labelFor, setLabelFor] = useState<{ line: Line; copies: string } | null>(null)
+  const askLabels = (l: Line) =>
+    // По умолчанию — сколько штук посчитано (на вес и масло — одна).
+    setLabelFor({ line: l, copies: String(l.unit === 'piece' && l.counted_qty && l.counted_qty > 0 ? Math.min(l.counted_qty, 500) : 1) })
+  const issueCode = (l: Line, copies: number) =>
+    void act.run(async () => {
+      if (l.barcodes.length === 0) {
+        const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
+        setLine(l.product_id, undefined, (x) => ({ ...x, barcodes: [...x.barcodes, r.code] }))
+        toast(`Выдан код ${r.code}`)
+      }
+      const product = await get<Product>(`/products/${l.product_id}`)
+      // Этикетка — на складской принтер (станция этикеток, задача 006).
+      await sendToStation([{ product, copies }])
+    })
+
+  /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
+  const removeMine = (l: Line) => {
+    if (!window.confirm(`Убрать «${l.name}» из своего пересчёта?`)) return
+    setOpened((o) => {
+      const n = new Set(o)
+      n.delete(l.product_id)
+      return n
+    })
+    save(l, 0, 'mine', ops.take(l.product_id, inputKey('mine', 0)))
+  }
+
   const commit = (l: Line, qty: number | null) => {
     const id = l.product_id
     const mode = modeOf(l)
     if (mode === 'add' && addIsEmpty(qty, l.counted_qty)) return dropEdit(id)
+    // «= моё»: пустое поле или то же своё число — менять нечего.
+    if (mode === 'mine' && (qty === null || qty === l.counted_qty)) return dropEdit(id)
     // Пустую строку очистили, своих записей в пути и неотправленных сканов нет — убирать нечего.
     if (
       mode === 'set' &&
@@ -637,7 +712,13 @@ function Draft({
     if (v && !viscs.has(viscosityKey(v.v))) viscs.set(viscosityKey(v.v), v.v)
   }
   const viscOptions = [...viscs.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru', { numeric: true }))
-  const lines = allLines.filter((l) => {
+  // Свой вид — только своё: посчитанное этим входом, открытое им самим и его неотправленные сканы;
+  // чужие строки и непосчитанный склад не показываются, их находят сканером или поиском (задача 007).
+  const pendingIds = new Set(unsentByLine(queue, fresh).keys())
+  const shownLines = ownView
+    ? allLines.filter((l) => l.counted_qty !== null || (!readOnly && opened.has(l.product_id)) || edits[l.product_id] !== undefined || pendingIds.has(l.product_id))
+    : allLines
+  const lines = shownLines.filter((l) => {
     const v = viscosityOf(l)
     if (visc && (!v || viscosityKey(v.v) !== visc)) return false
     if (!q) return true
@@ -651,6 +732,11 @@ function Draft({
    *  тот же товар в другом месте может считать другой человек. */
   const countLine = (l: Line) => {
     act.setError(null)
+    // Отсканированный товар — всегда на экране: прежний поиск или отбор по вязкости его не прячут
+    // (задача 007: «сканирую, а он ничего не делает»).
+    openLine(l.product_id)
+    setFilter(l.name)
+    setVisc('')
     const tare = oilTare(l)
     // Прибавка, а не «своё число + 1»: другие устройства считают ту же строку (задача 003, Н14).
     // Каждый скан — новый ввод со своим op_id; его повтор (автоматический после обрыва и из
@@ -659,6 +745,7 @@ function Draft({
     else if (tare) scanAdd(l, tare)
     else {
       if (editsNow.current[l.product_id] === undefined) switchMode(l, 'add')
+      openLine(l.product_id)
       const at = lines.findIndex((x) => x.product_id === l.product_id)
       if (at >= 0) pager.setPage(Math.floor(at / pager.size))
       // Поле появится после перехода на страницу.
@@ -669,8 +756,8 @@ function Draft({
   // Скан: код строки ревизии — и с потерянными Excel нулями впереди (код Умага, SPEC-35 §1); нет —
   // товар по коду на сервере: этой ревизии — его строка (появится, если её ещё нет на экране), вне
   // её — сообщение; нигде — новая карточка.
-  const onScan = () => {
-    const code = scan.trim()
+  const onScan = (camera?: string) => {
+    const code = (camera ?? scan).trim()
     if (!code) return
     const l = allLines.find((x) => x.barcodes.includes(code)) ?? allLines.find((x) => x.barcodes.some((b) => sameCode(b, code)))
     setScan('')
@@ -715,6 +802,8 @@ function Draft({
   }
 
   const counted = allLines.filter((l) => l.counted_qty !== null)
+  /** Посчитано кем угодно — для проведения, в каком бы виде владелец ни смотрел. */
+  const countedAll = rawLines.filter((l) => l.counted_qty !== null)
   const unsent = unsentCount(queue, fresh)
   const unsentLines = unsentByLine(queue, fresh)
   const codes = unsentCodes(queue, fresh)
@@ -811,18 +900,49 @@ function Draft({
           </span>
         </Notice>
       ))}
-      {draft && (
+      {draft && owner && (
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Чей пересчёт показывать">
+          {[
+            ['own', 'Моё'],
+            ...people.filter((p) => p.userId !== me.id).map((p) => [p.userId, `${p.name}: ${p.products}`]),
+            ['all', 'Все вместе'],
+          ].map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={view === v}
+              data-view={v === 'own' || v === 'all' ? v : 'person'}
+              onClick={() => setView(v)}
+              className={`min-h-[36px] rounded border px-3 text-sm ${view === v ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {readOnly && (
+        <Notice tone="sky">
+          Пересчёт сотрудника «{people.find((p) => p.userId === viewUser)?.name ?? '…'}» — только его строки, смотреть. Свой пересчёт — «Моё», итог всех и
+          проведение — «Все вместе».
+        </Notice>
+      )}
+      {draft && !readOnly && (
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Сканер" hint="Скан прибавляет 1 штуку или 1 канистру; початую тару впишите литрами в строке">
-              <input
-                autoFocus
-                data-picker
-                value={scan}
-                onChange={(e) => setScan(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && onScan()}
-                placeholder="Сканируйте штрихкод"
-              />
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  data-picker
+                  className="min-w-0 flex-1"
+                  value={scan}
+                  onChange={(e) => setScan(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && onScan()}
+                  placeholder="Сканируйте штрихкод"
+                />
+                {/* Камера телефона читает код так же, как сканер (задача 007). */}
+                <CameraScanButton onCode={(code) => onScan(code)} />
+              </div>
             </Field>
             <Field label="Найти в списке">
               <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, артикул или вязкость" />
@@ -834,19 +954,31 @@ function Draft({
             </Button>
           </div>
           <div className="text-sm text-slate-600">
-            Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
-            {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
-            Непересчитанные товары не меняются. Число в строке — «+ добавить»: то, что вы нашли в своём месте, прибавится к общему
-            итогу (считают несколько человек со своих входов — итог складывается). 0 в непосчитанной строке — «не нашли». Записать итог строки
-            целиком — выберите «= итог».
+            {ownView ? (
+              <>
+                Вы посчитали товаров: {counted.length}
+                {!blind && <>, расхождений {diffs.length}</>}. В списке — только то, что посчитали вы: сканируйте или найдите товар в поиске («Посчитать»); чужие числа не видны; итог по каждой строке
+                складывается из пересчёта всех. Число в строке — «+ добавить»: прибавится к вашему. Пробили лишнее — «= моё» и впишите,
+                сколько нашли вы. 0 в непосчитанной строке — «не нашли».
+                {owner && ' Итог всех и проведение — «Все вместе».'}
+              </>
+            ) : (
+              <>
+                Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
+                {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
+                Непересчитанные товары не меняются. Число в строке — «+ добавить»: то, что вы нашли в своём месте, прибавится к общему
+                итогу (считают несколько человек со своих входов — итог складывается). 0 в непосчитанной строке — «не нашли». Записать итог строки
+                целиком — выберите «= итог».
+              </>
+            )}
           </div>
         </Card>
       )}
-      {draft && (
+      {draft && !readOnly && (
         <RevisionSearchHits
           text={filter}
           version={addedCount}
-          shown={new Set(allLines.map((l) => l.product_id))}
+          shown={new Set(shownLines.map((l) => l.product_id))}
           fits={fitsRevision}
           mayUmag={mayUmag}
           onCount={goTo}
@@ -866,7 +998,7 @@ function Draft({
           </select>
         </label>
       )}
-      <div className="flex justify-end">
+      <div className={`flex justify-end ${blind ? 'hidden' : ''}`}>
         {/* Все строки ревизии по отбору; «В деньгах» — только владельцу, как в таблице (задача 003 Н13, I13). */}
         <ExportButton
           file={`Ревизия ${rev.head.number}`}
@@ -888,12 +1020,12 @@ function Draft({
         {lines.length === 0 ? (
           <Empty>Товаров нет</Empty>
         ) : (
-          <Table head={['Товар', 'Должно быть', 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
+          <Table head={blind ? ['Товар', 'Пересчитано вами'] : ['Товар', 'Должно быть', ownView && !readOnly ? 'Пересчитано вами' : 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
             {pager.shown.map((l) => {
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
               const tare = oilTare(l)
-              const mode = modes[l.product_id] ?? defaultCountMode()
+              const mode = fitMode(modes[l.product_id])
               const v = viscosityOf(l)
               return (
                 <tr key={l.product_id}>
@@ -924,19 +1056,38 @@ function Draft({
                         ))}
                     </div>
                     {l.article && <div className="text-xs text-slate-500">{l.article}</div>}
+                    {draft && !readOnly && mayUmag && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                          data-issue-code={l.product_id}
+                          title="Этикетка на складской принтер (станция этикеток); нет кода — программа выдаст свой"
+                          onClick={() => askLabels(l)}
+                        >
+                          {l.barcodes.length === 0 ? '🏷 Выдать код и этикетку на склад' : '🏷 Этикетка на склад'}
+                        </button>
+                      </div>
+                    )}
                   </td>
-                  <td className="whitespace-nowrap px-2 py-2" data-testid="expected">
-                    {countText(l, l.expected_qty)}
-                  </td>
+                  {!blind && (
+                    <td className="whitespace-nowrap px-2 py-2" data-testid="expected">
+                      {countText(l, l.expected_qty)}
+                    </td>
+                  )}
                   <td className="whitespace-nowrap px-2 py-2">
-                    {draft ? (
+                    {draft && !readOnly ? (
                       <div className="flex flex-col gap-1">
                         <div className="flex gap-1" role="group" aria-label="Как записать">
-                          {(
-                            [
-                              ['add', '+ добавить', 'Прибавить найденное в своём месте к общему итогу'],
-                              ['set', '= итог', 'Записать итог строки целиком'],
-                            ] as const
+                          {(ownView
+                            ? ([
+                                ['add', '+ добавить', 'Прибавить найденное к своему пересчёту'],
+                                ['mine', '= моё', 'Исправить своё число строки: сколько нашли вы'],
+                              ] as const)
+                            : ([
+                                ['add', '+ добавить', 'Прибавить найденное в своём месте к общему итогу'],
+                                ['set', '= итог', 'Записать итог строки целиком'],
+                              ] as const)
                           ).map(([m, label, title]) => (
                             <button
                               key={m}
@@ -988,7 +1139,19 @@ function Draft({
                         )}
                         {l.counted_qty !== null && (
                           <div className="text-xs font-medium text-slate-700" data-total={l.product_id}>
-                            итого {countText(l, l.counted_qty)}
+                            {ownView ? 'моё' : 'итого'} {countText(l, l.counted_qty)}
+                            {ownView && (
+                              <button
+                                type="button"
+                                className="ml-2 rounded px-1.5 text-base leading-none text-rose-600 hover:bg-rose-50"
+                                title="Убрать из своего пересчёта"
+                                aria-label={`Убрать ${l.name}`}
+                                data-remove={l.product_id}
+                                onClick={() => removeMine(l)}
+                              >
+                                ×
+                              </button>
+                            )}
                           </div>
                         )}
                         {unsentLines.has(l.product_id) && (
@@ -1003,10 +1166,27 @@ function Draft({
                       </div>
                     ) : l.counted_qty === null ? (
                       '—'
+                    ) : draft ? (
+                      <span data-total={l.product_id}>
+                        {/* Чужой пересчёт у владельца — просто количество, без «моё». */}
+                        {readOnly ? '' : ownView ? 'моё ' : 'итого '}
+                        {countText(l, l.counted_qty)}
+                      </span>
                     ) : (
                       countText(l, l.counted_qty)
                     )}
-                    {l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
+                    {allView && draft && l.sale_value_tyiyn !== undefined && (
+                      <div className="mt-0.5 whitespace-normal text-xs text-slate-600" data-testid="line-money">
+                        продажа {formatSom(l.sale_value_tyiyn)}
+                        {l.cost_value_tyiyn !== undefined && (
+                          <>
+                            {' '}· закупка {formatSom(l.cost_value_tyiyn)} ·{' '}
+                            <span className="font-medium text-emerald-700">прибыль {formatSom(l.sale_value_tyiyn - l.cost_value_tyiyn)}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {!ownView && l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
                       <div className="mt-0.5 whitespace-normal text-xs text-slate-400" data-testid="counted-by">
                         {l.counted_log?.length ? (
                           // Кто сколько добавил к итогу; весь журнал — подсказкой.
@@ -1019,7 +1199,7 @@ function Draft({
                       </div>
                     )}
                   </td>
-                  <td className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                  <td hidden={blind} className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
                     {diff === null ? '—' : diff === 0 ? 'сходится' : `${diff > 0 ? '+' : '−'}${countText(l, Math.abs(diff))}`}
                     {l.unit === 'ml' && diff !== null && diff !== 0 && (
                       <div className="mt-0.5">
@@ -1039,6 +1219,7 @@ function Draft({
           <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы товаров ревизии" />
         </div>
       </Card>
+      {allView && draft && <RevisionMoney lines={countedAll} />}
       {owner && !draft && rev.head.status === 'posted' && (
         <div className="text-right font-semibold">Итог ревизии в деньгах: {formatSom(valueTotal)}</div>
       )}
@@ -1057,7 +1238,7 @@ function Draft({
             Отменить ревизию
           </Button>
           {owner ? (
-            <Button disabled={act.busy || counted.length === 0} onClick={() => setPosting({ comment: '', opId: newOpId() })}>
+            <Button disabled={act.busy || countedAll.length === 0} onClick={() => setPosting({ comment: '', opId: newOpId() })}>
               Провести
             </Button>
           ) : (
@@ -1137,6 +1318,38 @@ function Draft({
           </div>
         </Modal>
       )}
+      {labelFor && (
+        <Modal title="Сколько этикеток напечатать?" onClose={() => setLabelFor(null)}>
+          <div className="flex flex-col gap-3" data-testid="label-copies">
+            <div className="text-sm text-slate-700">{labelFor.line.name} — на складской принтер</div>
+            <Field label="Этикеток, шт">
+              <input
+                id="label-copies"
+                autoFocus
+                inputMode="numeric"
+                value={labelFor.copies}
+                onChange={(e) => setLabelFor({ ...labelFor, copies: e.target.value.replace(/\D/g, '') })}
+              />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setLabelFor(null)}>
+                Отмена
+              </Button>
+              <Button
+                disabled={!(Number(labelFor.copies) >= 1 && Number(labelFor.copies) <= 500)}
+                onClick={() => {
+                  const n = Number(labelFor.copies)
+                  const l = labelFor.line
+                  setLabelFor(null)
+                  issueCode(l, n)
+                }}
+              >
+                Печатать {Number(labelFor.copies) >= 1 ? Number(labelFor.copies) : ''}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {posting && (
         <Modal title={`Провести ревизию № ${rev.head.number}`} onClose={() => setPosting(null)}>
           <div className="flex flex-col gap-3">
@@ -1197,6 +1410,27 @@ function Draft({
   )
 }
 
+/** Итог насчитанного у владельца в «Все вместе» (задача 007): закупка, продажа, ожидаемая прибыль,
+ *  средняя наценка (прибыль к закупке) — по строкам, где закупка известна. */
+function RevisionMoney({ lines }: { lines: Line[] }) {
+  const priced = lines.filter((l) => l.sale_value_tyiyn !== undefined && l.cost_value_tyiyn !== undefined)
+  const cost = priced.reduce((a, l) => a + (l.cost_value_tyiyn ?? 0), 0)
+  const sale = priced.reduce((a, l) => a + (l.sale_value_tyiyn ?? 0), 0)
+  const profit = sale - cost
+  const markup = cost > 0 ? ((profit / cost) * 100).toFixed(1).replace('.', ',') : null
+  const noCost = lines.length - priced.length
+  return (
+    <Card className="flex flex-col gap-1 text-sm" data-testid="revision-money">
+      <div className="font-semibold">Насчитано в деньгах</div>
+      <div>Закупка: {formatSom(cost)}</div>
+      <div>Продажа: {formatSom(sale)}</div>
+      <div className="font-medium text-emerald-700">Ожидаемая прибыль: {formatSom(profit)}</div>
+      <div>Средняя наценка: {markup === null ? '—' : `${markup} %`}</div>
+      {noCost > 0 && <div className="text-xs text-slate-500">Без закупки (не вошли в итог): {noCost}</div>}
+    </Card>
+  )
+}
+
 /** Один экран: ревизии и сканер товаров («Работа с товарами»). Вкладка — в адресе (`?tab=scan`). */
 export default function RevisionAndGoods() {
   const [params, setParams] = useSearchParams()
@@ -1235,6 +1469,19 @@ function Revision() {
   const listPager = usePager(list.data ?? [], 'revisions')
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const [openId, setOpenId] = useState<string | null>(null)
+  const me_ = useUser()
+  const owner_ = me_.role === 'owner'
+  // Владельцу в списке — кто что считает в незакрытых ревизиях (задача 007).
+  const draftIds = (list.data ?? []).filter((h) => h.status === 'draft').map((h) => h.id)
+  const drafts = useLoad(
+    () => (owner_ && draftIds.length ? Promise.all(draftIds.map((id) => get<RevisionOut>(`/revisions/${id}`).catch(() => null))) : Promise.resolve([])),
+    [owner_, draftIds.join()],
+  )
+  /** Открыть ревизию в нужном виде: своё, сотрудник или «Все вместе». */
+  const openAs = (id: string, v: string) => {
+    localStorage.setItem(VIEW_KEY, v === me_.id ? 'own' : v)
+    setOpenId(id)
+  }
   const rev = useLoad(() => (openId ? get<RevisionOut>(`/revisions/${openId}`) : Promise.resolve(null)), [openId])
   const [category, setCategory] = useState('')
   const act = useAction()
@@ -1459,21 +1706,54 @@ function Revision() {
             Ревизий ещё не было. Выберите, что пересчитываем, и начните — пересчёт идёт сканером.
           </Empty>
         ) : (
-          <Table head={['№', 'Что', 'Начал', 'Пересчитано', 'Статус', '']}>
-            {listPager.shown.map((h) => (
+          <Table head={['№', 'Что', 'Дата', 'Пересчитано', 'Статус', '']}>
+            {listPager.shown.map((h) => {
+              const d = (drafts.data ?? []).find((x) => x?.head.id === h.id)
+              const who = d ? countedBy(d.lines) : []
+              return (
               <tr key={h.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setOpenId(h.id)}>
                 <td className="px-2 py-2 font-medium">{h.number}</td>
                 <td className="px-2 py-2">{h.category_name ?? 'Весь склад'}</td>
                 <td className="whitespace-nowrap px-2 py-2">
-                  {h.user_name}, {formatDateTime(h.created_at)}
+                  {formatDateTime(h.created_at)}
                 </td>
-                <td className="px-2 py-2">{h.counted}</td>
+                <td className="px-2 py-2">
+                  {h.counted}
+                  {who.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1" data-testid="revision-people">
+                      {who.map((p) => (
+                        <button
+                          key={p.userId}
+                          type="button"
+                          className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openAs(h.id, p.userId)
+                          }}
+                        >
+                          {p.name}: {p.products}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="rounded border border-sky-600 bg-sky-600 px-2 py-0.5 text-xs text-white"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openAs(h.id, 'all')
+                        }}
+                      >
+                        Объединить: все вместе
+                      </button>
+                    </div>
+                  )}
+                </td>
                 <td className="px-2 py-2">
                   <Badge tone={STATUS[h.status][1]}>{STATUS[h.status][0]}</Badge>
                 </td>
                 <td className="px-2 py-2 text-right text-sky-700">Открыть</td>
               </tr>
-            ))}
+              )
+            })}
           </Table>
         )}
         <div className="px-4 pb-3 empty:hidden">
@@ -1505,7 +1785,6 @@ function revisionCols(money: boolean, normBp: number): ExportCol<Line>[] {
 const REVISION_LIST_COLS: ExportCol<Head>[] = [
   { label: '№', value: (h) => xl.int(h.number) },
   { label: 'Что', value: (h) => h.category_name ?? 'Весь склад' },
-  { label: 'Начал', value: (h) => h.user_name },
   { label: 'Когда', value: (h) => xl.dateTime(h.created_at) },
   { label: 'Проведена', value: (h) => xl.dateTime(h.posted_at) },
   { label: 'Пересчитано', value: (h) => xl.int(h.counted) },

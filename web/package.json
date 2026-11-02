@@ -12,6 +12,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "barcode-detector": "^3.2.3",
     "idb": "^8.0.4",
     "jsbarcode": "^3.12.3",
     "qrcode": "^1.5.4",

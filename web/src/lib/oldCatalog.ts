@@ -38,16 +38,21 @@ function cardBarcode(h: OldCatalogHit, scanned: string): string {
 }
 
 /**
- * Поля карточки из позиции старого списка. Категория — по названию из старой программы, у масла —
- * первая категория масел, иначе запомненная `sticky`. Код скана важнее кода из списка.
+ * Поля карточки из позиции старого списка. Категория — по названию из старой программы (у масла —
+ * если это категория масел), иначе у масла — моторные (`book_slot` «oil»), иначе запомненная `sticky`. Код скана важнее кода из списка.
  */
 export function presetFromHit(h: OldCatalogHit, categories: Category[], sticky = '', scanned = ''): CardPreset {
   const liter = isLiterUnit(h.unit)
   const ml = liter ? containerFromName(h.name) : null
-  const oilCat = categories.find((c) => c.kind === 'oil')?.id ?? ''
-  const byName = categories.find((c) => h.category && c.name.toLowerCase() === h.category.trim().toLowerCase())?.id
+  // Масло без своей категории в Умаге — в моторные (строка книжки «масло»), а не в первую по
+  // алфавиту категорию масел: «АНТИФРИЗЫ» видом «масло» забирали моторные масла (задача 007).
+  const oils = categories.filter((c) => c.kind === 'oil')
+  const oilCat = (oils.find((c) => c.book_slot === 'oil') ?? oils[0])?.id ?? ''
+  const byNameCat = categories.find((c) => h.category && c.name.toLowerCase() === h.category.trim().toLowerCase())
+  const byName = byNameCat?.id
   const known = categories.some((c) => c.id === sticky) ? sticky : ''
-  const categoryId = liter ? oilCat || known : byName || known
+  // Литры — категория строки Умага, если это масла; иначе моторные.
+  const categoryId = liter ? (byNameCat?.kind === 'oil' ? byNameCat.id : '') || oilCat || known : byName || known
   const per = (v: number) => (ml ? (divRound(v * ml, 1000) ?? 0) : v)
   // Масло за литр без объёма в названии: цена литра — не цена канистры; поля пустые, пока не
   // вписан объём (проверка 20.10.2026).

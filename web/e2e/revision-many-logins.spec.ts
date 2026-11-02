@@ -5,6 +5,12 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from '@
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
+/** Заведён без своего кода — окно с выданным кодом (задача 007): «Готово». */
+async function doneMade(page: import('@playwright/test').Page) {
+  const made = page.getByTestId('revnew-made')
+  if (await made.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) await made.getByRole('button', { name: 'Готово' }).click()
+}
+
 const RUN = Date.now().toString().slice(-8)
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e7a1' }
 /** Текст с неразрывными пробелами — как на экране. */
@@ -47,7 +53,8 @@ async function staff(owner: Page, browser: Browser, name: string, permissions?: 
 
 async function openRevision(page: Page, category: string) {
   await page.goto('/revision')
-  await page.getByRole('row', { name: new RegExp(category) }).first().click()
+  // По номеру: в строке черновика у владельца — кнопки «кто сколько» (задача 007).
+  await page.getByRole('row', { name: new RegExp(category) }).first().locator('td').first().click()
   await expect(page.getByRole('heading', { name: new RegExp(`Ревизия № \\d+ · ${category}`) })).toBeVisible()
 }
 
@@ -56,9 +63,15 @@ async function cancelDraft(request: APIRequestContext, categoryId: string) {
   for (const r of list.filter((x) => x.status === 'draft' && x.category_id === categoryId)) await api(request, 'post', `/revisions/${r.id}/cancel`, {})
 }
 
+/** Свой вид (задача 007): в списке только посчитанное собой — товар находят поиском и «Посчитать». */
+async function findToCount(page: Page, name: string) {
+  await page.getByPlaceholder('Название, артикул или вязкость').fill(name)
+  await page.getByTestId('revision-search-hits').getByRole('button', { name: 'Посчитать' }).first().click()
+}
+
 const total = (page: Page, id: string) => page.locator(`[data-total="${id}"]`)
 
-test('ревизия двумя входами: Азиз вписал 6, Алексей 4 — у обоих 10 и кто сколько добавил', async ({ page, browser }) => {
+test('ревизия двумя входами: Азиз вписал 6, Алексей 4 — каждый видит своё, владелец — 10 и кто сколько; «= моё» исправляет своё', async ({ page, browser }) => {
   await login(page, OWNER, OWNER_PASSWORD)
   const category = `Кат два входа ${RUN}`
   const cat = await api<{ id: string }>(page.request, 'post', '/categories', { name: category, kind: 'other' })
@@ -76,46 +89,83 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
   await openRevision(aziz, category)
   await openRevision(aleksey, category)
 
-  // Строку ещё никто не считал, а поле у обоих — «+ добавить» без выбора.
-  for (const [who, qty, after] of [
-    [aziz, '6', 'итого 6 шт'],
-    [aleksey, '4', 'итого 10 шт'],
+  // Каждый видит только свой пересчёт (задача 007): поле — «+ добавить» без выбора, под ним — «моё».
+  for (const [who, qty] of [
+    [aziz, '6'],
+    [aleksey, '4'],
   ] as const) {
+    // Чужое и непосчитанное в списке не показывается: строку открывает поиск.
+    await expect(who.getByRole('row', { name: new RegExp(name) })).toHaveCount(0)
+    await findToCount(who, name)
     const row = who.getByRole('row', { name: new RegExp(name) })
     await expect(row.locator('[data-mode="add"]')).toHaveAttribute('aria-pressed', 'true')
+    // Слепой пересчёт: учётного остатка сотрудник не видит.
+    await expect(row.getByTestId('expected')).toHaveCount(0)
     const field = who.locator(`[data-count="${p.id}"]`)
     await field.fill(qty)
     await field.press('Enter')
-    await expect(total(who, p.id)).toHaveText(text(after), { timeout: 15_000 })
+    await expect(total(who, p.id)).toHaveText(text(`моё ${qty} шт`), { timeout: 15_000 })
     await expect(field).toHaveValue('')
-    // Режим сам не вернулся в «= итог».
-    await expect(row.locator('[data-mode="add"]')).toHaveAttribute('aria-pressed', 'true')
   }
-  for (const who of [aziz, aleksey]) {
-    await expect(total(who, p.id)).toHaveText(text('итого 10 шт'), { timeout: 15_000 })
-    await expect(who.getByRole('row', { name: new RegExp(name) }).getByTestId('counted-by')).toHaveText(
-      text(`Азиз ${RUN} +6 шт, Алексей ${RUN} +4 шт = 10 шт`),
-      { timeout: 15_000 },
-    )
-  }
-  // «= итог» — явным выбором: Азиз записывает итог 12, у Алексея — тоже 12.
+  // Чужое не видно и после перечитывания: у Азиза — его 6, «кто сколько» сотрудникам не показывается.
+  await openRevision(aziz, category)
+  await expect(total(aziz, p.id)).toHaveText(text('моё 6 шт'), { timeout: 15_000 })
+  await expect(aziz.getByTestId('counted-by')).toHaveCount(0)
+  // Владелец: в «Моё» строки не считал, в «Все вместе» — итог 10 и кто сколько.
+  await openRevision(page, category)
+  await page.locator('[data-view="own"]').click()
+  await expect(total(page, p.id)).toHaveCount(0)
+  await page.locator('[data-view="all"]').click()
+  await expect(total(page, p.id)).toHaveText(text('итого 10 шт'), { timeout: 15_000 })
+  await expect(page.getByRole('row', { name: new RegExp(name) }).getByTestId('counted-by')).toHaveText(
+    text(`Азиз ${RUN} +6 шт, Алексей ${RUN} +4 шт = 10 шт`),
+    { timeout: 15_000 },
+  )
+  // Список ревизий: владелец видит, кто сколько считает, и открывает пересчёт сотрудника — только смотреть.
+  await page.goto('/revision')
+  const people = page.getByTestId('revision-people').first()
+  await expect(people.getByRole('button', { name: `Азиз ${RUN}: 1` })).toBeVisible()
+  await expect(people.getByRole('button', { name: `Алексей ${RUN}: 1` })).toBeVisible()
+  await people.getByRole('button', { name: `Алексей ${RUN}: 1` }).click()
+  await expect(total(page, p.id)).toHaveText(text('4 шт'), { timeout: 15_000 })
+  await expect(total(page, p.id)).not.toContainText('моё')
+  await expect(page.locator(`[data-count="${p.id}"]`)).toHaveCount(0)
+  await page.locator('[data-view="all"]').click()
+  await expect(total(page, p.id)).toHaveText(text('итого 10 шт'), { timeout: 15_000 })
+  // Владелец в «Все вместе» видит, сколько это в деньгах: 10 × 300 с; закупки нет — не в итоге.
+  await expect(page.getByRole('row', { name: new RegExp(name) }).getByTestId('line-money')).toContainText(text('продажа 3 000'))
+  await expect(page.getByTestId('revision-money')).toContainText('Ожидаемая прибыль')
+  await expect(page.getByTestId('revision-money')).toContainText('Без закупки (не вошли в итог): 1')
+  // Азиз пробил лишнее: «= моё 3» — у него 3, у Алексея по-прежнему 4, итог 7.
   const row = aziz.getByRole('row', { name: new RegExp(name) })
-  await row.locator('[data-mode="set"]').click()
+  await row.locator('[data-mode="mine"]').click()
   const field = aziz.locator(`[data-count="${p.id}"]`)
-  await expect(field).toHaveValue('10')
-  await field.fill('12')
+  await expect(field).toHaveValue('6')
+  await field.fill('3')
   await field.press('Enter')
-  await expect(total(aziz, p.id)).toHaveText(text('итого 12 шт'))
-  await expect(total(aleksey, p.id)).toHaveText(text('итого 12 шт'), { timeout: 15_000 })
-  await expect(aleksey.getByRole('row', { name: new RegExp(name) }).getByTestId('counted-by')).toHaveText(text(`Азиз ${RUN} = 12 шт`), {
-    timeout: 15_000,
-  })
-  // 0 в «+ добавить» непосчитанной строки — «не нашли»: строка посчитана нулём, а не пропала молча.
+  await expect(total(aziz, p.id)).toHaveText(text('моё 3 шт'), { timeout: 15_000 })
+  await openRevision(aleksey, category)
+  await expect(total(aleksey, p.id)).toHaveText(text('моё 4 шт'), { timeout: 15_000 })
+  await openRevision(page, category)
+  await expect(total(page, p.id)).toHaveText(text('итого 7 шт'), { timeout: 15_000 })
+  // 0 в «+ добавить» непосчитанной строки — «не нашли»: у Азиза — 0, у владельца — посчитано 0.
+  await findToCount(aziz, `Свеча нет на полке ${RUN}`)
   const zero = aziz.locator(`[data-count="${missing.id}"]`)
   await zero.fill('0')
   await zero.press('Enter')
-  await expect(total(aziz, missing.id)).toHaveText(text('итого 0 шт'), { timeout: 15_000 })
-  await expect(total(aleksey, missing.id)).toHaveText(text('итого 0 шт'), { timeout: 15_000 })
+  await expect(total(aziz, missing.id)).toHaveText(text('моё 0 шт'), { timeout: 15_000 })
+  // Крестик: строку считал только Азиз — она уходит из его списка и у владельца не посчитана.
+  aziz.once('dialog', (d) => void d.accept())
+  await aziz.locator(`[data-remove="${missing.id}"]`).click()
+  await expect(total(aziz, missing.id)).toHaveCount(0, { timeout: 15_000 })
+  await expect(aziz.getByRole('row', { name: new RegExp(`Свеча нет на полке ${RUN}`) })).toHaveCount(0)
+  // Снова «не нашли» — для проверки владельца ниже.
+  await findToCount(aziz, `Свеча нет на полке ${RUN}`)
+  await aziz.locator(`[data-count="${missing.id}"]`).fill('0')
+  await aziz.locator(`[data-count="${missing.id}"]`).press('Enter')
+  await expect(total(aziz, missing.id)).toHaveText(text('моё 0 шт'), { timeout: 15_000 })
+  await openRevision(page, category)
+  await expect(total(page, missing.id)).toHaveText(text('итого 0 шт'), { timeout: 15_000 })
   await cancelDraft(page.request, cat.id)
 })
 
@@ -152,15 +202,18 @@ test('ревизия: поиск по названию — строка Умаг
   await expect(dialog.locator('#revnew-count')).toBeFocused()
   await dialog.locator('#revnew-count').fill('3')
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
+  await doneMade(page)
   await expect(dialog).toBeHidden()
 
-  // Товар заведён, связан со строкой Умага и посчитан: у второго входа — тот же итог.
+  // Товар заведён, связан со строкой Умага и посчитан; второй вход чужой строки не видит (задача 007).
   const hits = (await (await page.request.get(`/api/v1/old-catalog/search?barcode=${umagCode}`)).json()) as { exact: boolean; product_id: string | null }[]
   const linked = hits.find((h) => h.exact)?.product_id
   expect(linked).toBeTruthy()
-  await expect(total(aziz, linked!)).toHaveText(text('итого 3 шт'), { timeout: 15_000 })
+  await expect(total(aziz, linked!)).toHaveText(text('моё 3 шт'), { timeout: 15_000 })
   await noRight.getByPlaceholder('Название, артикул или вязкость').fill('')
-  await expect(total(noRight, linked!)).toHaveText(text('итого 3 шт'), { timeout: 15_000 })
+  await noRight.reload()
+  await expect(noRight.getByRole('row', { name: new RegExp(umagName) })).toHaveCount(0)
+  await expect(total(noRight, linked!)).toHaveCount(0)
   // Строка заведена — в Умаге её больше не предлагают.
   await aziz.getByPlaceholder('Название, артикул или вязкость').fill(`Антифриз Умаг поиск ${RUN}`)
   await aziz.waitForTimeout(1_000)

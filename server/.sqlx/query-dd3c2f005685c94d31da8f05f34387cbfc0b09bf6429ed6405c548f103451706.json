@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select j.id, j.status, j.error, j.copies, j.created_at, j.done_at,\n                  u.full_name as \"created_by_name!\",\n                  coalesce((select string_agg(p.name, ', ')\n                            from jsonb_to_recordset(j.items) as x(product_id uuid, copies bigint)\n                            join products p on p.id = x.product_id), '') as \"what!\"\n           from label_jobs j join users u on u.id = j.created_by\n           where j.branch_id = $1 and ($2::uuid is null or j.id = $2)\n           order by j.created_at desc\n           limit 20",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "error",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "copies",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "done_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_by_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "what!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "dd3c2f005685c94d31da8f05f34387cbfc0b09bf6429ed6405c548f103451706"
+}

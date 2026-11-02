@@ -148,17 +148,18 @@ describe('чек книжки после чека — только этот че
       slots: [...(book.slots ?? []), { ...slot('other', 'Замена ГУР', '2026-10-28', 300_000, null), service_id: 'g1' }],
     }
     expect(saleCheckOf(gur, 's9')?.id).toBe('r9')
-    expect(plain(await oilBookHtml(gur, { link: null, saleId: 's9' }))).toContain('Замена ГУР Следующая замена — на 300 000 км')
+    expect(plain(await oilBookHtml(gur, { link: null, saleId: 's9' }))).toContain('Залито и заменено · 09KG999ZXZ Замена ГУР Следующая замена Замена ГУР — на 300 000 км')
     expect(saleCheckOf(gur, 's8')?.id).toBe('r8')
   })
 
   it('по видам замены, товаром: масло клиента и фильтры с ним, антифриз; без мастера, рекомендаций и истории', async () => {
     const text = plain(await oilBookHtml(book, { link: null, saleId: 's8', master: 'Бакыт', client: 'Асанов' }))
-    expect(text).toContain('09KG999ZXZ · Toyota Camry')
+    expect(text).toContain('09KG999ZXZ Toyota Camry')
     expect(text).toContain('Дата 26.10.2026')
     expect(text).toContain('Пробег 250 000 км')
-    expect(text).toContain('Замена масла в моторе масло клиента (двигатель) Фильтр W712 (масляный) · 1 шт Следующая замена — на 258 000 км')
-    expect(text).toContain('Sintec G12 красный 5 кг · 2 шт Следующая замена — на 280 000 км')
+    expect(text).toContain('Замена масла в моторе: масло клиента (двигатель), Фильтр W712 (масляный) · 1 шт')
+    expect(text).toContain('Замена масла в моторе — на 258 000 км')
+    expect(text).toContain('Sintec G12 красный 5 кг · 2 шт — на 280 000 км')
     for (const no of ['Масло двигателя', 'Фильтр масляный', 'Антифриз', 'Бакыт', 'Мастер', 'Рекомендовано', 'салонный', 'Фильтр A1', 'Прошлые замены', 'или до', '17.10.2026']) {
       expect(text).not.toContain(no)
     }
@@ -213,9 +214,11 @@ describe('чек книжки после чека — только этот че
       ],
     }
     const text = plain(await oilBookHtml(car, { link: null, saleId: 's20' }))
-    expect(text).toContain(`${motor} Mobil 1 5W-30 · 4 л W712 (масляный) · 1 шт C2201 (воздушный) · 1 шт Фильтр салонный CU2939 · 1 шт Следующая замена — на 138 000 км`)
-    expect(text).toContain('Mobil ATF 3309 · 1 л Следующая замена — на 170 000 км')
-    expect(text).toContain('Замена топливного фильтра Фильтр топливный WK 820 · 1 шт Следующая замена — на 160 000 км')
+    expect(text).toContain(`${motor}: Mobil 1 5W-30 · 4 л, W712 (масляный) · 1 шт, C2201 (воздушный) · 1 шт, Фильтр салонный CU2939 · 1 шт`)
+    expect(text).toContain(`${motor} — на 138 000 км`)
+    expect(text).toContain('Mobil ATF 3309 · 1 л — на 170 000 км')
+    expect(text).toContain('Замена топливного фильтра: Фильтр топливный WK 820 · 1 шт')
+    expect(text).toContain('Замена топливного фильтра — на 160 000 км')
     for (const no of ['Масло в коробке', 'Масло двигателя', 'Фильтр масляный', 'Фильтр воздушный']) expect(text).not.toContain(no)
   })
 

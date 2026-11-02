@@ -16,7 +16,7 @@ import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters, parseSo
 import { useAction, useLoad } from '../lib/hooks'
 import { useCashierMode } from '../lib/cashierMode'
 import { DEFAULT_CASHIER, loadCashierSettings } from '../lib/cashierLayout'
-import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
+import { debtSignatures, printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { divRound } from '../lib/money'
 import { returnWithholds } from '../lib/serviceSale'
 import { returnDebtCap, splitReturn } from '../lib/returnSplit'
@@ -340,7 +340,7 @@ export default function SaleView() {
         // История долга — по праву «Акт сверки»; без него документ печатается без истории.
         get<Reconciliation>(`/parties/${sale.party_id}/reconciliation`).catch(() => null),
       ])
-      printDebtDoc({ sale, party, settings, history })
+      printDebtDoc({ sale, party, settings, history, ...(await debtSignatures(sale, settings)) })
     })
 
   return (

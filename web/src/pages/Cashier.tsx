@@ -21,6 +21,9 @@ import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
 import { BankQrPanel, useBankQr, useOpenQrs } from '../components/BankQrPanel'
+import { SignaturePad } from '../components/SignaturePad'
+import { useCustomerScreen } from '../components/useCustomerScreen'
+import { toScreen } from '../lib/customerScreen'
 import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
@@ -60,7 +63,7 @@ import { Icon, type IconName } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, toast } from '../components/ui'
 import { ApiError, get, newOpId, noServerAnswer, patch, post, qs, randomId, serverReachable } from '../lib/api'
 import { priceChangeText, repriceLines, type FreshCatalog, type PriceChange } from '../lib/cartPrices'
-import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
+import { debtSignatures, printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, knownShift, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage, saveKnownShift, takeFromSnapshot } from '../lib/offline'
 import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
 import { forServer, removedLine, sendCancelled, unremove, type CancelReason, type RemovedLine } from '../lib/cancelledLines'
@@ -373,6 +376,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // исправлении чека её нет.
   const optima = useLoad(() => (fix ? Promise.resolve(null) : get<OptimaStatus>('/optima/status').catch(() => null)), [])
   const bankQr = useBankQr()
+  // Экран покупателя на втором мониторе (задача 008): QR банка, «Оплачено», подпись за долг.
+  const screen = useCustomerScreen()
+  // Подпись клиента за долг: к какому клиенту и сумме долга она дана; просьба подписи — та же метка.
+  const [debtSign, setDebtSign] = useState<{ key: string; png: string } | null>(null)
+  const [signAsk, setSignAsk] = useState<string | null>(null)
+  // Чек провести сразу после подписи; QR, по которому чек уже проводился сам.
+  const afterSign = useRef(false)
+  const autoQr = useRef<string | null>(null)
+  const autoPrint = useRef(false)
   // QR этой кассы с сервера: оплата по QR не теряется после перезагрузки и «Отменить» (ADR-130).
   const openQrs = useOpenQrs(Boolean(optima.data?.qr))
   const stray = strayQr(openQrs.list, bankQr.qr?.id)
@@ -673,6 +685,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const amounts = lines.map(lineAmount)
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
   const total = amounts.reduce<number>((acc, a) => acc + (a ?? 0), 0)
+  // Экран покупателя: QR банка, иначе — чек, как его набирает касса (задача 008, просьба 02.11.2026).
+  const screenMsg = toScreen(
+    bankQr.qr,
+    lines.map((l, i) => ({
+      name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
+      qty: l.kind === 'service' ? '' : `${l.qtyText} ${l.kind === 'pour' ? 'л' : l.kind === 'weight' ? 'кг' : 'шт'}`,
+      amount_tyiyn: amounts[i] ?? 0,
+    })),
+    total,
+  )
+  const screenKey = JSON.stringify(screenMsg)
+  const screenShow = screen.show
+  useEffect(() => {
+    screenShow(screenMsg)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenKey, screenShow])
   const bonusAmount = bonus?.amount_tyiyn ?? 0
   const batteryGrams = batteryPay ? parseLiters(batteryPay.kgText) : null
   // Цену за кг кассир может поменять в чеке: по умолчанию — цена приёма из настроек (ADR-078).
@@ -967,6 +995,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setError(null)
     setGiftAsked({})
     setPriceChanges([])
+    setDebtSign(null)
+    setSignAsk(null)
+    afterSign.current = false
     openQrs.forget(bankQr.qr?.id)
     openQrs.refresh()
     bankQr.clear()
@@ -1069,6 +1100,28 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }, [nextSourceKey])
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
+  // Подпись дана этому клиенту за эту сумму долга; другой клиент или сумма — расписаться заново.
+  const signKey = JSON.stringify([party?.id ?? null, debtAmount])
+  const signedForDebt = debtSign !== null && debtSign.key === signKey
+  /** Попросить подпись клиента за долг: на экране покупателя и, если его нет, на экране кассы. */
+  const askDebtSign = () => {
+    setSignAsk(signKey)
+    const due = party?.due_days ? `Оплатить в течение ${party.due_days} дн.` : null
+    screen.askSign(`Подпишите: в долг ${formatSom(debtAmount)}`, [party?.name ?? '', `Сумма покупки ${formatSom(total)}`, ...(due ? [due] : [])])
+  }
+  const takeSignature = (key: string, png: string) => {
+    setDebtSign({ key, png })
+    setSignAsk(null)
+    afterSign.current = true
+  }
+  const cancelSign = () => {
+    screen.cancelSign()
+    setSignAsk(null)
+  }
+  useEffect(() => {
+    if (signAsk && screen.signed) takeSignature(signAsk, screen.signed.png)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen.signed])
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
   const overLimit =
     party?.credit_limit_tyiyn != null && debtAmount > 0
@@ -1240,12 +1293,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         await submitNow()
       } finally {
         sending.current = false
+        autoPrint.current = false
         // Отсканированное, пока чек проводился, — в следующий чек (или в этот, если сервер отказал).
         releaseHeld()
       }
     })
 
   const submitNow = async () => {
+    // Долг — только с подписью клиента (задача 008): сначала подпись, чек — сразу после неё.
+    if (!fix && debtAmount > 0 && !signedForDebt) {
+      askDebtSign()
+      return
+    }
     if (!fix) {
       // Цена в чеке могла устареть (плитки, черновик, отложенный чек): сначала сверяем с
       // каталогом. Сменилась — строки по новой цене, кассир видит разницу и проводит заново.
@@ -1298,7 +1357,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     const key = JSON.stringify(content)
     if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
     const opId = attempt.current.opId
-    const body = { op_id: opId, client_time: new Date().toISOString(), ...content, removed_lines: forServer(dropped) }
+    const body = {
+      op_id: opId,
+      client_time: new Date().toISOString(),
+      ...content,
+      removed_lines: forServer(dropped),
+      ...(debtAmount > 0 && debtSign ? { debt_signature_png: debtSign.png } : {}),
+    }
     // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
     // нет связи, и после отправки (SPEC-09).
     const cashierName = (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? ''
@@ -1374,7 +1439,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
     const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
     // Товарный чек сам — по настройке «Масляная книжка и печать» (по умолчанию нет).
-    if (bookVehicle && prefs.auto_receipt) printSale(sale, saleChange, { bookBlock: prefs.receipt_block, discount: cs.print_discount })
+    // Чек, проведённый сам по оплате QR (задача 008), печатается всегда — кассир его не пробивал.
+    const auto = autoPrint.current
+    autoPrint.current = false
+    if ((bookVehicle && prefs.auto_receipt) || auto) printSale(sale, saleChange, { bookBlock: prefs.receipt_block, discount: cs.print_discount })
     if (bookVehicle) {
       const client = party?.name ?? null
       void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
@@ -1399,7 +1467,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         // История долга — по праву «Акт сверки»; без него документ печатается без истории.
         get<Reconciliation>(`/parties/${partyId}/reconciliation`).catch(() => null),
       ])
-        .then(([p, settings, history]) => printDebtDoc({ sale, party: p, settings, history }))
+        .then(async ([p, settings, history]) => printDebtDoc({ sale, party: p, settings, history, ...(await debtSignatures(sale, settings)) }))
         .catch(() => toast('Документ о долге не напечатан — напечатайте его из чека'))
     }
     if (parkedId) dropParked(parkedId)
@@ -1424,6 +1492,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const canSubmit = !needShift && !busy && blockers.length === 0 && (bankQr.qr?.status !== 'waiting' || bankQr.lost)
   // Кнопка чека: при `needShift` — «Открыть смену» (она всегда доступна).
   const submitDisabled = !needShift && !canSubmit
+  // Клиент расписался — чек проводится сам, кассиру не нажимать «Провести» второй раз.
+  useEffect(() => {
+    if (!afterSign.current || !signedForDebt || !canSubmit) return
+    afterSign.current = false
+    void submit()
+  })
+  // QR банка оплачен ровно на сумму картой — чек проводится и печатается сам (задача 008).
+  // Другая сумма — оплата без QR в чеке не ставится, чек ждёт кассира, как раньше.
+  const paidQrId = qrPaid ? bankQr.qr?.id : undefined
+  useEffect(() => {
+    if (!paidQrId || fix || autoQr.current === paidQrId || !canSubmit || signAsk) return
+    if (!payments?.some((p) => p.bank_qr_id === paidQrId)) return
+    autoQr.current = paidQrId
+    autoPrint.current = true
+    trySubmit()
+  })
   // На вынос с канистрой моторного масла — сначала «Это замена масла?» (SPEC-29 §18, ADR-118): один
   // раз на чек; 0,5–1 л — доливка, без вопроса.
   const askOil = !fix && saleType === 'takeaway' && !oilAsked && askOilChange(ourOil, categories.data)
@@ -3353,6 +3437,28 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             {fix ? 'Сохранить' : needShift ? 'Открыть смену' : 'Провести чек'}
           </Button>
         </div>
+      )}
+      {signAsk && (
+        <Modal title="Подпись клиента за долг" onClose={cancelSign}>
+          <div className="flex flex-col gap-3" data-testid="debt-sign-wait">
+            <div className="text-base text-slate-700">
+              В долг <b>{formatSom(debtAmount)}</b> — {party?.name}. Без подписи клиента чек в долг не проводится.
+            </div>
+            {screen.present ? (
+              <div className="rounded-md bg-sky-50 p-3 text-lg font-semibold text-sky-800" role="status">
+                Ждём подпись клиента на экране покупателя…
+              </div>
+            ) : (
+              <div className="text-sm text-amber-700" role="status">
+                Экран покупателя не открыт — клиент расписывается здесь.
+              </div>
+            )}
+            {!screen.present && <SignaturePad doneLabel="Подписать и провести" onDone={(png) => takeSignature(signAsk, png)} />}
+            <Button variant="secondary" onClick={cancelSign}>
+              Отмена
+            </Button>
+          </div>
+        </Modal>
       )}
       {oilQuestion && (
         <Modal title="Это замена масла?" onClose={() => setOilQuestion(false)}>

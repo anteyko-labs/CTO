@@ -12,11 +12,13 @@ import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { presetFromHit } from '../lib/oldCatalog'
 import { can } from '../lib/permissions'
-import type { Category, OldCatalogHit, Product } from '../lib/types'
+import { KIND_LABELS, type Category, type CategoryKind, type OldCatalogHit, type Product } from '../lib/types'
 import { searchUmag, umagStep } from '../lib/umagLink'
-import { countText, parseKg, parseOil } from '../lib/units'
+import { countText, parseKg, parseOil, viscosityFromName } from '../lib/units'
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
+import { CameraScanButton } from './CameraScan'
+import { sendToStation } from './labelTarget'
 import { PurchasePriceInput } from './PurchasePriceInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
@@ -48,6 +50,10 @@ interface Form {
   umagId: string | null
   /** Не масло — в килограммах (ADR-174): на полке и цена — за кг. */
   kg?: boolean
+  /** Цена продажи масла введена за канистру (по умолчанию) или за литр (задача 007). */
+  pricePer?: 'can' | 'l'
+  /** Вязкость масла; не выбрана — берётся из названия (задача 007). */
+  viscosity?: string
 }
 
 const empty = (barcode = '', name = ''): Form => ({
@@ -128,8 +134,39 @@ export function RevisionNewProduct({
   const category = cats.find((c) => c.id === form?.categoryId)
   const oil = category?.kind === 'oil'
   const kg = !oil && Boolean(form?.kg)
+  // Вязкость — у масла с включённым полем «Вязкость»: выбрана человеком или из названия (задача 007).
+  const viscDef = oil ? category?.attributes.find((a) => a.key === 'viscosity' && a.enabled !== false) : undefined
+  const viscosity = viscDef && form ? (form.viscosity ?? viscosityFromName(form.name) ?? '') : ''
+  const viscOptions = viscDef ? [...new Set([...(viscDef.options ?? []), ...(viscosity ? [viscosity] : [])])] : []
+  /** Новая категория прямо из окна (задача 007): право «Товары и штрихкоды», ревизия не по категории. */
+  /** Поиск категории (задача 007): ввели «м» — сначала на «м», затем содержащие «м». */
+  const [catQuery, setCatQuery] = useState('')
+  const cq = catQuery.trim().toLowerCase()
+  const shownCats = cq
+    ? [...cats.filter((c) => c.name.toLowerCase().startsWith(cq)), ...cats.filter((c) => !c.name.toLowerCase().startsWith(cq) && c.name.toLowerCase().includes(cq))]
+    : cats
+  const [newCat, setNewCat] = useState<{ name: string; kind: CategoryKind } | null>(null)
+  const catAct = useAction()
+  /** Заведён без своего кода: программа выдала код — показать его и предложить этикетку (задача 007). */
+  const [made, setMade] = useState<Product | null>(null)
+  /** Сколько этикеток: по умолчанию — сколько штук нашли (задача 007). */
+  const [madeCopies, setMadeCopies] = useState('1')
+  const createCategory = () =>
+    void catAct.run(async () => {
+      if (!newCat) return
+      const name = newCat.name.trim()
+      if (!name) throw new Error('Введите название категории')
+      const c = await post<Category>('/categories', { name, kind: newCat.kind })
+      categories.setData((list) => [...(list ?? []), c])
+      setForm((f) => (f ? { ...f, categoryId: c.id } : f))
+      setNewCat(null)
+      toast(`Категория «${c.name}» создана`)
+    })
   const ml = oil && form ? parseLiters(form.liters) : null
-  const price = form?.price.trim() ? parseSom(form.price) : 0
+  const entered = form?.price.trim() ? parseSom(form.price) : 0
+  const perLiter = oil && form?.pricePer === 'l'
+  // Цена канистры: введена за литр — литр × объём тары.
+  const price = perLiter ? (ml && entered !== null ? Math.round((entered * ml) / 1000) : null) : entered
   const pour = ml && price ? canisterPourPrice(price, ml) : null
 
   // Скан незнакомого кода — сразу ищем его в старой базе Умаг: связанная строка — её товар
@@ -158,6 +195,21 @@ export function RevisionNewProduct({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetBarcode, ready])
+
+  /** Код с камеры (задача 007): товар есть — считать его в строке; строка Умага — карточка из неё;
+   *  нигде — новая карточка с этим кодом. */
+  const fromCamera = (code: string) =>
+    void act.run(async () => {
+      const p = await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`).catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 404) return null
+        throw e
+      })
+      if (p) return onExisting(p)
+      const step = umagStep(await searchUmag({ barcode: code }).catch(() => []))
+      if (step.kind === 'linked') return onExisting(await get<Product>(`/products/${step.productId}`))
+      if (step.kind === 'umag') return fromOld(step.hit, code)
+      setForm({ ...empty(code), categoryId: categoryId ?? '' })
+    })
 
   function fromOld(h: OldCatalogHit, code: string) {
     const p = presetFromHit(h, cats, categoryId ?? '', code)
@@ -206,7 +258,8 @@ export function RevisionNewProduct({
         container_ml: oil ? ml : null,
         ...(kg ? { unit: 'g' } : {}),
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
-        sale_price_tyiyn: parseSom(form.price) ?? 0,
+        sale_price_tyiyn: price ?? 0,
+        ...(viscosity ? { attrs: { viscosity } } : {}),
         initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
         ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
       }
@@ -265,9 +318,42 @@ export function RevisionNewProduct({
         await retrySame(() => put(`/revisions/${revisionId}/lines`, body))
         ops.done('taken', opId)
         toast(TAKEN_ADDED)
-      } else toast(`Заведён и посчитан: ${r.created.product.name}`)
+      } else {
+        toast(`Заведён и посчитан: ${r.created.product.name}`)
+        if (!form.barcode.trim() && r.created.product.barcodes.length > 0) {
+          setMade(r.created.product)
+          setMadeCopies(String(r.created.product.unit === 'piece' && count > 0 ? Math.min(count, 500) : 1))
+          return
+        }
+      }
       onDone()
     })
+
+  if (made)
+    return (
+      <Modal title="Товар заведён" onClose={onDone}>
+        <div className="flex flex-col gap-3" data-testid="revnew-made">
+          <p className="text-sm text-slate-700">
+            «{made.name}» — программа выдала штрихкод <span className="font-mono font-semibold">{made.barcodes[0]}</span>. Наклейте этикетку, чтобы
+            дальше сканировать товар.
+          </p>
+          <Field label="Этикеток на склад, шт">
+            <input id="revnew-label-copies" inputMode="numeric" value={madeCopies} onChange={(e) => setMadeCopies(e.target.value.replace(/\D/g, ''))} />
+          </Field>
+          <ErrorBox error={act.error} />
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              disabled={act.busy || !(Number(madeCopies) >= 1 && Number(madeCopies) <= 500)}
+              onClick={() => void act.run(async () => void (await sendToStation([{ product: made, copies: Number(madeCopies) }])))}
+            >
+              Напечатать этикетку
+            </Button>
+            <Button onClick={onDone}>Готово</Button>
+          </div>
+        </div>
+      </Modal>
+    )
 
   return (
     <Modal title="Товар, которого нет в программе" wide onClose={onClose}>
@@ -278,6 +364,9 @@ export function RevisionNewProduct({
               Напишите название или отсканируйте код. Если товар уже есть — посчитайте его в строке; из старой программы — карточка
               заполнится сама.
             </p>
+            <div className="flex justify-end">
+              <CameraScanButton onCode={fromCamera} />
+            </div>
             <ProductPicker
               placeholder="Название, артикул или штрихкод"
               onPick={(p) => onExisting(p)}
@@ -295,19 +384,84 @@ export function RevisionNewProduct({
                 <input id="revnew-name" autoFocus={!form.from} value={form.name} onChange={(e) => set('name', e.target.value)} />
               </Field>
               <Field label="Категория" required>
+                {!categoryId && (
+                  <input
+                    id="revnew-category-search"
+                    className="mb-1"
+                    placeholder="Начните вводить — или выберите ниже"
+                    value={catQuery}
+                    onChange={(e) => {
+                      const q = e.target.value
+                      setCatQuery(q)
+                      const t = q.trim().toLowerCase()
+                      const starts = t ? cats.filter((c) => c.name.toLowerCase().startsWith(t)) : []
+                      // Одна подходящая — сразу выбрана.
+                      if (starts.length === 1) set('categoryId', starts[0].id)
+                    }}
+                  />
+                )}
                 <select id="revnew-category" value={form.categoryId} disabled={Boolean(categoryId)} onChange={(e) => set('categoryId', e.target.value)}>
-                  <option value="">— выберите —</option>
-                  {cats.map((c) => (
+                  <option value="">{cq && shownCats.length === 0 ? '— нет такой, создайте ниже —' : '— выберите —'}</option>
+                  {/* Выбранная остаётся в списке и при поиске. */}
+                  {[...shownCats, ...cats.filter((c) => c.id === form.categoryId && !shownCats.includes(c))].map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
                   ))}
                 </select>
+                {!categoryId && mayLink && !newCat && (
+                  <button type="button" className="mt-1 self-start text-sm text-sky-700 hover:underline" data-testid="revnew-new-category" onClick={() => setNewCat({ name: '', kind: 'other' })}>
+                    + Новая категория
+                  </button>
+                )}
               </Field>
+              {newCat && (
+                <div className="flex flex-col gap-2 rounded border border-slate-200 p-3 sm:col-span-2" data-testid="revnew-category-form">
+                  <Field label="Название новой категории" required>
+                    <input
+                      autoFocus
+                      id="revnew-category-name"
+                      value={newCat.name}
+                      onChange={(e) => setNewCat({ ...newCat, name: e.target.value })}
+                      onKeyDown={(e) => e.key === 'Enter' && createCategory()}
+                    />
+                  </Field>
+                  <Field label="Вид" hint="Масло — в литрах, остальное — в штуках">
+                    <select value={newCat.kind} onChange={(e) => setNewCat({ ...newCat, kind: e.target.value as CategoryKind })}>
+                      {(Object.keys(KIND_LABELS) as CategoryKind[]).map((k) => (
+                        <option key={k} value={k}>
+                          {KIND_LABELS[k]}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <ErrorBox error={catAct.error} />
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" onClick={() => setNewCat(null)}>
+                      Отмена
+                    </Button>
+                    <Button disabled={catAct.busy || !newCat.name.trim()} onClick={createCategory}>
+                      Создать категорию
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {viscDef && (
+                <Field label="Вязкость" hint={form.viscosity === undefined && viscosity ? 'из названия' : undefined}>
+                  <select data-testid="revnew-viscosity" value={viscosity} onChange={(e) => set('viscosity', e.target.value)}>
+                    <option value="">— не указана —</option>
+                    {viscOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
               <Field label="Бренд">
                 <input value={form.brand} onChange={(e) => set('brand', e.target.value)} />
               </Field>
-              <Field label="Штрихкод" hint="Без кода система выдаст свой">
+              <Field label="Штрихкод" hint="Пусто — программа выдаст свой код и предложит напечатать этикетку">
                 <input value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />
               </Field>
               {oil && (
@@ -323,8 +477,32 @@ export function RevisionNewProduct({
                   </select>
                 </Field>
               )}
-              <Field label={oil ? 'Цена канистры, с' : kg ? 'Цена продажи за кг, с' : 'Цена продажи, с'} hint={pour !== null ? `на розлив: ${formatSom(pour)} за л` : undefined}>
-                <input id="revnew-price" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
+              <Field
+                label={oil ? (perLiter ? 'Цена продажи за литр, с' : 'Цена канистры, с') : kg ? 'Цена продажи за кг, с' : 'Цена продажи, с'}
+                hint={
+                  oil && price
+                    ? perLiter
+                      ? `канистра: ${formatSom(price)}`
+                      : pour !== null
+                        ? `на розлив: ${formatSom(pour)} за л`
+                        : undefined
+                    : undefined
+                }
+              >
+                <div className="flex gap-2">
+                  <input id="revnew-price" className="min-w-0 flex-1" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
+                  {oil && (
+                    <select
+                      data-testid="revnew-price-per"
+                      aria-label="Цена продажи за"
+                      value={perLiter ? 'l' : 'can'}
+                      onChange={(e) => set('pricePer', e.target.value as 'can' | 'l')}
+                    >
+                      <option value="can">за канистру</option>
+                      <option value="l">за литр</option>
+                    </select>
+                  )}
+                </div>
               </Field>
               <PurchasePriceInput
                 id="revnew-cost"
@@ -333,7 +511,7 @@ export function RevisionNewProduct({
                 shown={costShown}
                 containerMl={oil ? ml : null}
                 unitWord={oil ? 'за канистру' : kg ? 'за кг' : 'за шт'}
-                sale={parseSom(form.price)}
+                sale={price}
                 hint="По ней ревизия оценит найденное"
                 onChange={(e) => setForm((f) => (f ? { ...f, cost: e.text, costPer: e.per } : f))}
                 onShown={setCostShown}

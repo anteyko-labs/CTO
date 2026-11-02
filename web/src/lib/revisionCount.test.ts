@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addIsEmpty, appendCount, countLogText, countSummary, defaultCountMode, type CountEntry } from './revisionCount'
+import { addIsEmpty, appendCount, countLogText, countSummary, countedBy, defaultCountMode, mineOf, type CountEntry } from './revisionCount'
 
 describe('defaultCountMode', () => {
   it('всегда «+ добавить»: каждый вписывает найденное в своём месте, «= итог» — только явным выбором (задача 005, Н7)', () => {
@@ -79,5 +79,33 @@ describe('кто сколько добавил (задача 005, Н7)', () => {
     expect(countSummary(log, 3, sht)).toBe('Азиз +1 шт, Азиз +2 шт = 3 шт')
     expect(appendCount(log, { by: 'Азиз', user_id: 'z', mode: 'add', qty: 1 })).toEqual([log[0], { ...log[1], qty: 3 }])
     expect(appendCount([{ by: 'Азиз', mode: 'add', qty: 1 }], { by: 'Азиз', mode: 'add', qty: 1 })).toEqual([{ by: 'Азиз', mode: 'add', qty: 2 }])
+  })
+})
+
+describe('mineOf — своё число строки (задача 007)', () => {
+  const e = (user_id: string, mode: 'add' | 'set' | 'clear', qty: number) => ({ by: user_id, user_id, mode, qty })
+  it('сумма своих прибавок, чужие не считаются', () => {
+    expect(mineOf([e('a', 'add', 5), e('b', 'add', 4), e('a', 'add', -2)], 'a')).toBe(3)
+    expect(mineOf([e('a', 'add', 5), e('b', 'add', 4)], 'b')).toBe(4)
+  })
+  it('не считал сам — null; «не нашли» — 0', () => {
+    expect(mineOf([e('b', 'add', 4)], 'a')).toBeNull()
+    expect(mineOf([e('a', 'add', 0)], 'a')).toBe(0)
+  })
+  it('после «= итог» или «убрал» — с нуля', () => {
+    expect(mineOf([e('a', 'add', 5), e('o', 'set', 8), e('a', 'add', 1)], 'a')).toBe(1)
+    expect(mineOf([e('a', 'add', 5), e('o', 'clear', 0)], 'a')).toBeNull()
+  })
+})
+
+describe('countedBy — кто что считает (задача 007)', () => {
+  it('по входу: сколько товаров со своим числом', () => {
+    const e = (u: string, mode: 'add' | 'set', qty: number) => ({ by: `имя ${u}`, user_id: u, mode, qty })
+    const lines = [{ counted_log: [e('a', 'add', 2), e('b', 'add', 1)] }, { counted_log: [e('a', 'add', 1)] }, { counted_log: [e('b', 'add', 1), e('o', 'set', 3)] }]
+    expect(countedBy(lines)).toEqual([
+      { userId: 'a', name: 'имя a', products: 2 },
+      { userId: 'b', name: 'имя b', products: 1 },
+      { userId: 'o', name: 'имя o', products: 0 },
+    ])
   })
 })

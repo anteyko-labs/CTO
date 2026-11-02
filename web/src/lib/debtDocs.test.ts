@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { actDocLink, actLines, actPeriod, actVerdict, BLANK, debtHistory, numberInWords, renderTemplate, somInWords, type Reconciliation, type ReconRow } from './debtDocs'
+import { actDocLink, actLines, actPeriod, actVerdict, BLANK, debtDocHtml, debtHistory, numberInWords, renderTemplate, signatureSlot, somInWords, withSignatureSlots, type Reconciliation, type ReconRow } from './debtDocs'
+import type { Sale } from './types'
 
 describe('сумма прописью', () => {
   it('сомы словами, тыйыны цифрами (SPEC-10)', () => {
@@ -119,5 +120,49 @@ describe('акт сверки на экране (задача 003 Н9)', () => {
     expect(actVerdict({ ...act([]), closing_tyiyn: 0 }, 'Автодом')).toBe('На 09.10.2026 долга между сторонами нет.')
     expect(actVerdict({ ...act([]), closing_tyiyn: 90_000 }, 'Автодом')).toMatch(/^На 09\.10\.2026 Эрлан должен Автодом 900/)
     expect(actVerdict({ ...act([]), closing_tyiyn: -5_000 }, '')).toMatch(/^На 09\.10\.2026 точка должна Эрлан 50/)
+  })
+})
+
+describe('подписи в документе о долге (задача 008)', () => {
+  const sale = {
+    id: 's1',
+    number: 7,
+    kind: 'sale',
+    sale_type: 'takeaway',
+    cashier_name: 'Айгуль',
+    contact_name: null,
+    vehicle_plate: null,
+    party_balance_tyiyn: 50_000,
+    total_tyiyn: 50_000,
+    created_at: '2026-11-02T06:00:00Z',
+    business_date: '2026-11-02',
+    lines: [],
+    payments: [{ method: 'debt', amount_tyiyn: 50_000 }],
+  } as unknown as Sale
+  const party = { name: 'Эрлан', kind: 'person' as const, inn: '123', phone: '', due_days: null }
+  const settings = { seller: { name: 'ИП', inn: '', address: '', phone: '', director: '', bank: '', city: '' }, person: null, company: null }
+  const png = 'data:image/png;base64,iVBORw0KGgo='
+
+  it('подпись клиента и руководителя — картинками, в двух экземплярах расписки', () => {
+    const [, html] = debtDocHtml({ sale, party, settings, buyerSignature: png, sellerSignature: png })
+    expect(html.match(/<img src="data:image\/png/g)).toHaveLength(4)
+  })
+
+  it('без подписи руководителя — линия для ручки', () => {
+    const [, html] = debtDocHtml({ sale, party, settings, buyerSignature: png })
+    expect(html).toContain('Продавец:    ________________ / Айгуль /')
+    expect(html.match(/<img/g)).toHaveLength(2)
+  })
+
+  it('сохранённый до подписей шаблон получает места подписи', () => {
+    expect(withSignatureSlots('Покупатель:  ________________ / {{клиент}} /\nПродавец:    ________________ / {{кассир}} /')).toBe(
+      'Покупатель:  {{подпись_покупателя}} / {{клиент}} /\nПродавец:    {{подпись_продавца}} / {{кассир}} /',
+    )
+    expect(withSignatureSlots('Получил:   ________________ / {{работник}} /')).toBe('Получил:   {{подпись_покупателя}} / {{работник}} /')
+  })
+
+  it('не картинка PNG — линия, а не вставка', () => {
+    expect(signatureSlot('javascript:alert(1)')).toBe('________________')
+    expect(signatureSlot('data:image/png;base64,AAA" onerror="x')).toBe('________________')
   })
 })
