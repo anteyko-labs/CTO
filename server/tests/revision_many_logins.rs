@@ -572,3 +572,46 @@ async fn cross_removes_own_line_without_zeroing(pool: PgPool) {
     let left = w.ok(aziz, "PUT", &uri, body(0, "mine")).await;
     assert_eq!(left["counted_qty"], json!(4));
 }
+
+/// «Все вместе» у владельца (задача 007): по строке — насчитанное по закупке и по цене продажи;
+/// сотруднику этих сумм сервер не отдаёт (I13).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn owner_sees_cost_and_sale_of_counted(pool: PgPool) {
+    let w = World::new(pool).await;
+    let cat = w
+        .ok(
+            &w.owner,
+            "POST",
+            "/api/v1/categories",
+            json!({ "name": "Масла", "kind": "other" }),
+        )
+        .await;
+    let p = w
+        .ok(
+            &w.owner,
+            "POST",
+            "/api/v1/products",
+            json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Масло 9 шт", "sale_price_tyiyn": 10_000, "initial_cost_tyiyn": 6_000 }),
+        )
+        .await;
+    let item = p["id"].as_str().unwrap().to_string();
+    let rev = w
+        .ok(&w.people[0], "POST", "/api/v1/revisions", json!({}))
+        .await;
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    w.ok(
+        &w.people[0],
+        "PUT",
+        &format!("/api/v1/revisions/{rid}/lines"),
+        json!({ "product_id": item, "counted_qty": 9, "mode": "add", "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    let own = w.line(&w.owner, &rid, &item).await;
+    assert_eq!(own["sale_value_tyiyn"], json!(90_000), "{own}");
+    assert_eq!(own["cost_value_tyiyn"], json!(54_000), "{own}");
+    let staff = w.line(&w.people[0], &rid, &item).await;
+    assert!(
+        staff.get("sale_value_tyiyn").is_none() && staff.get("cost_value_tyiyn").is_none(),
+        "{staff}"
+    );
+}

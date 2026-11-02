@@ -59,6 +59,13 @@ pub struct RevisionLine {
     /// Стоимость расхождения — только владельцу (инвариант 13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value_delta_tyiyn: Option<i64>,
+    /// Насчитанное по закупке и по цене продажи — только владельцу, в черновике (задача 007):
+    /// «скок получает с позиции». Закупка — средняя себестоимость остатка, без остатка — последняя
+    /// закупка; не знаем — нет.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_value_tyiyn: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale_value_tyiyn: Option<i64>,
     /// Масло: расхождение больше нормы (вопрос 32, ADR-052).
     #[serde(default)]
     pub over_norm: bool,
@@ -252,6 +259,8 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             over_norm: over_norm(&r.unit, r.expected_qty, Some(r.counted_qty), norm),
             counted_qty: Some(r.counted_qty),
             value_delta_tyiyn: owner.then_some(r.value_delta_tyiyn),
+            cost_value_tyiyn: None,
+            sale_value_tyiyn: None,
             unit: r.unit,
             viscosity: r.viscosity,
             counted_by: r.counted_by,
@@ -267,7 +276,9 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
                       coalesce((select array_agg(b.code order by b.code) from product_barcodes b
                                 where b.product_id = p.id), '{}') as "barcodes!",
                       coalesce(l.stock_at_count, bp.stock_qty, 0) as "expected!", l.counted_qty as "counted?",
-                      u.full_name as "counted_by?"
+                      u.full_name as "counted_by?", coalesce(bp.sale_price_tyiyn, p.sale_price_tyiyn) as "sale_price_tyiyn!",
+                      coalesce(bp.stock_qty, 0) as "stock_qty!", coalesce(bp.stock_value_tyiyn, 0) as "stock_value!",
+                      coalesce(bp.last_cost_tyiyn, 0) as "last_cost!", coalesce(bp.last_cost_qty, 0) as "last_cost_qty!"
                from products p
                left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
                left join revision_lines l on l.product_id = p.id and l.revision_id = $1
@@ -286,6 +297,15 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
         .into_iter()
         .map(|r| {
             let lg = log.remove(&r.id).unwrap_or_default();
+            let sale_value = r.counted.filter(|_| owner).and_then(|q| {
+                // Цена — за штуку, за канистру (масло) или за кг (граммы).
+                let per = match r.unit.as_str() {
+                    "ml" => r.container_ml.filter(|c| *c > 0)?,
+                    "g" | "mm" => 1000,
+                    _ => 1,
+                };
+                div_round(i128::from(q) * i128::from(r.sale_price_tyiyn), i128::from(per))
+            });
             RevisionLine {
             product_id: r.id,
             name: r.name,
@@ -297,6 +317,15 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             expected_qty: r.expected,
             counted_qty: r.counted,
             value_delta_tyiyn: None,
+            cost_value_tyiyn: r.counted.filter(|_| owner).and_then(|q| {
+                let (num, den) = if r.stock_qty > 0 && r.stock_value > 0 {
+                    (r.stock_value, r.stock_qty)
+                } else {
+                    (r.last_cost, r.last_cost_qty)
+                };
+                (den > 0).then(|| div_round(i128::from(q) * i128::from(num), i128::from(den))).flatten()
+            }),
+            sale_value_tyiyn: sale_value,
             viscosity: r.viscosity,
             counted_by: r.counted_by,
             counted_log: lg.entries,

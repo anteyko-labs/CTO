@@ -97,6 +97,9 @@ interface Line {
   counted_log?: CountEntry[]
   /** Номер последней записи строки на сервере: показывается только ответ новее показанного. */
   version?: number
+  /** Насчитанное по закупке и по цене продажи — владельцу в черновике (задача 007). */
+  cost_value_tyiyn?: number
+  sale_value_tyiyn?: number
 }
 
 /** Ответ записи строки: общий итог (убрали строку — нет) и номер записи. */
@@ -1159,6 +1162,17 @@ function Draft({
                     ) : (
                       countText(l, l.counted_qty)
                     )}
+                    {allView && draft && l.sale_value_tyiyn !== undefined && (
+                      <div className="mt-0.5 whitespace-normal text-xs text-slate-600" data-testid="line-money">
+                        продажа {formatSom(l.sale_value_tyiyn)}
+                        {l.cost_value_tyiyn !== undefined && (
+                          <>
+                            {' '}· закупка {formatSom(l.cost_value_tyiyn)} ·{' '}
+                            <span className="font-medium text-emerald-700">прибыль {formatSom(l.sale_value_tyiyn - l.cost_value_tyiyn)}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
                     {!ownView && l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
                       <div className="mt-0.5 whitespace-normal text-xs text-slate-400" data-testid="counted-by">
                         {l.counted_log?.length ? (
@@ -1192,6 +1206,7 @@ function Draft({
           <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы товаров ревизии" />
         </div>
       </Card>
+      {allView && draft && <RevisionMoney lines={countedAll} />}
       {owner && !draft && rev.head.status === 'posted' && (
         <div className="text-right font-semibold">Итог ревизии в деньгах: {formatSom(valueTotal)}</div>
       )}
@@ -1347,6 +1362,27 @@ function Draft({
         </Modal>
       )}
     </div>
+  )
+}
+
+/** Итог насчитанного у владельца в «Все вместе» (задача 007): закупка, продажа, валовая прибыль,
+ *  средняя наценка (прибыль к закупке) — по строкам, где закупка известна. */
+function RevisionMoney({ lines }: { lines: Line[] }) {
+  const priced = lines.filter((l) => l.sale_value_tyiyn !== undefined && l.cost_value_tyiyn !== undefined)
+  const cost = priced.reduce((a, l) => a + (l.cost_value_tyiyn ?? 0), 0)
+  const sale = priced.reduce((a, l) => a + (l.sale_value_tyiyn ?? 0), 0)
+  const profit = sale - cost
+  const markup = cost > 0 ? ((profit / cost) * 100).toFixed(1).replace('.', ',') : null
+  const noCost = lines.length - priced.length
+  return (
+    <Card className="flex flex-col gap-1 text-sm" data-testid="revision-money">
+      <div className="font-semibold">Насчитано в деньгах</div>
+      <div>Закупка: {formatSom(cost)}</div>
+      <div>Продажа: {formatSom(sale)}</div>
+      <div className="font-medium text-emerald-700">Валовая прибыль: {formatSom(profit)}</div>
+      <div>Средняя наценка: {markup === null ? '—' : `${markup} %`}</div>
+      {noCost > 0 && <div className="text-xs text-slate-500">Без закупки (не вошли в итог): {noCost}</div>}
+    </Card>
   )
 }
 
