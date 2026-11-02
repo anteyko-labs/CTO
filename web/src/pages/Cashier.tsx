@@ -894,7 +894,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     askGift(p)
     const kind = defaultLineKind(p, cs.barrel_pour_over_l)
     if (kind === 'pour') {
-      // Бочка (задача 007): одна строка розлива, литры вводит кассир — фокус в них.
+      // Бочка (задача 010): одна строка розлива, литры вводит кассир — фокус в них.
       const same = lines.find((l) => l.product?.id === p.id && l.kind === 'pour')
       const key = same?.key ?? nextKey()
       if (!same) setLines((ls) => [...ls, { key, kind, product: p, qtyText: '', priceText: somInput(listPrice({ kind, product: p })) }])

@@ -12890,7 +12890,7 @@ async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
     assert_eq!(v["admin_limit_pct"], Value::Null);
     assert_eq!(
         v["barrel_pour_over_l"], 150,
-        "бочка — больше 150 л (задача 007)"
+        "бочка — больше 150 л (задача 010)"
     );
     let body = json!({ "op_id": Uuid::now_v7(),
                        "buttons": [{ "id": "bonus", "place": "total" },
