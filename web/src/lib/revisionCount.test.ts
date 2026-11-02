@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addIsEmpty, appendCount, countLogText, countSummary, defaultCountMode, mineOf, type CountEntry } from './revisionCount'
+import { addIsEmpty, appendCount, countLogText, countSummary, countedBy, defaultCountMode, mineOf, type CountEntry } from './revisionCount'
 
 describe('defaultCountMode', () => {
   it('всегда «+ добавить»: каждый вписывает найденное в своём месте, «= итог» — только явным выбором (задача 005, Н7)', () => {
@@ -95,5 +95,17 @@ describe('mineOf — своё число строки (задача 007)', () =>
   it('после «= итог» или «убрал» — с нуля', () => {
     expect(mineOf([e('a', 'add', 5), e('o', 'set', 8), e('a', 'add', 1)], 'a')).toBe(1)
     expect(mineOf([e('a', 'add', 5), e('o', 'clear', 0)], 'a')).toBeNull()
+  })
+})
+
+describe('countedBy — кто что считает (задача 007)', () => {
+  it('по входу: сколько товаров со своим числом', () => {
+    const e = (u: string, mode: 'add' | 'set', qty: number) => ({ by: `имя ${u}`, user_id: u, mode, qty })
+    const lines = [{ counted_log: [e('a', 'add', 2), e('b', 'add', 1)] }, { counted_log: [e('a', 'add', 1)] }, { counted_log: [e('b', 'add', 1), e('o', 'set', 3)] }]
+    expect(countedBy(lines)).toEqual([
+      { userId: 'a', name: 'имя a', products: 2 },
+      { userId: 'b', name: 'имя b', products: 1 },
+      { userId: 'o', name: 'имя o', products: 0 },
+    ])
   })
 })

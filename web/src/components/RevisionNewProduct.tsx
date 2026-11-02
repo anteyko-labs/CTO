@@ -17,6 +17,7 @@ import { searchUmag, umagStep } from '../lib/umagLink'
 import { countText, parseKg, parseOil, viscosityFromName } from '../lib/units'
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
+import { printLabels } from './labels'
 import { PurchasePriceInput } from './PurchasePriceInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
@@ -137,6 +138,8 @@ export function RevisionNewProduct({
   /** Новая категория прямо из окна (задача 007): право «Товары и штрихкоды», ревизия не по категории. */
   const [newCat, setNewCat] = useState<{ name: string; kind: CategoryKind } | null>(null)
   const catAct = useAction()
+  /** Заведён без своего кода: программа выдала код — показать его и предложить этикетку (задача 007). */
+  const [made, setMade] = useState<Product | null>(null)
   const createCategory = () =>
     void catAct.run(async () => {
       if (!newCat) return
@@ -286,9 +289,34 @@ export function RevisionNewProduct({
         await retrySame(() => put(`/revisions/${revisionId}/lines`, body))
         ops.done('taken', opId)
         toast(TAKEN_ADDED)
-      } else toast(`Заведён и посчитан: ${r.created.product.name}`)
+      } else {
+        toast(`Заведён и посчитан: ${r.created.product.name}`)
+        if (!form.barcode.trim() && r.created.product.barcodes.length > 0) {
+          setMade(r.created.product)
+          return
+        }
+      }
       onDone()
     })
+
+  if (made)
+    return (
+      <Modal title="Товар заведён" onClose={onDone}>
+        <div className="flex flex-col gap-3" data-testid="revnew-made">
+          <p className="text-sm text-slate-700">
+            «{made.name}» — программа выдала штрихкод <span className="font-mono font-semibold">{made.barcodes[0]}</span>. Наклейте этикетку, чтобы
+            дальше сканировать товар.
+          </p>
+          <ErrorBox error={act.error} />
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" disabled={act.busy} onClick={() => void act.run(async () => void (await printLabels([{ product: made, copies: 1 }])))}>
+              Напечатать этикетку
+            </Button>
+            <Button onClick={onDone}>Готово</Button>
+          </div>
+        </div>
+      </Modal>
+    )
 
   return (
     <Modal title="Товар, которого нет в программе" wide onClose={onClose}>
@@ -376,7 +404,7 @@ export function RevisionNewProduct({
               <Field label="Бренд">
                 <input value={form.brand} onChange={(e) => set('brand', e.target.value)} />
               </Field>
-              <Field label="Штрихкод" hint="Без кода система выдаст свой">
+              <Field label="Штрихкод" hint="Пусто — программа выдаст свой код и предложит напечатать этикетку">
                 <input value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />
               </Field>
               {oil && (

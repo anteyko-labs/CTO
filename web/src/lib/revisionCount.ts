@@ -57,6 +57,20 @@ export function mineOf(log: CountEntry[], userId: string): number | null {
   return n
 }
 
+/**
+ * Кто что считает в черновике (задача 007): по каждому входу — имя и сколько товаров у него
+ * посчитано (своё число строки не пусто), в порядке первой записи.
+ */
+export function countedBy(lines: { counted_log?: CountEntry[] }[]): { userId: string; name: string; products: number }[] {
+  const out = new Map<string, { userId: string; name: string; products: number }>()
+  for (const l of lines) {
+    const log = l.counted_log ?? []
+    for (const e of log) if (e.user_id && !out.has(e.user_id)) out.set(e.user_id, { userId: e.user_id, name: e.by, products: 0 })
+    for (const p of out.values()) if (log.some((e) => e.user_id === p.userId) && mineOf(log, p.userId) !== null) p.products++
+  }
+  return [...out.values()]
+}
+
 /** Одна и та же запись одного входа: по входу, а у прежних ответов без входа — по имени. */
 const sameWriter = (a: CountEntry, b: CountEntry): boolean => (a.user_id && b.user_id ? a.user_id === b.user_id : a.by === b.by)
 

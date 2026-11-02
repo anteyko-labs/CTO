@@ -6,6 +6,12 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e2f3' }
+/** Заведён без своего кода — окно с выданным кодом (задача 007): «Готово». */
+async function doneMade(page: import('@playwright/test').Page) {
+  const made = page.getByTestId('revnew-made')
+  if (await made.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) await made.getByRole('button', { name: 'Готово' }).click()
+}
+
 const RUN = Date.now().toString().slice(-8)
 const money = (text: string) => new RegExp(text.replace(/ /g, '\\s'))
 /** Снимок 1×1 точка — «фото накладной». */
@@ -210,6 +216,7 @@ test('ревизия и товары — один экран; в ревизию 
   await dialog.locator('#revnew-cost').fill('450')
   await dialog.locator('#revnew-count').fill('5')
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
+  await doneMade(page)
   await expect(dialog).toBeHidden()
   const row = page.getByRole('row', { name: new RegExp(name) })
   await expect(row).toBeVisible()

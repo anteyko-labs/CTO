@@ -2,6 +2,12 @@
 // из названия; у сканера — кнопка камеры.
 import { expect, test, type Page } from '@playwright/test'
 
+/** Заведён без своего кода — окно с выданным кодом (задача 007): «Готово». */
+async function doneMade(page: import('@playwright/test').Page) {
+  const made = page.getByTestId('revnew-made')
+  if (await made.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) await made.getByRole('button', { name: 'Готово' }).click()
+}
+
 const RUN = Date.now().toString().slice(-8)
 
 async function login(page: Page) {
@@ -36,6 +42,10 @@ test('ревизия: новая категория из окна товара, 
   await dialog.locator('#revnew-cost').fill('2500')
   await dialog.locator('#revnew-count').fill('2')
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
+  // Своего кода нет — программа выдала код, окно показывает его и предлагает этикетку.
+  await expect(page.getByTestId('revnew-made')).toContainText('программа выдала штрихкод')
+  await expect(page.getByRole('button', { name: 'Напечатать этикетку' })).toBeVisible()
+  await doneMade(page)
   await expect(dialog).toBeHidden()
   const found = (await (await page.request.get(`/api/v1/products?q=${encodeURIComponent(RUN)}`)).json()) as { name: string; attrs: Record<string, string> }[]
   expect(found.find((p) => p.name === name)?.attrs.viscosity).toBe('5W-30')

@@ -26,6 +26,7 @@ import {
   appendCount,
   countLogText,
   countSummary,
+  countedBy,
   mineOf,
   defaultCountMode,
   expectedBody,
@@ -204,13 +205,19 @@ function Draft({
   const draft = rev.head.status === 'draft'
   /** Владелец смотрит «Все вместе» — итог строк и кто сколько; иначе каждый видит только свой
    *  пересчёт (задача 007). */
-  const [allView, setAllViewState] = useState(() => localStorage.getItem(VIEW_KEY) === 'all')
-  /** Выбор владельца запоминается на устройстве. */
-  const setAllView = (v: boolean) => {
-    localStorage.setItem(VIEW_KEY, v ? 'all' : 'own')
-    setAllViewState(v)
+  // Вид владельца: «Моё» (own), «Все вместе» (all — объединённая ревизия) или пересчёт одного
+  // сотрудника (его вход) — только смотреть; запоминается на устройстве.
+  const [view, setViewState] = useState(() => (owner ? (localStorage.getItem(VIEW_KEY) ?? 'own') : 'own'))
+  const setView = (v: string) => {
+    localStorage.setItem(VIEW_KEY, v)
+    setViewState(v)
   }
-  const ownView = draft && !(owner && allView)
+  const allView = owner && view === 'all'
+  const ownView = draft && !allView
+  /** Чей пересчёт на экране в своём виде: свой или выбранного владельцем сотрудника. */
+  const viewUser = owner && view !== 'all' && view !== 'own' ? view : me.id
+  /** Владелец смотрит чужой пересчёт — без ввода. */
+  const readOnly = ownView && viewUser !== me.id
   /** Сотрудник во время пересчёта не видит учётного остатка и расхождений — слепой пересчёт. */
   const blind = draft && !owner
   // Строка, появившаяся до перечитывания, — новее загруженной, пока перечитывание её не догонит.
@@ -222,7 +229,8 @@ function Draft({
     ...extra.filter((e) => !rev.lines.some((x) => x.product_id === e.product_id)),
   ]
   // Свой вид: в строке — своё число (сумма своих прибавок), а не общий итог (задача 007).
-  const allLines = ownView ? rawLines.map((x) => ({ ...x, counted_qty: mineOf(x.counted_log ?? [], me.id), counted_by: null })) : rawLines
+  const allLines = ownView ? rawLines.map((x) => ({ ...x, counted_qty: mineOf(x.counted_log ?? [], viewUser), counted_by: null })) : rawLines
+  const people = owner && draft ? countedBy(rawLines) : []
 
   /** Товар этой ревизии: весь склад или её категория. */
   const fitsRevision = (p: Pick<Product, 'category_id'>) => !rev.head.category_id || p.category_id === rev.head.category_id
@@ -674,7 +682,7 @@ function Draft({
   // чужие строки и непосчитанный склад не показываются, их находят сканером или поиском (задача 007).
   const pendingIds = new Set(unsentByLine(queue, fresh).keys())
   const shownLines = ownView
-    ? allLines.filter((l) => l.counted_qty !== null || opened.has(l.product_id) || edits[l.product_id] !== undefined || pendingIds.has(l.product_id))
+    ? allLines.filter((l) => l.counted_qty !== null || (!readOnly && opened.has(l.product_id)) || edits[l.product_id] !== undefined || pendingIds.has(l.product_id))
     : allLines
   const lines = shownLines.filter((l) => {
     const v = viscosityOf(l)
@@ -853,7 +861,33 @@ function Draft({
           </span>
         </Notice>
       ))}
-      {draft && (
+      {draft && owner && (
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Чей пересчёт показывать">
+          {[
+            ['own', 'Моё'],
+            ...people.filter((p) => p.userId !== me.id).map((p) => [p.userId, `${p.name}: ${p.products}`]),
+            ['all', 'Все вместе'],
+          ].map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={view === v}
+              data-view={v === 'own' || v === 'all' ? v : 'person'}
+              onClick={() => setView(v)}
+              className={`min-h-[36px] rounded border px-3 text-sm ${view === v ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {readOnly && (
+        <Notice tone="sky">
+          Пересчёт сотрудника «{people.find((p) => p.userId === viewUser)?.name ?? '…'}» — только его строки, смотреть. Свой пересчёт — «Моё», итог всех и
+          проведение — «Все вместе».
+        </Notice>
+      )}
+      {draft && !readOnly && (
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Сканер" hint="Скан прибавляет 1 штуку или 1 канистру; початую тару впишите литрами в строке">
@@ -881,27 +915,6 @@ function Draft({
             </Button>
           </div>
           <div className="text-sm text-slate-600">
-            {owner && (
-              <div className="mb-2 flex gap-1" role="group" aria-label="Чей пересчёт показывать">
-                {(
-                  [
-                    [false, 'Моё'],
-                    [true, 'Все вместе'],
-                  ] as const
-                ).map(([v, label]) => (
-                  <button
-                    key={label}
-                    type="button"
-                    aria-pressed={allView === v}
-                    data-view={v ? 'all' : 'own'}
-                    onClick={() => setAllView(v)}
-                    className={`min-h-[36px] rounded border px-3 text-sm ${allView === v ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
             {ownView ? (
               <>
                 Вы посчитали товаров: {counted.length}
@@ -922,7 +935,7 @@ function Draft({
           </div>
         </Card>
       )}
-      {draft && (
+      {draft && !readOnly && (
         <RevisionSearchHits
           text={filter}
           version={addedCount}
@@ -1011,7 +1024,7 @@ function Draft({
                     </td>
                   )}
                   <td className="whitespace-nowrap px-2 py-2">
-                    {draft ? (
+                    {draft && !readOnly ? (
                       <div className="flex flex-col gap-1">
                         <div className="flex gap-1" role="group" aria-label="Как записать">
                           {(ownView
@@ -1089,6 +1102,10 @@ function Draft({
                       </div>
                     ) : l.counted_qty === null ? (
                       '—'
+                    ) : draft ? (
+                      <span data-total={l.product_id}>
+                        {ownView ? 'моё' : 'итого'} {countText(l, l.counted_qty)}
+                      </span>
                     ) : (
                       countText(l, l.counted_qty)
                     )}
@@ -1321,6 +1338,19 @@ function Revision() {
   const listPager = usePager(list.data ?? [], 'revisions')
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const [openId, setOpenId] = useState<string | null>(null)
+  const me_ = useUser()
+  const owner_ = me_.role === 'owner'
+  // Владельцу в списке — кто что считает в незакрытых ревизиях (задача 007).
+  const draftIds = (list.data ?? []).filter((h) => h.status === 'draft').map((h) => h.id)
+  const drafts = useLoad(
+    () => (owner_ && draftIds.length ? Promise.all(draftIds.map((id) => get<RevisionOut>(`/revisions/${id}`).catch(() => null))) : Promise.resolve([])),
+    [owner_, draftIds.join()],
+  )
+  /** Открыть ревизию в нужном виде: своё, сотрудник или «Все вместе». */
+  const openAs = (id: string, v: string) => {
+    localStorage.setItem(VIEW_KEY, v === me_.id ? 'own' : v)
+    setOpenId(id)
+  }
   const rev = useLoad(() => (openId ? get<RevisionOut>(`/revisions/${openId}`) : Promise.resolve(null)), [openId])
   const [category, setCategory] = useState('')
   const act = useAction()
@@ -1546,20 +1576,53 @@ function Revision() {
           </Empty>
         ) : (
           <Table head={['№', 'Что', 'Начал', 'Пересчитано', 'Статус', '']}>
-            {listPager.shown.map((h) => (
+            {listPager.shown.map((h) => {
+              const d = (drafts.data ?? []).find((x) => x?.head.id === h.id)
+              const who = d ? countedBy(d.lines) : []
+              return (
               <tr key={h.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setOpenId(h.id)}>
                 <td className="px-2 py-2 font-medium">{h.number}</td>
                 <td className="px-2 py-2">{h.category_name ?? 'Весь склад'}</td>
                 <td className="whitespace-nowrap px-2 py-2">
                   {h.user_name}, {formatDateTime(h.created_at)}
                 </td>
-                <td className="px-2 py-2">{h.counted}</td>
+                <td className="px-2 py-2">
+                  {h.counted}
+                  {who.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1" data-testid="revision-people">
+                      {who.map((p) => (
+                        <button
+                          key={p.userId}
+                          type="button"
+                          className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openAs(h.id, p.userId)
+                          }}
+                        >
+                          {p.name}: {p.products}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="rounded border border-sky-600 bg-sky-600 px-2 py-0.5 text-xs text-white"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openAs(h.id, 'all')
+                        }}
+                      >
+                        Объединить: все вместе
+                      </button>
+                    </div>
+                  )}
+                </td>
                 <td className="px-2 py-2">
                   <Badge tone={STATUS[h.status][1]}>{STATUS[h.status][0]}</Badge>
                 </td>
                 <td className="px-2 py-2 text-right text-sky-700">Открыть</td>
               </tr>
-            ))}
+              )
+            })}
           </Table>
         )}
         <div className="px-4 pb-3 empty:hidden">

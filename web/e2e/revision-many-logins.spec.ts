@@ -5,6 +5,12 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from '@
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
+/** Заведён без своего кода — окно с выданным кодом (задача 007): «Готово». */
+async function doneMade(page: import('@playwright/test').Page) {
+  const made = page.getByTestId('revnew-made')
+  if (await made.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) await made.getByRole('button', { name: 'Готово' }).click()
+}
+
 const RUN = Date.now().toString().slice(-8)
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e7a1' }
 /** Текст с неразрывными пробелами — как на экране. */
@@ -47,7 +53,8 @@ async function staff(owner: Page, browser: Browser, name: string, permissions?: 
 
 async function openRevision(page: Page, category: string) {
   await page.goto('/revision')
-  await page.getByRole('row', { name: new RegExp(category) }).first().click()
+  // По номеру: в строке черновика у владельца — кнопки «кто сколько» (задача 007).
+  await page.getByRole('row', { name: new RegExp(category) }).first().locator('td').first().click()
   await expect(page.getByRole('heading', { name: new RegExp(`Ревизия № \\d+ · ${category}`) })).toBeVisible()
 }
 
@@ -114,6 +121,16 @@ test('ревизия двумя входами: Азиз вписал 6, Але�
     text(`Азиз ${RUN} +6 шт, Алексей ${RUN} +4 шт = 10 шт`),
     { timeout: 15_000 },
   )
+  // Список ревизий: владелец видит, кто сколько считает, и открывает пересчёт сотрудника — только смотреть.
+  await page.goto('/revision')
+  const people = page.getByTestId('revision-people').first()
+  await expect(people.getByRole('button', { name: `Азиз ${RUN}: 1` })).toBeVisible()
+  await expect(people.getByRole('button', { name: `Алексей ${RUN}: 1` })).toBeVisible()
+  await people.getByRole('button', { name: `Алексей ${RUN}: 1` }).click()
+  await expect(total(page, p.id)).toHaveText(text('моё 4 шт'), { timeout: 15_000 })
+  await expect(page.locator(`[data-count="${p.id}"]`)).toHaveCount(0)
+  await page.locator('[data-view="all"]').click()
+  await expect(total(page, p.id)).toHaveText(text('итого 10 шт'), { timeout: 15_000 })
   // Азиз пробил лишнее: «= моё 3» — у него 3, у Алексея по-прежнему 4, итог 7.
   const row = aziz.getByRole('row', { name: new RegExp(name) })
   await row.locator('[data-mode="mine"]').click()
@@ -170,6 +187,7 @@ test('ревизия: поиск по названию — строка Умаг
   await expect(dialog.locator('#revnew-count')).toBeFocused()
   await dialog.locator('#revnew-count').fill('3')
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
+  await doneMade(page)
   await expect(dialog).toBeHidden()
 
   // Товар заведён, связан со строкой Умага и посчитан; второй вход чужой строки не видит (задача 007).
