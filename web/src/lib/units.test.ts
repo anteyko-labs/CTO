@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  asUnit,
   avgPrice,
   byThousandths,
+  isMilli,
+  isMilliKind,
+  lineKindOf,
+  parseQty,
+  perWord,
+  priceUnits,
+  qtyInputText,
+  unitShort,
+  type StockUnit,
   containerLabel,
   countText,
   kgInput,
@@ -22,7 +32,47 @@ describe('единицы учёта', () => {
     expect(qtyText('ml', 3500)).toBe('3,5 л')
     expect(qtyText('g', 12_000)).toBe('12 кг')
     expect(qtyText('piece', 3)).toBe('3 шт')
-    expect(qtyText(undefined, 2)).toBe('2 шт')
+    expect(qtyText('mm', 1250)).toBe('1,25\u00a0м')
+    expect(qtyText('mm', -500)).toBe('−0,5\u00a0м')
+  })
+
+  it('кг и м: ввод десятичным с запятой или точкой, до 3 знаков (ADR-175)', () => {
+    expect(parseQty('mm', '1,25')).toBe(1250)
+    expect(parseQty('mm', '1.25')).toBe(1250)
+    expect(parseQty('g', '2,5')).toBe(2500)
+    expect(parseQty('g', '0,001')).toBe(1)
+    expect(parseQty('mm', '0')).toBe(0)
+    expect(parseQty('mm', '1,2345')).toBeNull()
+    expect(parseQty('mm', '-1')).toBeNull()
+    expect(parseQty('mm', '')).toBeNull()
+    expect(parseQty('mm', 'абв')).toBeNull()
+    expect(parseQty('piece', '2')).toBe(2)
+    expect(parseQty('piece', '2,5')).toBeNull()
+    expect(parseQty('ml', '0,5')).toBe(500)
+    expect(qtyInputText('mm', 1250)).toBe('1,25')
+    expect(qtyInputText('g', 2000)).toBe('2')
+    expect(qtyInputText('piece', 3)).toBe('3')
+  })
+
+  it('кг и м: подписи и единицы цены', () => {
+    expect(['piece', 'ml', 'g', 'mm'].map((u) => isMilli(u as StockUnit))).toEqual([false, true, true, true])
+    expect(['piece', 'ml', 'g', 'mm'].map((u) => unitShort(u as StockUnit))).toEqual(['шт', 'л', 'кг', 'м'])
+    expect(perWord('mm')).toBe('за м')
+    expect(perWord('g')).toBe('за кг')
+    expect(perWord('ml', 4000)).toBe('за кан.')
+    expect(perWord('ml')).toBe('за л')
+    expect(perWord('piece')).toBe('за шт')
+    expect(priceUnits('mm', null)).toBe(1000)
+    expect(priceUnits('ml', 4000)).toBe(4000)
+    expect(priceUnits('piece', null)).toBe(1)
+    expect(lineKindOf('mm')).toBe('length')
+    expect(lineKindOf('g')).toBe('weight')
+    expect(isMilliKind('length')).toBe(true)
+    expect(isMilliKind('piece')).toBe(false)
+    expect(asUnit('mm')).toBe('mm')
+    expect(asUnit('кг')).toBeNull()
+    expect(avgPrice({ unit: 'mm', container_ml: null, stock_qty: 2500, avg_cost_tyiyn: 20, stock_value_tyiyn: 50_000 })).toEqual({ tyiyn: 20_000, per: 'за м' })
+    expect(countText({ unit: 'mm', container_ml: null }, 1250)).toBe('1,25\u00a0м')
   })
 
   it('средняя цена весового товара — за кг из стоимости остатка', () => {

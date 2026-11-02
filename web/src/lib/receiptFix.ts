@@ -5,7 +5,7 @@ import { litersInput, somInput } from './format'
 import { isOil, lineCalc, withSalePrice, type PriceFields, type QtyMode } from './receiptLines'
 import type { PayMode } from './receiptPay'
 import type { Product } from './types'
-import { kgInput } from './units'
+import { isKgM, milliInput } from './units'
 
 /** Накладная в виде запроса проведения — так её отдаёт `GET /corrections/draft/receipt/{id}`. */
 export interface ReceiptDraftDoc {
@@ -40,10 +40,10 @@ export interface ReceiptFixState {
 /**
  * Количество и цена строки в полях экрана: штуки и канистры — целым числом, цена за штуку или
  * канистру (сумма ÷ количество); масло не целыми канистрами — литрами с ценой литра (SPEC-36 §13);
- * на вес — кг с ценой за кг.
+ * на вес — кг с ценой за кг, в длину — м с ценой за м.
  */
 function fixFields(p: Product, qty: number, cost: number): { count: string; per: number; mode?: QtyMode } {
-  if (p.unit === 'g') return { count: kgInput(qty), per: divRound(cost * 1000, qty) }
+  if (isKgM(p.unit)) return { count: milliInput(qty), per: divRound(cost * 1000, qty) }
   if (!isOil(p)) return { count: String(qty), per: divRound(cost, qty) }
   if (qty % p.container_ml !== 0) return { count: litersInput(qty), per: divRound(cost * 1000, qty), mode: 'l' }
   const n = qty / p.container_ml

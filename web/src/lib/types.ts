@@ -1,4 +1,7 @@
-// Типы ответов сервера (docs/tier-3/arch-core.md). Деньги — тыйыны, объёмы — мл.
+// Типы ответов сервера (docs/tier-3/arch-core.md). Деньги — тыйыны, объёмы — мл, вес — г, длина — мм.
+import type { StockUnit } from './units'
+
+export type { StockUnit }
 
 export type Role = 'owner' | 'admin'
 
@@ -151,7 +154,7 @@ export interface Product {
   name: string
   brand: string
   article: string
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   attrs: Record<string, string>
   archived: boolean
@@ -179,6 +182,8 @@ export interface Product {
   /** Баллы товара (задача 002, П1): `inherit` — как в категории. */
   points_mode?: PointsMode
   points_value?: number
+  /** Служебная карточка: 'battery_scrap' — лом аккумуляторов (ADR-174); единицу не менять. */
+  system_role?: string | null
 }
 
 export interface Employee {
@@ -257,7 +262,7 @@ export interface ReceiptLine {
   line_no: number
   product_id: string
   product_name: string
-  unit: 'piece' | 'ml'
+  unit: StockUnit
   container_ml: number | null
   qty: number
   cost_tyiyn: number
@@ -392,10 +397,12 @@ export interface CategoryTotal {
   name: string
   kind: CategoryKind
   count: number
-  /** Штуки, мл масла, граммы. */
+  /** Штуки, мл масла, граммы, миллиметры. */
   pieces: number
   ml: number
   grams: number
+  /** Миллиметры (ADR-175); у прежнего ответа сервера — нет. */
+  mm?: number
   /** Тара, если у всего масла группы она одна, — тогда итог «кан. + л». */
   container_ml: number | null
   /** Только владельцу. */
@@ -407,7 +414,7 @@ export interface CategoryTotal {
 export interface TopProduct {
   product_id: string
   name: string
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   category_id: string
   qty: number
@@ -454,7 +461,7 @@ export interface StockMismatch {
   moved_value_tyiyn: number
 }
 
-export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service' | 'weight'
+export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service' | 'weight' | 'length'
 export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'invoice' | 'debt' | 'bonus' | 'battery'
 
 export interface SaleLine {
@@ -1289,7 +1296,7 @@ export interface AccountFlow {
 export interface ReceiptSoldItem {
   product_id: string
   name: string
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   qty: number
   sold_qty: number
@@ -1390,7 +1397,7 @@ export interface Defect {
   number: number
   product_id: string
   product_name: string
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   qty: number
   /** Стоимость по средней на момент отметки — только владельцу. */
@@ -1409,7 +1416,7 @@ export interface Defect {
 export interface DeliveryRow {
   product_id: string
   name: string
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   receipts: number
   delivered_qty: number
@@ -1491,7 +1498,7 @@ export interface StockInLine {
   line_no: number
   product_id: string
   product_name: string
-  unit: 'piece' | 'ml' | 'g'
+  unit: StockUnit
   container_ml: number | null
   /** В единицах учёта; у сторно — с минусом. */
   qty: number
@@ -1538,7 +1545,7 @@ export interface SupplierReturn {
     line_no: number
     product_id: string
     product_name: string
-    unit: 'piece' | 'ml' | 'g'
+    unit: StockUnit
     container_ml: number | null
     qty: number
     amount_tyiyn: number
@@ -1576,6 +1583,8 @@ export interface OldCatalogHit {
   codes?: string[]
   /** Коды, занятые другим товаром: при связывании не перенесены. */
   conflicts?: UmagConflict[]
+  /** Единица карточки по колонке единицы Умага (сервер, ADR-175): кг → g, м → mm, … */
+  product_unit?: StockUnit
 }
 
 /** Строка Умага связана с товаром: товар, перенесённые коды и не перенесённые (SPEC-35). */
@@ -1619,6 +1628,8 @@ export interface ProductUmag {
   /** Коды меры (строка «литр», «кг», «метр»: 276…, PLU) — товару не переходят (ADR-113). */
   measure_codes?: string[]
   unit?: string
+  /** Единица карточки по колонке единицы Умага (сервер, ADR-175). */
+  product_unit?: StockUnit
   price_tyiyn: number
   /** Закупка в Умаге — только владельцу (ADR-008). */
   cost_tyiyn?: number | null

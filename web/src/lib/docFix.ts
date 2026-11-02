@@ -2,10 +2,11 @@
 // с сервера → поля формы, которой его создают. Сервер решает окончательно; здесь — только показ.
 import { numberText, type Correction } from './corrections'
 import { litersInput, somInput } from './format'
+import { qtyInputText, type StockUnit } from './units'
 
-/** Количество в единицах учёта → текст поля: штуки целым, масло литрами, на вес килограммами. */
-export function qtyInput(unit: 'piece' | 'ml' | 'g', qty: number): string {
-  return unit === 'piece' ? String(qty) : litersInput(qty)
+/** Количество в единицах учёта → текст поля: штуки целым, масло литрами, кг и м — десятичным. */
+export function qtyInput(unit: StockUnit, qty: number): string {
+  return qtyInputText(unit, qty)
 }
 
 /** Сумма документа → поле в сомах; нет суммы — пусто. */
@@ -24,7 +25,7 @@ export interface DraftReturnLine {
   amount_tyiyn?: number | null
 }
 
-export function returnLineFromDraft<P extends { id: string; unit: 'piece' | 'ml' | 'g' }>(
+export function returnLineFromDraft<P extends { id: string; unit: StockUnit }>(
   l: DraftReturnLine,
   product: P,
   price: number | null,

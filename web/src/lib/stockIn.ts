@@ -1,16 +1,15 @@
 // Оприходование без поставщика — вариант прихода (SPEC-29 §8, ADR-086): строки того же экрана
 // «Новый приход», без поставщика и оплаты. Масло — литрами (по умолчанию, цена за литр) или
-// канистрами (SPEC-36 §13, ADR-123), на вес — кг; сервер принимает цену за штуку, канистру или кг
+// канистрами (SPEC-36 §13, ADR-123), на вес — кг, в длину — м; сервер принимает цену за штуку, канистру, кг или м
 // и сам считает стоимость: divRound(цена × количество, единица цены).
 import { litersInput, somInput } from './format'
 import { divRound } from './money'
 import { isOil, lineCalc, withSalePrice, type LineCalc, type LineInput, type PriceFields, type QtyMode } from './receiptLines'
 import type { Product } from './types'
-import { kgInput, perCan, perLiter } from './units'
+import { isKgM, milliInput, perCan, perLiter, priceUnits } from './units'
 
-/** Единиц в цене: канистра масла, килограмм, штука — как цена товара. */
-const pricePer = (p: Pick<Product, 'unit' | 'container_ml'>): number =>
-  p.unit === 'ml' ? (p.container_ml ?? 1000) : p.unit === 'g' ? 1000 : 1
+/** Единиц в цене: канистра масла, килограмм, метр, штука — как цена товара. */
+const pricePer = (p: Pick<Product, 'unit' | 'container_ml'>): number => priceUnits(p.unit, p.container_ml)
 
 /** Стоимость: цена × количество / единицу цены, до тыйына — как на сервере. */
 export const stockInCost = (p: Pick<Product, 'unit' | 'container_ml'>, qty: number, price: number): number =>
@@ -38,7 +37,7 @@ export interface StockInFixLine extends PriceFields {
  * канистрами, чтобы сумма не сдвинулась на тыйын.
  */
 function fixFields(p: Product, qty: number, price: number): { count: string; price: number; mode?: QtyMode } {
-  if (p.unit === 'g') return { count: kgInput(qty), price }
+  if (isKgM(p.unit)) return { count: milliInput(qty), price }
   if (!isOil(p)) return { count: String(qty), price }
   const c = p.container_ml
   const perL = perLiter(price, c)

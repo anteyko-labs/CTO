@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { formatLiters, formatOilStock, formatPercentBp, formatSom, formatSomExact, formatSomShort, litersInput, parseLiters, parsePercentBp, parseSom, plural, shiftDate, somInput } from './format'
+import { formatLiters, formatMeters, formatOilStock, formatPercentBp, formatSom, formatSomExact, formatSomShort, litersInput, parseLiters, parsePercentBp, parseSom, plural, shiftDate, somInput } from './format'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
 
 describe('формат', () => {
+  it('метры (ADR-175)', () => {
+    expect(nb(formatMeters(1250))).toBe('1,25 м')
+    expect(nb(formatMeters(-500))).toBe('−0,5 м')
+    expect(nb(formatMeters(3000))).toBe('3 м')
+  })
+
   it('сомы', () => {
     expect(nb(formatSom(123450))).toBe('1 234,50 с')
     expect(nb(formatSom(5))).toBe('0,05 с')

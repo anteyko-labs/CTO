@@ -1,30 +1,24 @@
 // Брак и поставки (SPEC-25, SPEC-26): ввод количества и подписи. Только показ и ввод —
 // стоимость, возмещение и разницу считает сервер.
-import { formatKg, formatLiters, formatSom, litersInput, parseLiters } from './format'
+import { formatSom } from './format'
+import { parseQty as parseUnitQty, qtyInputText, qtyText as unitQtyText, unitShort, type StockUnit } from './units'
 
-export type Unit = 'piece' | 'ml' | 'g'
+export type Unit = StockUnit
 
-/** В чём вводится количество брака: штуки, литры (масло хранится в мл) или килограммы (в г). */
-export const qtyInputLabel = (unit: Unit): string => (unit === 'ml' ? 'л' : unit === 'g' ? 'кг' : 'шт')
+/** В чём вводится количество брака: штуки, литры (мл), килограммы (г), метры (мм). */
+export const qtyInputLabel = (unit: Unit): string => unitShort(unit)
 
-/** «2» шт → 2; «1,5» л → 1500 мл; «0,25» кг → 250 г. Ноль, минус и мусор — null. */
+/** «2» шт → 2; «1,5» л → 1500 мл; «0,25» кг → 250 г; «1,25» м → 1250 мм. Ноль, минус и мусор — null. */
 export function parseQty(input: string, unit: Unit): number | null {
-  const s = input.trim()
-  if (unit === 'piece') {
-    if (!/^\d+$/.test(s)) return null
-    const n = Number(s)
-    return Number.isSafeInteger(n) && n > 0 ? n : null
-  }
-  const v = parseLiters(s)
+  const v = parseUnitQty(unit, input)
   return v !== null && v > 0 ? v : null
 }
 
-/** Количество для показа: «2 шт», «4 л», «0,25 кг». */
-export const qtyText = (qty: number, unit: string): string =>
-  unit === 'ml' ? formatLiters(qty) : unit === 'g' ? formatKg(qty) : `${qty} шт`
+/** Количество для показа: «2 шт», «4 л», «0,25 кг», «1,25 м». */
+export const qtyText = (qty: number, unit: Unit): string => unitQtyText(unit, qty)
 
 /** Количество для поля ввода: 1500 мл → «1,5». */
-export const qtyInput = (qty: number, unit: Unit): string => (unit === 'piece' ? String(qty) : litersInput(qty))
+export const qtyInput = (qty: number, unit: Unit): string => qtyInputText(unit, qty)
 
 export type ResolutionKind = 'write_off' | 'replace' | 'credit' | 'cash'
 

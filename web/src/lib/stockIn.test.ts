@@ -8,6 +8,8 @@ describe('оприходование', () => {
     expect(stockInCost({ unit: 'piece', container_ml: null }, 3, 20_000)).toBe(60_000)
     expect(stockInCost({ unit: 'ml', container_ml: 4000 }, 6000, 150_000)).toBe(225_000)
     expect(stockInCost({ unit: 'g', container_ml: null }, 12_500, 5_000)).toBe(62_500)
+    // 3,5 м по 120 с за м = 420 с, а не ×1000.
+    expect(stockInCost({ unit: 'mm', container_ml: null }, 3500, 12_000)).toBe(42_000)
   })
 })
 
@@ -36,6 +38,13 @@ describe('оприходование строками на экране прих
   it('на вес — кг и цена за кг', () => {
     const scrap = product({ unit: 'g', sale_price_tyiyn: 12_000 })
     expect(stockInLineCalc({ product: scrap, count: '12,5', price: '50' })).toEqual({ n: 1, qty: 12_500, cost: 62_500, sale: 150_000, salePrice: 12_000, unitPrice: 5_000 })
+  })
+
+  it('в длину — м и цена за м (ADR-175)', () => {
+    const hose = product({ unit: 'mm', sale_price_tyiyn: 20_000 })
+    expect(stockInLineCalc({ product: hose, count: '3,5', price: '120' })).toEqual({ n: 1, qty: 3500, cost: 42_000, sale: 70_000, salePrice: 20_000, unitPrice: 12_000 })
+    expect(stockInLineCalc({ product: hose, count: '1,2345', price: '120' })).toBe('укажите метры')
+    expect(nextCount(hose, undefined, '1,5')).toBe('2,5')
   })
 
   it('повторный скан: литры — ещё канистра, штуки — ещё одна, вес — ещё кг', () => {

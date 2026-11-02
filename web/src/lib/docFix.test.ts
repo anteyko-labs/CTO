@@ -6,6 +6,7 @@ describe('исправление документов: поля формы из 
     expect(qtyInput('piece', 3)).toBe('3')
     expect(qtyInput('ml', 8500)).toBe('8,5')
     expect(qtyInput('g', 12_350)).toBe('12,35')
+    expect(qtyInput('mm', 1250)).toBe('1,25')
   })
 
   it('сумма: сомы, пусто без суммы', () => {

@@ -17,6 +17,10 @@ describe('брак', () => {
     expect(qtyInputLabel('ml')).toBe('л')
     expect(qtyInputLabel('g')).toBe('кг')
     expect(qtyInputLabel('piece')).toBe('шт')
+    expect(parseQty('1,25', 'mm')).toBe(1250)
+    expect(parseQty('1.5', 'mm')).toBe(1500)
+    expect(parseQty('1,2345', 'mm')).toBeNull()
+    expect(qtyInputLabel('mm')).toBe('м')
   })
 
   it('показ количества', () => {
@@ -25,6 +29,8 @@ describe('брак', () => {
     expect(nb(qtyText(1250, 'g'))).toBe('1,25 кг')
     expect(qtyInput(1500, 'ml')).toBe('1,5')
     expect(qtyInput(3, 'piece')).toBe('3')
+    expect(nb(qtyText(1250, 'mm'))).toBe('1,25 м')
+    expect(qtyInput(2500, 'mm')).toBe('2,5')
   })
 
   it('разница возмещения и баланс поставщика', () => {
