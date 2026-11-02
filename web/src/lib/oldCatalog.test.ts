@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isLiterUnit, presetFromHit } from './oldCatalog'
+import { isKgUnit, isLiterUnit, presetFromHit } from './oldCatalog'
 import type { Category, OldCatalogHit } from './types'
 
 const cat = (id: string, name: string, kind: Category['kind']): Category => ({ id, name, kind, attributes: [] }) as unknown as Category
@@ -74,5 +74,14 @@ describe('карточка из старой программы', () => {
     expect(isLiterUnit('литр')).toBe(true)
     expect(isLiterUnit('л')).toBe(true)
     expect(isLiterUnit('шт')).toBe(false)
+  })
+
+  it('строка «кг»: товар в килограммах, цена и закупка за кг как есть (ADR-174)', () => {
+    expect(isKgUnit('кг')).toBe(true)
+    expect(isKgUnit('Килограмм')).toBe(true)
+    expect(isKgUnit('шт')).toBe(false)
+    const p = presetFromHit(hit({ name: 'Солидол', unit: 'кг', price_tyiyn: 30_000, cost_tyiyn: 20_000 }), cats)
+    expect(p).toMatchObject({ unit: 'g', liters: '', price: '300', cost: '200' })
+    expect(presetFromHit(hit({}), cats).unit).toBeUndefined()
   })
 })

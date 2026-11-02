@@ -5,7 +5,7 @@ import { newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, litersInput, parseLiters } from '../lib/format'
 import { useAction } from '../lib/hooks'
 import type { Product } from '../lib/types'
-import { priceAfter, recount, stockText, unitPlan, unitText, type StockUnit } from '../lib/unitChange'
+import { priceAfter, recount, stockText, unitPlan, unitText, zeroOnly, type StockUnit } from '../lib/unitChange'
 import { Button, ErrorBox, Field, Modal, toast } from './ui'
 
 interface UnitOut {
@@ -31,7 +31,9 @@ export function ProductUnitModal({
   const act = useAction()
 
   // «1 шт = N л» нужно, когда меняются литры и штуки.
-  const needsPiece = fromUnit !== unit
+  const needsPiece = fromUnit !== unit && fromUnit !== 'g' && unit !== 'g'
+  // Килограммы и штуки (литры) — только без остатка (ADR-174).
+  const mustBeEmpty = zeroOnly(fromUnit, unit) && product.stock_qty !== 0
   const containerMl = unit === 'ml' ? parseLiters(containerL) : null
   const pieceMl = needsPiece ? parseLiters(pieceL) : null
   const plan = unitPlan(fromUnit, product.container_ml, { unit, containerMl, pieceMl, keep })
@@ -40,7 +42,9 @@ export function ProductUnitModal({
   const problem =
     typeof plan === 'string'
       ? plan
-      : to === null
+      : mustBeEmpty
+        ? `Остаток ${stockText(product.stock_qty, fromUnit)}: килограммы и ${fromUnit === 'ml' || unit === 'ml' ? 'литры' : 'штуки'} друг в друга не пересчитываются. Обнулите остаток ревизией, потом меняйте единицу`
+        : to === null
         ? `Остаток ${stockText(product.stock_qty, fromUnit)} не переходит в целое число — продайте или спишите ревизией до целого либо выберите другой объём`
         : null
 
@@ -67,6 +71,7 @@ export function ProductUnitModal({
           <select data-testid="unit-target" value={unit} onChange={(e) => setUnit(e.target.value as StockUnit)}>
             <option value="ml">в литрах (канистра и розлив)</option>
             <option value="piece">в штуках</option>
+            <option value="g">в килограммах (только без остатка)</option>
           </select>
         </Field>
         {unit === 'ml' && (
@@ -98,7 +103,7 @@ export function ProductUnitModal({
               </div>
               {priceTo !== null && priceTo !== product.sale_price_tyiyn && (
                 <div>
-                  Цена: {formatSom(product.sale_price_tyiyn)} → {formatSom(priceTo)} {unit === 'ml' ? 'за канистру' : 'за штуку'}
+                  Цена: {formatSom(product.sale_price_tyiyn)} → {formatSom(priceTo)} {unit === 'ml' ? 'за канистру' : unit === 'g' ? 'за кг' : 'за штуку'}
                 </div>
               )}
               {unit === 'ml' && containerMl && <div>Канистра — {formatLiters(containerMl)}</div>}

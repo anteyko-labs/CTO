@@ -481,6 +481,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [batteryIntake, setBatteryIntake] = useState(false)
   // Средняя закупка аккумуляторов за кг: подсказка «дешевле не продать» (ADR-048).
   const [batteryAvg, setBatteryAvg] = useState<number | null>(null)
+  /** Карточка лома аккумуляторов: «средняя закупка» — только у её строки, не у товара в кг (ADR-174). */
+  const [batteryId, setBatteryId] = useState<string | null>(null)
   const limitAsk = useAction()
   const innSave = useAction()
   const [innText, setInnText] = useState('')
@@ -866,7 +868,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       const same = ls.find((l) => l.product?.id === p.id && l.kind === kind)
       if (same) {
         const n = lineQty(same) ?? 0
-        return ls.map((l) => (l === same ? { ...l, qtyText: String(n + 1) } : l))
+        // На вес — ещё килограмм (граммы → «2,5»), иначе ещё штука или канистра.
+        return ls.map((l) => (l === same ? { ...l, qtyText: kind === 'weight' ? litersInput(n + 1000) : String(n + 1) } : l))
       }
       return [...ls, { key: nextKey(), kind, product: p, qtyText: '1', priceText: somInput(listPrice({ kind, product: p })) }]
     })
@@ -879,6 +882,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       .then(async (info) => {
         setDone(null)
         setBatteryAvg(info.avg_per_kg_tyiyn)
+        setBatteryId(info.product_id)
         const p = await get<Product>(`/products/${info.product_id}`)
         const key = nextKey()
         setLines((ls) => [
@@ -2553,7 +2557,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                             ))}
                           </div>
                         )}
-                        {l.kind === 'weight' && batteryAvg !== null && (
+                        {l.kind === 'weight' && l.product?.id === batteryId && batteryAvg !== null && (
                           <span className="ml-2 text-amber-700">средняя закупка {formatSom(batteryAvg)} за кг — дешевле не продать</span>
                         )}
                         {short && (

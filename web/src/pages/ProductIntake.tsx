@@ -44,6 +44,8 @@ interface Form {
   countL: string
   /** Откуда взяли данные — позиция старого списка. */
   from: Hit | null
+  /** Строка Умага «кг» — товар в килограммах (ADR-174). */
+  kg?: boolean
 }
 
 const MODE_KEY = 'avtodom.intake.revision'
@@ -140,6 +142,7 @@ export default function ProductIntake() {
   const cats = categories.data ?? []
   const category = cats.find((x) => x.id === form?.categoryId)
   const isOil = category?.kind === 'oil'
+  const isKg = !isOil && Boolean(form?.kg)
 
   const focusScan = () => setTimeout(() => scanRef.current?.focus(), 30)
   const reset = () => {
@@ -161,7 +164,7 @@ export default function ProductIntake() {
   /** Карточка из позиции старого списка: масло — литры из названия, цена за литр → за канистру. */
   const fromHit = (h: Hit, barcode: string): Form => {
     const p = presetFromHit(h, cats, read(CAT_KEY), barcode)
-    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', countL: '', from: h }
+    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', countL: '', from: h, kg: p.unit === 'g' }
   }
 
   const loadSimilar = (name: string) => {
@@ -317,9 +320,9 @@ export default function ProductIntake() {
 
   const ml = isOil && form ? parseLiters(form.liters) : null
   // На полке у новой карточки: штуки или «кан. + л» по таре из формы (SPEC-36 §13); пусто — не считали.
-  const formCount = form ? shelfCount(isOil ? (ml ?? 0) : null, form.count, form.countL) : null
+  const formCount = form ? shelfCount(isOil ? (ml ?? 0) : null, form.count, form.countL, isKg) : null
   const formQty = formCount === 'bad' ? null : formCount
-  const formCountText = formQty === null ? '' : isOil && ml ? oilCountText(formQty, ml) : `${formQty} шт`
+  const formCountText = formQty === null ? '' : isOil && ml ? oilCountText(formQty, ml) : isKg ? countText({ unit: 'g', container_ml: null }, formQty) : `${formQty} шт`
   const shownPrice = form ? parseSom(form.price) : null
   const pourShown = ml && shownPrice !== null ? canisterPourPrice(shownPrice, ml) : null
   // Строка Умага, которую продавали мерой (литр, кг, метр): её коды (276…, PLU) товару не переходят,
@@ -351,6 +354,7 @@ export default function ProductIntake() {
           name: form.name.trim(),
           article: form.from?.article ?? '',
           container_ml: isOil ? ml : null,
+          ...(isKg ? { unit: 'g' } : {}),
           // Без кода (строка меры без заводского кода) — код выдаст программа.
           barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
           sale_price_tyiyn: parseSom(form.price) ?? 0,
@@ -644,7 +648,7 @@ export default function ProductIntake() {
                     <input id="intake-liters" inputMode="decimal" value={form.liters} onChange={(e) => setForm({ ...form, liters: e.target.value })} />
                   </Field>
                 )}
-                <Field label={isOil ? 'Цена канистры, с' : 'Цена, с'}>
+                <Field label={isOil ? 'Цена канистры, с' : isKg ? 'Цена за кг, с' : 'Цена, с'}>
                   <input id="intake-price" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
                 </Field>
                 <PurchasePriceInput
@@ -653,7 +657,7 @@ export default function ProductIntake() {
                   entry={{ text: form.cost, per: form.costPer ?? 'can' }}
                   shown={costShown}
                   containerMl={ml}
-                  unitWord={isOil ? 'за канистру' : 'за шт'}
+                  unitWord={isOil ? 'за канистру' : isKg ? 'за кг' : 'за шт'}
                   sale={shownPrice}
                   hint="По ней ревизия оценит остаток"
                   onChange={(e) => setForm({ ...form, cost: e.text, costPer: e.per })}
@@ -679,10 +683,10 @@ export default function ProductIntake() {
                       </Field>
                     </div>
                   ) : (
-                    <Field label={isOil ? 'На полке — сначала объём тары' : 'На полке, шт'}>
+                    <Field label={isOil ? 'На полке — сначала объём тары' : isKg ? 'На полке, кг' : 'На полке, шт'}>
                       <input
                         id="intake-count"
-                        inputMode="numeric"
+                        inputMode={isKg ? 'decimal' : 'numeric'}
                         disabled={isOil}
                         value={form.count}
                         onChange={(e) => setForm({ ...form, count: e.target.value })}
