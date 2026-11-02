@@ -13,7 +13,7 @@ import { useUser } from '../lib/auth'
 import { OilCountInput } from '../components/OilCountInput'
 import { stockText } from '../components/ProductPicker'
 import { formatDateTime, formatSom, parseLiters, parseSom, plural } from '../lib/format'
-import { countText, oilCountText, parseKg, parseOil } from '../lib/units'
+import { countText, oilCountText, parseOil, parseQty, perWord, unitShort, type StockUnit } from '../lib/units'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
@@ -45,7 +45,7 @@ interface Form {
   /** Откуда взяли данные — позиция старого списка. */
   from: Hit | null
   /** Строка Умага «кг» — товар в килограммах (ADR-174). */
-  kg?: boolean
+  unit?: 'g' | 'mm'
 }
 
 const MODE_KEY = 'avtodom.intake.revision'
@@ -88,21 +88,32 @@ function shelfInput(count: string, liters: string): ShelfInput | null {
 }
 
 /** Единицы товара словами — для подсказки, когда найденное не перевести в его единицы. */
-const unitWord = (p: Pick<Product, 'unit' | 'container_ml'>): string =>
-  p.unit === 'piece' ? 'штуки' : p.unit === 'g' ? 'кг' : p.container_ml ? 'канистры и литры' : 'литры'
+function unitWord(p: Pick<Product, 'unit' | 'container_ml'>): string {
+  switch (p.unit) {
+    case 'piece':
+      return 'штуки'
+    case 'g':
+      return 'кг'
+    case 'mm':
+      return 'метры'
+    case 'ml':
+      return p.container_ml ? 'канистры и литры' : 'литры'
+  }
+}
 
 /**
- * Сколько на полке: штуки целым; масло (`tare` — объём тары в мл) — «кан. + л» → мл; на вес — кг.
- * Пусто — null (не считали), неверно — 'bad'. Масло без объёма тары посчитать нельзя.
+ * Сколько на полке: штуки целым; масло (`tare` — объём тары в мл) — «кан. + л» → мл; на вес и в длину
+ * (`milli`) — кг или м до 3 знаков. Пусто — null (не считали), неверно — 'bad'. Масло без объёма тары
+ * посчитать нельзя.
  */
-function shelfCount(tare: number | null, count: string, liters = '', weight = false): number | null | 'bad' {
+function shelfCount(tare: number | null, count: string, liters = '', milli: StockUnit | null = null): number | null | 'bad' {
   if (tare !== null) {
     const v = tare > 0 ? parseOil(count, liters, tare) : count.trim() || liters.trim() ? null : 'empty'
     return v === 'empty' ? null : v === null ? 'bad' : v
   }
   const t = count.trim()
   if (!t) return null
-  if (weight) return parseKg(t) ?? 'bad'
+  if (milli) return parseQty(milli, t) ?? 'bad'
   return /^\d+$/.test(t) ? Number(t) : 'bad'
 }
 
@@ -142,7 +153,8 @@ export default function ProductIntake() {
   const cats = categories.data ?? []
   const category = cats.find((x) => x.id === form?.categoryId)
   const isOil = category?.kind === 'oil'
-  const isKg = !isOil && Boolean(form?.kg)
+  // Кг или м — у не-масла (ADR-174, ADR-175).
+  const milli = !isOil ? (form?.unit ?? null) : null
 
   const focusScan = () => setTimeout(() => scanRef.current?.focus(), 30)
   const reset = () => {
@@ -164,7 +176,7 @@ export default function ProductIntake() {
   /** Карточка из позиции старого списка: масло — литры из названия, цена за литр → за канистру. */
   const fromHit = (h: Hit, barcode: string): Form => {
     const p = presetFromHit(h, cats, read(CAT_KEY), barcode)
-    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', countL: '', from: h, kg: p.unit === 'g' }
+    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', countL: '', from: h, unit: p.unit }
   }
 
   const loadSimilar = (name: string) => {
@@ -308,7 +320,7 @@ export default function ProductIntake() {
    */
   const countForExisting = async (p: Product): Promise<number | null | undefined> => {
     if (!revision || !form || formQty === null) return null
-    const raw = shelfInput(form.count, isOil ? form.countL : '')
+    const raw: ShelfInput | null = milli ? { cans: 0, ml: 0, milli: { unit: milli, qty: formQty } } : shelfInput(form.count, isOil ? form.countL : '')
     const qty = raw === null ? null : qtyInUnits(raw, p)
     if (qty === null) {
       await showFound(p)
@@ -320,9 +332,9 @@ export default function ProductIntake() {
 
   const ml = isOil && form ? parseLiters(form.liters) : null
   // На полке у новой карточки: штуки или «кан. + л» по таре из формы (SPEC-36 §13); пусто — не считали.
-  const formCount = form ? shelfCount(isOil ? (ml ?? 0) : null, form.count, form.countL, isKg) : null
+  const formCount = form ? shelfCount(isOil ? (ml ?? 0) : null, form.count, form.countL, milli) : null
   const formQty = formCount === 'bad' ? null : formCount
-  const formCountText = formQty === null ? '' : isOil && ml ? oilCountText(formQty, ml) : isKg ? countText({ unit: 'g', container_ml: null }, formQty) : `${formQty} шт`
+  const formCountText = formQty === null ? '' : isOil && ml ? oilCountText(formQty, ml) : countText({ unit: milli ?? 'piece', container_ml: null }, formQty)
   const shownPrice = form ? parseSom(form.price) : null
   const pourShown = ml && shownPrice !== null ? canisterPourPrice(shownPrice, ml) : null
   // Строка Умага, которую продавали мерой (литр, кг, метр): её коды (276…, PLU) товару не переходят,
@@ -354,7 +366,7 @@ export default function ProductIntake() {
           name: form.name.trim(),
           article: form.from?.article ?? '',
           container_ml: isOil ? ml : null,
-          ...(isKg ? { unit: 'g' } : {}),
+          ...(milli ? { unit: milli } : {}),
           // Без кода (строка меры без заводского кода) — код выдаст программа.
           barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
           sale_price_tyiyn: parseSom(form.price) ?? 0,
@@ -620,8 +632,8 @@ export default function ProductIntake() {
                   hint={
                     measureRow && measureCodes.length > 0 ? (
                       <span data-testid="intake-measure-codes">
-                        Коды {measureCodes.join(', ')} в Умаге продавали {umagUnitWord(measureRow.unit)} — у товара их не будет: на кассе они
-                        добавили бы всю тару. Отсканируйте заводской код; нет его — код выдаст программа.
+                        Коды {measureCodes.join(', ')} в Умаге продавали {umagUnitWord(measureRow.unit)} — у товара их не будет
+                        {milli ? '' : ': на кассе они добавили бы всю тару'}. Отсканируйте заводской код; нет его — код выдаст программа.
                       </span>
                     ) : undefined
                   }
@@ -648,7 +660,20 @@ export default function ProductIntake() {
                     <input id="intake-liters" inputMode="decimal" value={form.liters} onChange={(e) => setForm({ ...form, liters: e.target.value })} />
                   </Field>
                 )}
-                <Field label={isOil ? 'Цена канистры, с' : isKg ? 'Цена за кг, с' : 'Цена, с'}>
+                {!isOil && (
+                  <Field label="Учитывать">
+                    <select
+                      data-testid="intake-unit"
+                      value={milli ?? 'piece'}
+                      onChange={(e) => setForm({ ...form, unit: e.target.value === 'piece' ? undefined : (e.target.value as 'g' | 'mm') })}
+                    >
+                      <option value="piece">в штуках</option>
+                      <option value="g">в килограммах</option>
+                      <option value="mm">в метрах</option>
+                    </select>
+                  </Field>
+                )}
+                <Field label={isOil ? 'Цена канистры, с' : milli ? `Цена ${perWord(milli)}, с` : 'Цена, с'}>
                   <input id="intake-price" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
                 </Field>
                 <PurchasePriceInput
@@ -657,7 +682,7 @@ export default function ProductIntake() {
                   entry={{ text: form.cost, per: form.costPer ?? 'can' }}
                   shown={costShown}
                   containerMl={ml}
-                  unitWord={isOil ? 'за канистру' : isKg ? 'за кг' : 'за шт'}
+                  unitWord={isOil ? 'за канистру' : milli ? perWord(milli) : 'за шт'}
                   sale={shownPrice}
                   hint="По ней ревизия оценит остаток"
                   onChange={(e) => setForm({ ...form, cost: e.text, costPer: e.per })}
@@ -683,10 +708,10 @@ export default function ProductIntake() {
                       </Field>
                     </div>
                   ) : (
-                    <Field label={isOil ? 'На полке — сначала объём тары' : isKg ? 'На полке, кг' : 'На полке, шт'}>
+                    <Field label={isOil ? 'На полке — сначала объём тары' : `На полке, ${milli ? unitShort(milli) : 'шт'}`}>
                       <input
                         id="intake-count"
-                        inputMode={isKg ? 'decimal' : 'numeric'}
+                        inputMode={milli ? 'decimal' : 'numeric'}
                         disabled={isOil}
                         value={form.count}
                         onChange={(e) => setForm({ ...form, count: e.target.value })}
@@ -760,9 +785,10 @@ function FoundCount({
 }) {
   const [s, setS] = useState('')
   const [liters, setLiters] = useState('')
-  // Масло в таре — «кан. + л», без тары — литры, на вес — кг, штуки — целым (SPEC-36 §13).
+  // Масло в таре — «кан. + л», без тары — литры, на вес — кг, в длину — м, штуки — целым (SPEC-36 §13).
   const tare = product.unit === 'ml' ? (product.container_ml ?? 0) : null
-  const parsed = tare === 0 ? (s.trim() ? (parseLiters(s) ?? 'bad') : null) : shelfCount(tare, s, liters, product.unit === 'g')
+  const milliUnit = product.unit === 'g' || product.unit === 'mm' ? product.unit : null
+  const parsed = tare === 0 ? (s.trim() ? (parseLiters(s) ?? 'bad') : null) : shelfCount(tare, s, liters, milliUnit)
   const qty = typeof parsed === 'number' ? parsed : null
   const before = already !== null && already > 0 ? countText(product, already) : null
   const save = (mode: 'add' | 'set') => {
@@ -790,7 +816,7 @@ function FoundCount({
             />
           </Field>
         ) : (
-          <Field label={product.unit === 'ml' ? 'На полке, л' : product.unit === 'g' ? 'На полке, кг' : 'На полке, шт'}>
+          <Field label={`На полке, ${unitShort(product.unit)}`}>
             <input
               id="intake-count"
               className="w-32"
