@@ -8,6 +8,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import { ownerSafe } from './safe'
 import { choosePerson, ensureShift, pickMaster, shiftOnTill } from './cashier'
 
+/** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
+const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
+
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e354' }
@@ -187,7 +190,7 @@ for (const mode of [
         await view.screenshot({ path: `${SHOTS}/next-change-receipt-book.png`, fullPage: true })
         await view.close()
       }
-      expect(book).toContain(`${s.service} ${s.oilName} · 1 кан. × 4 л Следующая замена — на 228 000 км`)
+      expect(book).toMatch(inOrder(s.service, `${s.oilName} · 1 кан. × 4 л`, 'Следующая замена', `${s.service} — на 228 000 км`))
       for (const no of ['Фильтр воздушный', 'Масло двигателя', 'По прошлым заменам', 'Прошлые замены', 'или до', s.master]) expect(book).not.toContain(no)
 
       // Товарный чек — без фильтра; в карточке клиента строка фильтра на месте.
@@ -277,10 +280,10 @@ for (const mode of [
       // Чек книжки после чека: машина, пробег, что залито и следующая замена — только жидкости.
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек'))).toBe(true)
       const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')) ?? '')
-      expect(book).toContain(`${s.plate} · Toyota Camry`)
+      expect(book).toContain(`${s.plate} Toyota Camry`)
       expect(book).toContain('Пробег 250 000 км')
-      expect(book).toContain(`${s.service} ${s.oilName} · 1 кан. × 4 л ${s.airName} · 1 шт Следующая замена — на 258 000 км`)
-      expect(book).toContain(`${s.antiService} ${s.antiName} · 1 шт Следующая замена — на 280 000 км`)
+      expect(book).toMatch(inOrder(s.service, `${s.oilName} · 1 кан. × 4 л`, `${s.airName} · 1 шт`, 'Следующая замена', `${s.service} — на 258 000 км`))
+      expect(book).toMatch(inOrder(`${s.antiService}: ${s.antiName} · 1 шт`, 'Следующая замена', `${s.antiService} — на 280 000 км`))
       for (const no of ['Масло двигателя', 'Мастер', s.master, 'Рекомендовано', 'Прошлые замены', 'По прошлым заменам', 'или до']) expect(book).not.toContain(no)
       // Товарный чек — то же правило.
       await hit(page.getByRole('button', { name: 'Печать чека' }))

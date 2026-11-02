@@ -6,6 +6,9 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import { ownerSafe } from './safe'
 import { choosePerson, ensureShift, pickMaster, shiftOnTill } from './cashier'
 
+/** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
+const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
+
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000eb03' }
@@ -178,8 +181,7 @@ test('чек без цели кассира: «Печать книжки» в э
   await expect.poll(async () => (await prints(page)).filter((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')).length).toBe(1)
   const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')) ?? '')
   expect(book).toContain(`${oilName} · 4,5 л`)
-  expect(book.split(`${oilName}`).length - 1).toBe(1)
-  expect(book).toContain(`${oilName} · 4,5 л Следующая замена — на 138 000 км`)
+  expect(book).toMatch(inOrder(`${oilName} · 4,5 л`, 'Следующая замена', '— на 138 000 км'))
   expect(book).not.toContain('Масло двигателя')
 
   // «Исправить»: новый чек печатает книжку сам, как после обычного чека.
@@ -293,11 +295,11 @@ test('«В сервис» с маслом и фильтрами: чек книж
   // Чек книжки — сам, без кнопки.
   await expect.poll(async () => (await prints(page)).slice(before).some((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек'))).toBe(true)
   const book = plain((await prints(page)).slice(before).find((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')) ?? '')
-  expect(book).toContain(
-    `${service} Mobil 1 ${tag} 5W-30 · 1 кан. × 4 л W712-${tag} (масляный) · 1 шт C2201-${tag} (воздушный) · 1 шт CU2939-${tag} (салонный) · 1 шт Следующая замена — на 138 000 км`,
+  expect(book).toMatch(
+    inOrder(service, `Mobil 1 ${tag} 5W-30 · 1 кан. × 4 л`, `W712-${tag} (масляный) · 1 шт`, `C2201-${tag} (воздушный) · 1 шт`, `CU2939-${tag} (салонный) · 1 шт`, 'Следующая замена', '— на 138 000 км'),
   )
   // Топливный — свой срок (интервал его категории), не пробег масла.
-  expect(book).toContain(`Фильтр топливный WK820-${tag} · 1 шт Следующая замена — на 170 000 км`)
+  expect(book).toMatch(inOrder(`Фильтр топливный WK820-${tag} · 1 шт`, 'Следующая замена', '— на 170 000 км'))
   for (const no of ['Масло двигателя', 'Фильтр масляный', 'Фильтр воздушный', 'Фильтр салонный', 'Масло в коробке']) expect(book).not.toContain(no)
   // Товарный чек — тот же блок.
   await page.getByRole('button', { name: 'Печать чека' }).click()
