@@ -1,16 +1,19 @@
 // Экран покупателя на втором мониторе кассы (задача 008, ADR-179): заставка, QR банка на сумму
 // крупно по центру, «Оплачено ✓», подпись клиента за долг пером планшета. Всё приходит от кассы
 // этого же браузера (BroadcastChannel) — сервер и сеть не нужны.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SignaturePad } from '../components/SignaturePad'
 import { formatSom } from '../lib/format'
 import { openChannel, SCREEN_PING_MS, screenStep, screenTick, type FromScreen, type ScreenState, type ToScreen } from '../lib/customerScreen'
 
 export default function CustomerScreen() {
   const [state, setState] = useState<ScreenState>({ kind: 'idle' })
-  const [channel] = useState(openChannel)
+  const ref = useRef<BroadcastChannel | null>(null)
+  const supported = typeof BroadcastChannel !== 'undefined'
 
   useEffect(() => {
+    const channel = openChannel()
+    ref.current = channel
     if (!channel) return
     const send = (m: FromScreen) => channel.postMessage(m)
     channel.onmessage = (e: MessageEvent<ToScreen>) => setState((s) => screenStep(s, e.data, Date.now()))
@@ -22,18 +25,19 @@ export default function CustomerScreen() {
     return () => {
       clearInterval(ping)
       channel.close()
+      ref.current = null
     }
-  }, [channel])
+  }, [])
 
   const signed = (png: string) => {
     if (state.kind !== 'sign') return
-    channel?.postMessage({ type: 'signed', id: state.id, png } satisfies FromScreen)
+    ref.current?.postMessage({ type: 'signed', id: state.id, png } satisfies FromScreen)
     setState({ kind: 'idle' })
   }
 
   return (
     <div className="flex h-dvh w-full cursor-default flex-col items-center justify-center bg-white p-8 text-slate-900" data-testid="customer-screen">
-      {!channel && <div className="text-2xl text-rose-700">Браузер не поддерживает экран покупателя — обновите Chrome</div>}
+      {!supported && <div className="text-2xl text-rose-700">Браузер не поддерживает экран покупателя — обновите Chrome</div>}
       {state.kind === 'idle' && (
         <div className="text-center" data-testid="customer-idle">
           <div className="text-6xl font-bold tracking-tight">Avtodom</div>
