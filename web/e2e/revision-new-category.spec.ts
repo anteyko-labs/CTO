@@ -25,6 +25,8 @@ test('ревизия: новая категория из окна товара, 
   await expect(page.getByTestId('camera-scan')).toBeVisible()
   await page.getByRole('button', { name: '+ Товар не из программы' }).click()
   const dialog = page.getByRole('dialog', { name: 'Товар, которого нет в программе' })
+  // Камера — и в окне товара не из программы (поиск по Умагу).
+  await expect(dialog.getByTestId('camera-scan')).toBeVisible()
   const name = `MOBIL SUPER 5W30 4L ${RUN}`
   await dialog.getByPlaceholder('Название, артикул или штрихкод').fill(name)
   await dialog.getByRole('button', { name: `+ Завести товар «${name}»` }).click()
@@ -34,6 +36,10 @@ test('ревизия: новая категория из окна товара, 
   await dialog.locator('#revnew-category-name').fill(catName)
   await dialog.getByTestId('revnew-category-form').locator('select').selectOption('oil')
   await dialog.getByRole('button', { name: 'Создать категорию' }).click()
+  await expect(dialog.locator('#revnew-category option:checked')).toHaveText(catName)
+  // Поиск категории: ввели начало названия — одна подходящая выбрана сама.
+  await dialog.locator('#revnew-category').selectOption('')
+  await dialog.locator('#revnew-category-search').fill(catName.slice(0, -2))
   await expect(dialog.locator('#revnew-category option:checked')).toHaveText(catName)
   // Вязкость — из названия.
   await expect(dialog.getByTestId('revnew-viscosity')).toHaveValue('5W-30')

@@ -17,6 +17,7 @@ import { searchUmag, umagStep } from '../lib/umagLink'
 import { countText, parseKg, parseOil, viscosityFromName } from '../lib/units'
 import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
+import { CameraScanButton } from './CameraScan'
 import { LabelTargetSwitch, sendLabels } from './labelTarget'
 import { PurchasePriceInput } from './PurchasePriceInput'
 import { ProductPicker } from './ProductPicker'
@@ -138,6 +139,12 @@ export function RevisionNewProduct({
   const viscosity = viscDef && form ? (form.viscosity ?? viscosityFromName(form.name) ?? '') : ''
   const viscOptions = viscDef ? [...new Set([...(viscDef.options ?? []), ...(viscosity ? [viscosity] : [])])] : []
   /** Новая категория прямо из окна (задача 007): право «Товары и штрихкоды», ревизия не по категории. */
+  /** Поиск категории (задача 007): ввели «м» — сначала на «м», затем содержащие «м». */
+  const [catQuery, setCatQuery] = useState('')
+  const cq = catQuery.trim().toLowerCase()
+  const shownCats = cq
+    ? [...cats.filter((c) => c.name.toLowerCase().startsWith(cq)), ...cats.filter((c) => !c.name.toLowerCase().startsWith(cq) && c.name.toLowerCase().includes(cq))]
+    : cats
   const [newCat, setNewCat] = useState<{ name: string; kind: CategoryKind } | null>(null)
   const catAct = useAction()
   /** Заведён без своего кода: программа выдала код — показать его и предложить этикетку (задача 007). */
@@ -186,6 +193,21 @@ export function RevisionNewProduct({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetBarcode, ready])
+
+  /** Код с камеры (задача 007): товар есть — считать его в строке; строка Умага — карточка из неё;
+   *  нигде — новая карточка с этим кодом. */
+  const fromCamera = (code: string) =>
+    void act.run(async () => {
+      const p = await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`).catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 404) return null
+        throw e
+      })
+      if (p) return onExisting(p)
+      const step = umagStep(await searchUmag({ barcode: code }).catch(() => []))
+      if (step.kind === 'linked') return onExisting(await get<Product>(`/products/${step.productId}`))
+      if (step.kind === 'umag') return fromOld(step.hit, code)
+      setForm({ ...empty(code), categoryId: categoryId ?? '' })
+    })
 
   function fromOld(h: OldCatalogHit, code: string) {
     const p = presetFromHit(h, cats, categoryId ?? '', code)
@@ -333,6 +355,9 @@ export function RevisionNewProduct({
               Напишите название или отсканируйте код. Если товар уже есть — посчитайте его в строке; из старой программы — карточка
               заполнится сама.
             </p>
+            <div className="flex justify-end">
+              <CameraScanButton onCode={fromCamera} />
+            </div>
             <ProductPicker
               placeholder="Название, артикул или штрихкод"
               onPick={(p) => onExisting(p)}
@@ -350,9 +375,26 @@ export function RevisionNewProduct({
                 <input id="revnew-name" autoFocus={!form.from} value={form.name} onChange={(e) => set('name', e.target.value)} />
               </Field>
               <Field label="Категория" required>
+                {!categoryId && (
+                  <input
+                    id="revnew-category-search"
+                    className="mb-1"
+                    placeholder="Начните вводить — или выберите ниже"
+                    value={catQuery}
+                    onChange={(e) => {
+                      const q = e.target.value
+                      setCatQuery(q)
+                      const t = q.trim().toLowerCase()
+                      const starts = t ? cats.filter((c) => c.name.toLowerCase().startsWith(t)) : []
+                      // Одна подходящая — сразу выбрана.
+                      if (starts.length === 1) set('categoryId', starts[0].id)
+                    }}
+                  />
+                )}
                 <select id="revnew-category" value={form.categoryId} disabled={Boolean(categoryId)} onChange={(e) => set('categoryId', e.target.value)}>
-                  <option value="">— выберите —</option>
-                  {cats.map((c) => (
+                  <option value="">{cq && shownCats.length === 0 ? '— нет такой, создайте ниже —' : '— выберите —'}</option>
+                  {/* Выбранная остаётся в списке и при поиске. */}
+                  {[...shownCats, ...cats.filter((c) => c.id === form.categoryId && !shownCats.includes(c))].map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
