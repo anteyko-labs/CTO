@@ -140,7 +140,7 @@ describe('подписи в документе о долге (задача 008)'
     payments: [{ method: 'debt', amount_tyiyn: 50_000 }],
   } as unknown as Sale
   const party = { name: 'Эрлан', kind: 'person' as const, inn: '123', phone: '', due_days: null }
-  const settings = { seller: { name: 'ИП', inn: '', address: '', phone: '', director: '', bank: '', city: '' }, person: null, company: null }
+  const settings = { seller: { name: 'ИП', inn: '', address: '', phone: '', director: 'Гайбулин А. И.', bank: '', city: '' }, person: null, company: null }
   const png = 'data:image/png;base64,iVBORw0KGgo='
 
   it('подпись клиента и руководителя — картинками, в двух экземплярах расписки', () => {
@@ -150,7 +150,8 @@ describe('подписи в документе о долге (задача 008)'
 
   it('без подписи руководителя — линия для ручки', () => {
     const [, html] = debtDocHtml({ sale, party, settings, buyerSignature: png })
-    expect(html).toContain('Продавец:    ________________ / Айгуль /')
+    expect(html).toContain('Продавец:    ________________ / Гайбулин А. И. /')
+    expect(html).toContain('Товар выдал кассир Айгуль; кассир стороной по долгу не является.')
     expect(html.match(/<img/g)).toHaveLength(2)
   })
 
