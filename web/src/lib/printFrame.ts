@@ -44,3 +44,26 @@ export function printInFrame(html: string): void {
     img.addEventListener('error', one, { once: true })
   }
 }
+
+/** Напечатать документ самой страницей, без фрейма: на XP-365B (драйвер Seagull) печать из
+ *  фрейма выходила пустой, а та же этикетка страницей — чётко (проверка 03.11.2026).
+ *  Стили и содержимое документа на время печати подкладываются в страницу, остальное скрыто. */
+export function printAsPage(html: string): void {
+  const parsed = new DOMParser().parseFromString(html, 'text/html')
+  const style = document.createElement('style')
+  style.textContent =
+    Array.from(parsed.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n') + '\n@media print { body > *:not([data-print-page]) { display: none !important; } }\n@media screen { [data-print-page] { display: none; } }'
+  const root = document.createElement('div')
+  root.setAttribute('data-print-page', '')
+  root.innerHTML = parsed.body.innerHTML
+  document.head.appendChild(style)
+  document.body.appendChild(root)
+  try {
+    window.print()
+  } finally {
+    root.remove()
+    style.remove()
+  }
+}

@@ -7,7 +7,7 @@ import { labelsHtml, type LabelItem } from '../components/labels'
 import { Button, Card, CardTitle, ErrorBox, PageHeader } from '../components/ui'
 import { get, post, uuidv7 } from '../lib/api'
 import { sizeFromSearch, STATION_TICK_MS, stationId, type LabelJob } from '../lib/labelJob'
-import { printInFrame } from '../lib/printFrame'
+import { printAsPage } from '../lib/printFrame'
 import type { LabelSettings, Product } from '../lib/types'
 
 interface Taken {
@@ -69,7 +69,7 @@ export default function LabelStation() {
             const settings = await get<LabelSettings>(settingsUrl)
             const items = job.items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
             if (items.length === 0) throw new Error('у товаров нет штрихкода')
-            printInFrame(labelsHtml(items, settings))
+            printAsPage(labelsHtml(items, settings))
             await post(`/label-jobs/${job.id}/done`, { station_id: station.current })
             setLast(`${job.created_by_name}: ${job.copies} шт.`)
           } catch (e) {
@@ -98,7 +98,7 @@ export default function LabelStation() {
   const test = async () => {
     try {
       const settings = await get<LabelSettings>(settingsUrl)
-      printInFrame(labelsHtml([{ product: SAMPLE, copies: 1 }], settings))
+      printAsPage(labelsHtml([{ product: SAMPLE, copies: 1 }], settings))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
