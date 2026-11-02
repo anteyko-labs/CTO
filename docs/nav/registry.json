@@ -898,7 +898,7 @@
   {"about":"«Настройки» → «Сообщения клиентам» (SPEC-32): WhatsApp Business Platform — шаблоны Meta и их","exports":[{"line":42,"name":"ClientMessages"}],"file":"web/src/pages/ClientMessages.tsx","lines":509},
   {"about":"Клиенты с живыми итогами «должны нам» и «авансы» (SPEC-10, ADR-028).","exports":[{"line":20,"name":"Clients"}],"file":"web/src/pages/Clients.tsx","lines":279},
   {"about":"«Настройки → Кросс-номера» (задача 002 П10, ADR-145): как подбирать кросс-номера фильтров","exports":[{"line":11,"name":"CrossPickSettingsPage"}],"file":"web/src/pages/CrossPickSettings.tsx","lines":85},
-  {"about":"Экран покупателя на втором мониторе кассы (задача 008, ADR-179): заставка, QR банка на сумму","exports":[{"line":9,"name":"CustomerScreen"}],"file":"web/src/pages/CustomerScreen.tsx","lines":77},
+  {"about":"Экран покупателя на втором мониторе кассы (задача 008, ADR-179): заставка, QR банка на сумму","exports":[{"line":9,"name":"CustomerScreen"}],"file":"web/src/pages/CustomerScreen.tsx","lines":81},
   {"about":"Реквизиты точки и тексты документов о долге (SPEC-10). Правит владелец.","exports":[{"line":221,"name":"DebtDocsSettings"}],"file":"web/src/pages/DebtDocsSettings.tsx","lines":336},
   {"about":"Долги: кто должен нам и кому должны мы, с оплатой и погашением (SPEC-10). Экран на всю","exports":[{"line":200,"name":"Debts"}],"file":"web/src/pages/Debts.tsx","lines":307},
   {"about":"Справочник сотрудников: кассиры и мастера (SPEC-02). Личный вход в программу заводит владелец в","exports":[{"line":432,"name":"Employees"}],"file":"web/src/pages/Employees.tsx","lines":642},
