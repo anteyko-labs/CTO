@@ -11,7 +11,6 @@ import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
 import { sendToStation } from '../components/labelTarget'
-import { printLabels } from '../components/labels'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -646,7 +645,7 @@ function Draft({
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
   /** Товар без штрихкода (не из Умага, старая карточка): программа выдаёт свой код, этикетка —
    *  на принтер; дальше товар сканируется (задача 007). */
-  const issueCode = (l: Line, where: 'station' | 'here') =>
+  const issueCode = (l: Line) =>
     void act.run(async () => {
       if (l.barcodes.length === 0) {
         const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
@@ -654,9 +653,8 @@ function Draft({
         toast(`Выдан код ${r.code}`)
       }
       const product = await get<Product>(`/products/${l.product_id}`)
-      // «Этикетка» — на складской принтер (станция); «Печать» — на принтер этого устройства.
-      if (where === 'station') await sendToStation([{ product, copies: 1 }])
-      else await printLabels([{ product, copies: 1 }])
+      // Этикетка — на складской принтер (станция этикеток, задача 006).
+      await sendToStation([{ product, copies: 1 }])
     })
 
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
@@ -1055,18 +1053,9 @@ function Draft({
                           className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
                           data-issue-code={l.product_id}
                           title="Этикетка на складской принтер (станция этикеток); нет кода — программа выдаст свой"
-                          onClick={() => issueCode(l, 'station')}
+                          onClick={() => issueCode(l)}
                         >
                           {l.barcodes.length === 0 ? '🏷 Выдать код и этикетку на склад' : '🏷 Этикетка на склад'}
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
-                          data-print-here={l.product_id}
-                          title="Печать этикетки на принтер этого устройства"
-                          onClick={() => issueCode(l, 'here')}
-                        >
-                          🖨 Печать здесь
                         </button>
                       </div>
                     )}
