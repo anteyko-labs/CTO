@@ -38,9 +38,10 @@ test('оприходование → «Печатать этикетки»: сп
   await expect(list.locator(`[data-label-copies="${b.id}"]`)).toHaveValue('2')
   await list.locator(`[data-label-copies="${a.id}"]`).fill('3')
   await list.locator(`[data-label-copies="${b.id}"]`).fill('0')
-  await expect(list.getByRole('button', { name: 'Печатать 3' })).toBeEnabled()
-  // Печать окном браузера в тесте не нужна — подменяем.
-  await page.evaluate(() => (window.print = () => undefined))
-  await list.getByRole('button', { name: 'Печатать 3' }).click()
+  // Печать — только на складе (задача 014): две кнопки по принтерам, выбора «Здесь» нет.
+  await expect(list.getByRole('button', { name: 'Маленький штрихкод (3)' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Здесь' })).toHaveCount(0)
+  await list.getByRole('button', { name: 'Большой штрихкод (3)' }).click()
   await expect(list).toBeHidden()
+  await expect(page.getByRole('status', { name: 'Печать на складе' })).toContainText('большой')
 })

@@ -1,10 +1,12 @@
 // Станция этикеток на ПК склада (задача 006, ADR-177): раз в 3 с забирает задание из очереди
 // филиала и печатает его на принтер по умолчанию. Chrome с --kiosk-printing печатает без окна.
+// Задача 014: `?size=small` — станция маленького принтера (30×20), без параметра — большого;
+// у каждого принтера своё окно Chrome со своим профилем (--user-data-dir).
 import { useEffect, useRef, useState } from 'react'
 import { labelsHtml, type LabelItem } from '../components/labels'
 import { Button, Card, CardTitle, ErrorBox, PageHeader } from '../components/ui'
 import { get, post, uuidv7 } from '../lib/api'
-import { STATION_TICK_MS, stationId, type LabelJob } from '../lib/labelJob'
+import { sizeFromSearch, STATION_TICK_MS, stationId, type LabelJob } from '../lib/labelJob'
 import { printInFrame } from '../lib/printFrame'
 import type { LabelSettings, Product } from '../lib/types'
 
@@ -45,12 +47,14 @@ const SAMPLE: Product = {
 const time = (iso: string) => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
 
 export default function LabelStation() {
+  const [size] = useState(() => sizeFromSearch(window.location.search))
+  const settingsUrl = `/settings/labels?size=${size}`
   const [jobs, setJobs] = useState<LabelJob[]>([])
   const [error, setError] = useState<string | null>(null)
   const [last, setLast] = useState<string | null>(null)
   const busy = useRef(false)
   const station = useRef<string>('')
-  if (!station.current) station.current = stationId(localStorage, uuidv7)
+  if (!station.current) station.current = stationId(localStorage, uuidv7, size)
 
   useEffect(() => {
     let alive = true
@@ -58,11 +62,11 @@ export default function LabelStation() {
       if (busy.current) return
       busy.current = true
       try {
-        const res = await post<{ job: Taken | null }>('/label-jobs/take', { station_id: station.current })
+        const res = await post<{ job: Taken | null }>('/label-jobs/take', { station_id: station.current, size })
         const job = res.job
         if (job) {
           try {
-            const settings = await get<LabelSettings>('/settings/labels')
+            const settings = await get<LabelSettings>(settingsUrl)
             const items = job.items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
             if (items.length === 0) throw new Error('у товаров нет штрихкода')
             printInFrame(labelsHtml(items, settings))
@@ -72,9 +76,9 @@ export default function LabelStation() {
             await post(`/label-jobs/${job.id}/failed`, { station_id: station.current, error: e instanceof Error ? e.message : String(e) })
           }
         }
-        const list = await get<{ jobs: LabelJob[] }>('/label-jobs')
+        const list = await get<{ jobs: LabelJob[] }>(`/label-jobs?size=${size}`)
         if (alive) {
-          setJobs(list.jobs)
+          setJobs(list.jobs.filter((j) => j.size === size))
           setError(null)
         }
       } catch (e) {
@@ -89,11 +93,11 @@ export default function LabelStation() {
       alive = false
       clearInterval(t)
     }
-  }, [])
+  }, [size, settingsUrl])
 
   const test = async () => {
     try {
-      const settings = await get<LabelSettings>('/settings/labels')
+      const settings = await get<LabelSettings>(settingsUrl)
       printInFrame(labelsHtml([{ product: SAMPLE, copies: 1 }], settings))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -102,10 +106,10 @@ export default function LabelStation() {
 
   return (
     <div>
-      <PageHeader title="Станция этикеток" />
+      <PageHeader title={size === 'small' ? 'Станция этикеток — маленький принтер (30×20)' : 'Станция этикеток — большой принтер'} />
       <Card className="mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <span className={`text-lg font-semibold ${error ? 'text-red-700' : 'text-emerald-700'}`}>{error ? 'Принтер: нет связи с сервером' : 'Принтер: готов'}</span>
+          <span className={`text-lg font-semibold ${error ? 'text-red-700' : 'text-emerald-700'}`}>{error ? 'Принтер: нет связи с сервером' : size === 'small' ? 'Принтер: маленькие этикетки — готов' : 'Принтер: большие этикетки — готов'}</span>
           <Button variant="secondary" onClick={() => void test()}>
             Пробная этикетка
           </Button>

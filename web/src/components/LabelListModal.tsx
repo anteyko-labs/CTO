@@ -1,10 +1,11 @@
 // Этикетки списком (задача 007): по каждой позиции накладной — сколько этикеток, по умолчанию
-// сколько пришло; число правится, 0 — не печатать. Печать — туда же, куда «Этикетки» (станция
-// склада по умолчанию на телефоне, задача 006).
+// сколько пришло; число правится, 0 — не печатать. Печать — на складе, большой или маленький
+// принтер (задачи 006, 014).
 import { useState } from 'react'
 import type { Product } from '../lib/types'
 import { useAction } from '../lib/hooks'
-import { sendLabels } from './labelTarget'
+import type { LabelSize } from '../lib/labelJob'
+import { LabelSizeButtons, sendToStation } from './labelTarget'
 import { Button, ErrorBox, Modal, Table } from './ui'
 
 export interface LabelListItem {
@@ -18,10 +19,10 @@ export function LabelListModal({ items, onClose }: { items: LabelListItem[]; onC
   const nums = counts.map((c) => (c === '' ? 0 : Number(c)))
   const bad = nums.some((n) => !Number.isInteger(n) || n < 0 || n > 500)
   const total = nums.reduce((a, n) => a + (Number.isFinite(n) ? n : 0), 0)
-  const print = () =>
+  const print = (size: LabelSize) =>
     void act.run(async () => {
       const list = items.map((i, k) => ({ product: i.product, copies: nums[k] })).filter((i) => i.copies > 0)
-      const n = await sendLabels(list)
+      const n = await sendToStation(list, size)
       if (n === 0) throw new Error('Нет этикеток для печати: у товаров нет штрихкодов')
       onClose()
     })
@@ -54,9 +55,7 @@ export function LabelListModal({ items, onClose }: { items: LabelListItem[]; onC
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={act.busy || bad || total === 0} onClick={print}>
-            Печатать {total}
-          </Button>
+          <LabelSizeButtons variant="primary" disabled={act.busy || bad || total === 0} onPrint={print} suffix={` (${total})`} />
         </div>
       </div>
     </Modal>

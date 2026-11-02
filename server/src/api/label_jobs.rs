@@ -1,8 +1,9 @@
 //! Станция этикеток (задача 006, ADR-177): телефон ставит задание в очередь филиала, страница
-//! станции на ПК склада забирает его по одному и печатает на принтер по умолчанию.
+//! станции на ПК склада забирает его по одному и печатает на принтер по умолчанию. Задача 014: у задания и станции —
+//! размер (`big`/`small`), каждая станция берёт только свои.
 //! Этикетки — без права (SPEC-01): любой вошедший филиала; чужой филиал задание не видит (I16).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::catalog::{ProductOut, product_by_id};
+use crate::api::refs::{LabelSizeQuery, label_size};
 use crate::auth::{Ctx, CurrentUser};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops;
@@ -41,6 +43,9 @@ struct JobItem {
 struct CreateReq {
     op_id: Uuid,
     items: Vec<JobItem>,
+    /// `big` — прежний принтер, `small` — 30×20 мм (задача 014); без поля — `big`.
+    #[serde(default)]
+    size: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,12 +74,15 @@ async fn housekeep(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
-async fn station_online(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<bool> {
+/// Станция этого размера отмечалась недавно (задача 014: у каждого принтера своя).
+async fn station_online(conn: &mut PgConnection, branch_id: Uuid, size: &str) -> AppResult<bool> {
     let online = sqlx::query_scalar!(
         r#"select exists(select 1 from label_stations
-                         where branch_id = $1 and last_seen > now() - make_interval(secs => $2)) as "online!""#,
+                         where branch_id = $1 and size = $3
+                           and last_seen > now() - make_interval(secs => $2)) as "online!""#,
         branch_id,
-        STATION_ONLINE_SECS
+        STATION_ONLINE_SECS,
+        size
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -89,6 +97,7 @@ async fn create_job(
     if req.items.is_empty() {
         return Err(invalid("нет этикеток для печати"));
     }
+    let size = label_size(req.size.as_deref())?;
     if req.items.len() > 200 {
         return Err(invalid("слишком много товаров в одном задании"));
     }
@@ -115,14 +124,15 @@ async fn create_job(
     let id = ops::new_id();
     let items = json!(req.items);
     sqlx::query!(
-        r#"insert into label_jobs (id, branch_id, op_id, items, copies, created_by)
-           values ($1, $2, $3, $4, $5, $6)"#,
+        r#"insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size)
+           values ($1, $2, $3, $4, $5, $6, $7)"#,
         id,
         ctx.user.branch_id,
         req.op_id,
         items,
         copies,
-        ctx.user.id
+        ctx.user.id,
+        size
     )
     .execute(&mut *tx)
     .await?;
@@ -132,7 +142,7 @@ async fn create_job(
         KIND,
         "label_job",
         Some(id),
-        json!({ "copies": total, "items": items }),
+        json!({ "copies": total, "items": items, "size": size }),
     )
     .await?;
     let out = Created {
@@ -150,6 +160,7 @@ struct JobOut {
     status: String,
     error: Option<String>,
     copies: i32,
+    size: String,
     created_by_name: String,
     /// Названия товаров через запятую — «что» в списке станции.
     what: String,
@@ -170,7 +181,7 @@ async fn job_rows(
     id: Option<Uuid>,
 ) -> AppResult<Vec<JobOut>> {
     let rows = sqlx::query!(
-        r#"select j.id, j.status, j.error, j.copies, j.created_at, j.done_at,
+        r#"select j.id, j.status, j.error, j.copies, j.size, j.created_at, j.done_at,
                   u.full_name as "created_by_name!",
                   coalesce((select string_agg(p.name, ', ')
                             from jsonb_to_recordset(j.items) as x(product_id uuid, copies bigint)
@@ -191,6 +202,7 @@ async fn job_rows(
             status: r.status,
             error: r.error,
             copies: r.copies,
+            size: r.size,
             created_by_name: r.created_by_name,
             what: r.what,
             created_at: r.created_at,
@@ -203,11 +215,13 @@ async fn job_rows(
 async fn list_jobs(
     State(state): State<AppState>,
     user: CurrentUser,
+    Query(q): Query<LabelSizeQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let size = label_size(q.size.as_deref())?;
     let mut conn = state.pool.acquire().await?;
     housekeep(&mut conn, user.branch_id).await?;
     let jobs = job_rows(&mut conn, user.branch_id, None).await?;
-    let online = station_online(&mut conn, user.branch_id).await?;
+    let online = station_online(&mut conn, user.branch_id, size).await?;
     Ok(Json(json!({ "jobs": jobs, "station_online": online })))
 }
 
@@ -224,7 +238,7 @@ async fn get_job(
         .into_iter()
         .next()
         .ok_or(AppError::NotFound)?;
-    let station_online = station_online(&mut conn, user.branch_id).await?;
+    let station_online = station_online(&mut conn, user.branch_id, &job.size).await?;
     Ok(Json(JobStatus {
         job,
         station_online,
@@ -236,15 +250,31 @@ struct StationReq {
     station_id: Uuid,
 }
 
+#[derive(Deserialize)]
+struct TakeReq {
+    station_id: Uuid,
+    /// Размер принтера станции; без поля — `big` (станция задачи 006).
+    #[serde(default)]
+    size: Option<String>,
+}
+
 /// Отметка «жив» станции. Станция чужого филиала с тем же номером — не перехватывается.
-async fn seen(conn: &mut PgConnection, user: &CurrentUser, station: Uuid) -> AppResult<()> {
+/// `size` — только при взятии задания: отметки done/failed размер станции не меняют.
+async fn seen(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    station: Uuid,
+    size: Option<&str>,
+) -> AppResult<()> {
     let n = sqlx::query!(
-        r#"insert into label_stations (id, branch_id, user_id) values ($1, $2, $3)
-           on conflict (id) do update set last_seen = now(), user_id = excluded.user_id
+        r#"insert into label_stations (id, branch_id, user_id, size) values ($1, $2, $3, coalesce($4, 'big'))
+           on conflict (id) do update set last_seen = now(), user_id = excluded.user_id,
+                                          size = coalesce($4, label_stations.size)
            where label_stations.branch_id = excluded.branch_id"#,
         station,
         user.branch_id,
-        user.id
+        user.id,
+        size
     )
     .execute(&mut *conn)
     .await?
@@ -273,20 +303,22 @@ struct Taken {
 async fn take_job(
     State(state): State<AppState>,
     user: CurrentUser,
-    Json(req): Json<StationReq>,
+    Json(req): Json<TakeReq>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let size = label_size(req.size.as_deref())?;
     let mut conn = state.pool.acquire().await?;
-    seen(&mut conn, &user, req.station_id).await?;
+    seen(&mut conn, &user, req.station_id, Some(size)).await?;
     housekeep(&mut conn, user.branch_id).await?;
     let row = sqlx::query!(
         r#"update label_jobs set status = 'printing', taken_at = now(), station_id = $2
            where id = (select id from label_jobs
-                       where branch_id = $1 and status = 'queued'
+                       where branch_id = $1 and size = $3 and status = 'queued'
                        order by created_at limit 1
                        for update skip locked)
            returning id, items, copies, created_by"#,
         user.branch_id,
-        req.station_id
+        req.station_id,
+        size
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -334,7 +366,7 @@ async fn finish(
     error: Option<String>,
 ) -> AppResult<Json<serde_json::Value>> {
     let mut conn = state.pool.acquire().await?;
-    seen(&mut conn, user, station).await?;
+    seen(&mut conn, user, station, None).await?;
     let cur = sqlx::query_scalar!(
         "select status from label_jobs where id = $1 and branch_id = $2",
         id,

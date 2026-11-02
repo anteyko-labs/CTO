@@ -1,6 +1,7 @@
-// Станция этикеток (задача 006, ADR-177): «телефон» (360 px) шлёт этикетку «На складе» из
-// списка товаров, «станция» на ПК склада забирает задание и печатает (печать подменена), на
-// телефоне — «Напечатано». Станции нет — «Склад не в сети».
+// Станция этикеток (задача 006, ADR-177; два принтера — задача 014): «телефон» (360 px) шлёт
+// этикетку из списка товаров кнопкой «Большой штрихкод» или «Маленький штрихкод», станция
+// своего размера забирает задание и печатает (печать подменена), на телефоне — «Напечатано».
+// Станции нет — «Склад не в сети».
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -55,17 +56,16 @@ async function product(page: Page, name: string, code: string) {
   expect(p.ok(), await p.text()).toBeTruthy()
 }
 
-/** На телефоне: товар в этикетки из меню строки, «На складе», «Печать этикеток». */
-async function sendFromPhone(page: Page, name: string) {
+/** На телефоне: товар в этикетки из меню строки и кнопка принтера. */
+async function sendFromPhone(page: Page, name: string, button = 'Большой штрихкод') {
   await page.goto('/products')
   await page.getByPlaceholder('Название, бренд, артикул, штрихкод').fill(name)
   const row = page.locator('tr', { hasText: name }).first()
   await row.getByRole('button', { name: 'Ещё действия' }).click()
   await page.getByRole('menuitem', { name: 'Печать этикетки' }).click()
-  const group = page.getByRole('group', { name: 'Куда отправить этикетки' })
-  // На телефоне по умолчанию — «На складе» (настройка labels.remote_default).
-  await expect(group.getByRole('button', { name: 'На складе' })).toHaveAttribute('aria-pressed', 'true')
-  await page.getByRole('button', { name: 'Печать этикеток' }).click()
+  // Выбора «Здесь» / «На складе» нет — печать только на складе (задача 014).
+  await expect(page.getByRole('button', { name: 'Здесь', exact: true })).toHaveCount(0)
+  await page.getByRole('group', { name: 'Печать этикеток на складе' }).getByRole('button', { name: button }).click()
 }
 
 test('станция не в сети — задание ждёт, телефон предупреждает', async ({ browser }) => {
@@ -83,7 +83,7 @@ test('станция не в сети — задание ждёт, телефо�
 test('телефон шлёт на склад, станция печатает, на телефоне «Напечатано»', async ({ browser }) => {
   const station = await open(browser, false)
   await station.page.goto('/label-station')
-  await expect(station.page.getByText('Принтер: готов')).toBeVisible()
+  await expect(station.page.getByText('Принтер: большие этикетки — готов')).toBeVisible()
 
   const phone = await open(browser, true)
   const name = `Этикетка склад ${RUN}`
@@ -101,4 +101,35 @@ test('телефон шлёт на склад, станция печатает, 
   expect(await phone.page.evaluate(() => (window as unknown as { __prints: string[] }).__prints.length)).toBe(0)
   await phone.ctx.close()
   await station.ctx.close()
+})
+
+test('два принтера: маленькое задание печатает только маленькая станция', async ({ browser }) => {
+  const bigSt = await open(browser, false)
+  await bigSt.page.goto('/label-station')
+  await expect(bigSt.page.getByText('Принтер: большие этикетки — готов')).toBeVisible()
+  const smallSt = await open(browser, false)
+  await smallSt.page.goto('/label-station?size=small')
+  await expect(smallSt.page.getByText('Принтер: маленькие этикетки — готов')).toBeVisible()
+
+  const phone = await open(browser, true)
+  const name = `Этикетка мелкая ${RUN}`
+  await product(phone.page, name, `29${RUN}03`)
+  await sendFromPhone(phone.page, name, 'Маленький штрихкод')
+  const plate = phone.page.getByRole('status', { name: 'Печать на складе' })
+  await expect(plate).toContainText('Напечатано (1 этикетка)', { timeout: 30_000 })
+  const prints = (p: Page) => p.evaluate(() => (window as unknown as { __prints: string[] }).__prints)
+  // Маленькая: 30×20, штрихкод и «Цена:», без названия; большая станция этого не печатала.
+  await expect.poll(async () => (await prints(smallSt.page)).some((h) => h.includes('30mm 20mm') && h.includes('Цена:'))).toBe(true)
+  expect((await prints(smallSt.page)).some((h) => h.includes(name))).toBe(false)
+  await expect(smallSt.page.getByRole('list', { name: 'Задания печати' })).toContainText(name)
+  expect(await prints(bigSt.page)).toHaveLength(0)
+
+  // «Большой штрихкод» — только большая станция, с названием и «Цена:».
+  await sendFromPhone(phone.page, name, 'Большой штрихкод')
+  await expect(plate).toContainText('Напечатано (1 этикетка)', { timeout: 30_000 })
+  await expect.poll(async () => (await prints(bigSt.page)).some((h) => h.includes(name) && h.includes('Цена:'))).toBe(true)
+  expect(await prints(smallSt.page)).toHaveLength(1)
+  await phone.ctx.close()
+  await bigSt.ctx.close()
+  await smallSt.ctx.close()
 })

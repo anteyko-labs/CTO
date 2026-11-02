@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from label_stations\n                         where branch_id = $1 and size = $3\n                           and last_seen > now() - make_interval(secs => $2)) as \"online!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "online!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c274791e3f3a0d7fdf848e59d749b0c592aea96838cbd908a3f026916f25234e"
+}

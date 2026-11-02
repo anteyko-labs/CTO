@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { CorrectionLinks, FixButton } from '../components/Correction'
-import { LabelTargetSwitch } from '../components/labelTarget'
 import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
 import { ExportButton } from '../components/ExportButton'
 import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
@@ -89,7 +88,6 @@ export default function StockInView() {
                 }),
               ]}
             />
-            {!isReversal && <LabelTargetSwitch />}
             {!isReversal && (
               <Button variant="secondary" disabled={labels.busy} onClick={doPrint}>
                 Печать этикеток

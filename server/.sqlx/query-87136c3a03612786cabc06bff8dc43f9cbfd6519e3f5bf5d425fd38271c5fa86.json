@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update label_jobs set status = 'printing', taken_at = now(), station_id = $2\n           where id = (select id from label_jobs\n                       where branch_id = $1 and status = 'queued'\n                       order by created_at limit 1\n                       for update skip locked)\n           returning id, items, copies, created_by",
+  "query": "update label_jobs set status = 'printing', taken_at = now(), station_id = $2\n           where id = (select id from label_jobs\n                       where branch_id = $1 and size = $3 and status = 'queued'\n                       order by created_at limit 1\n                       for update skip locked)\n           returning id, items, copies, created_by",
   "describe": {
     "columns": [
       {
@@ -27,7 +27,8 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -37,5 +38,5 @@
       false
     ]
   },
-  "hash": "dca08f34b8ffa85acd0958f384ba64e1f32aaa3d58a9a0fb8c427cf6e847032e"
+  "hash": "87136c3a03612786cabc06bff8dc43f9cbfd6519e3f5bf5d425fd38271c5fa86"
 }

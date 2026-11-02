@@ -53,7 +53,7 @@ test('ревизия: новая категория из окна товара, 
   await dialog.getByRole('button', { name: 'Завести и посчитать' }).click()
   // Своего кода нет — программа выдала код, окно показывает его и предлагает этикетку.
   await expect(page.getByTestId('revnew-made')).toContainText('программа выдала штрихкод')
-  await expect(page.getByRole('button', { name: 'Напечатать этикетку' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Маленький штрихкод' })).toBeVisible()
   await doneMade(page)
   await expect(dialog).toBeHidden()
   const found = (await (await page.request.get(`/api/v1/products?q=${encodeURIComponent(RUN)}`)).json()) as { name: string; attrs: Record<string, string> }[]
@@ -86,7 +86,7 @@ test('ревизия: у строки — «Этикетка на склад»',
   await page.locator(`[data-issue-code="${p.id}"]`).click()
   await expect(page.locator('#label-copies')).toHaveValue('1')
   await page.locator('#label-copies').fill('3')
-  await page.getByTestId('label-copies').getByRole('button', { name: 'Печатать 3' }).click()
+  await page.getByTestId('label-copies').getByRole('button', { name: 'Маленький штрихкод (3)' }).click()
   await expect(page.getByText(/В очереди|Склад не в сети|Печатается/).first()).toBeVisible()
   const list = (await (await page.request.get('/api/v1/revisions')).json()) as { id: string; status: string }[]
   for (const r of list.filter((x) => x.status === 'draft')) await page.request.post(`/api/v1/revisions/${r.id}/cancel`, { data: {}, headers: H })

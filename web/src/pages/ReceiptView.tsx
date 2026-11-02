@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ReceiptAcceptance } from '../components/Acceptances'
 import { CorrectionLinks, FixButton } from '../components/Correction'
-import { LabelTargetSwitch } from '../components/labelTarget'
 import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
 import { ReceiptPhotos } from '../components/ReceiptPhotos'
 import { ExportButton } from '../components/ExportButton'
@@ -129,7 +128,6 @@ export default function ReceiptView() {
                 }),
               ]}
             />
-            {!isReversal && <LabelTargetSwitch />}
             {!isReversal && (
               <Button variant="secondary" disabled={labels.busy} onClick={doPrint}>
                 Печать этикеток

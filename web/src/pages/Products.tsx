@@ -12,7 +12,8 @@ import { DefectMarkModal, DefectsTab } from '../components/Defects'
 import { ExportButton } from '../components/ExportButton'
 import { productCols } from '../lib/exportCols'
 import { cappedWarning, fetchAllProducts, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
-import { LabelTargetSwitch, sendLabels } from '../components/labelTarget'
+import { LabelSizeButtons, sendToStation } from '../components/labelTarget'
+import type { LabelSize } from '../lib/labelJob'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { PurchasePriceModal } from '../components/PurchasePriceModal'
@@ -204,7 +205,7 @@ export default function Products() {
   }))
   const noBarcode = selectedList.filter((s) => s.product.barcodes.length === 0)
 
-  const print = () =>
+  const print = (size: LabelSize) =>
     run(async () => {
       setMessage(null)
       const items = selectedList.map((s) => {
@@ -212,7 +213,7 @@ export default function Products() {
         if (!/^\d+$/.test(copies) || Number(copies) < 1) throw new Error(`Неверное число копий: ${s.product.name}`)
         return { product: s.product, copies: Number(copies) }
       })
-      const count = await sendLabels(items)
+      const count = await sendToStation(items, size)
       if (count === 0) setMessage('Нет этикеток для печати: у выбранных товаров нет штрихкода')
     })
 
@@ -526,13 +527,8 @@ export default function Products() {
               или нажмите «Создать свой».
             </div>
           )}
-          <div className="mb-3">
-            <LabelTargetSwitch />
-          </div>
           <div className="flex flex-wrap gap-2">
-            <Button disabled={busy} onClick={() => void print()}>
-              Печать этикеток
-            </Button>
+            <LabelSizeButtons variant="primary" disabled={busy} onPrint={(size) => void print(size)} />
             <Button variant="secondary" onClick={() => setSelected({})}>
               Снять выбор
             </Button>

@@ -10,7 +10,8 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { CameraScanButton } from '../components/CameraScan'
-import { sendToStation } from '../components/labelTarget'
+import { LabelSizeButtons, sendToStation } from '../components/labelTarget'
+import type { LabelSize } from '../lib/labelJob'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -644,7 +645,7 @@ function Draft({
   const askLabels = (l: Line) =>
     // По умолчанию — сколько штук посчитано (на вес и масло — одна).
     setLabelFor({ line: l, copies: String(l.unit === 'piece' && l.counted_qty && l.counted_qty > 0 ? Math.min(l.counted_qty, 500) : 1) })
-  const issueCode = (l: Line, copies: number) =>
+  const issueCode = (l: Line, copies: number, size: LabelSize) =>
     void act.run(async () => {
       if (l.barcodes.length === 0) {
         const r = await post<{ code: string }>(`/products/${l.product_id}/barcodes`, { op_id: newOpId() })
@@ -653,7 +654,7 @@ function Draft({
       }
       const product = await get<Product>(`/products/${l.product_id}`)
       // Этикетка — на складской принтер (станция этикеток, задача 006).
-      await sendToStation([{ product, copies }])
+      await sendToStation([{ product, copies }], size)
     })
 
   /** Крестик у своей строки: убрать своё («= моё 0»); строку больше никто не считал — она уходит совсем. */
@@ -1336,17 +1337,17 @@ function Draft({
               <Button variant="secondary" onClick={() => setLabelFor(null)}>
                 Отмена
               </Button>
-              <Button
+              <LabelSizeButtons
+                variant="primary"
                 disabled={!(Number(labelFor.copies) >= 1 && Number(labelFor.copies) <= 500)}
-                onClick={() => {
+                suffix={Number(labelFor.copies) >= 1 ? ` (${Number(labelFor.copies)})` : ''}
+                onPrint={(size) => {
                   const n = Number(labelFor.copies)
                   const l = labelFor.line
                   setLabelFor(null)
-                  issueCode(l, n)
+                  issueCode(l, n, size)
                 }}
-              >
-                Печатать {Number(labelFor.copies) >= 1 ? Number(labelFor.copies) : ''}
-              </Button>
+              />
             </div>
           </div>
         </Modal>
