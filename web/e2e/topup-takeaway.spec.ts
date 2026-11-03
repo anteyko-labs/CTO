@@ -2,7 +2,7 @@
 // машины, мастер по желанию; в «Виде замены» доливок нет, замены — первыми; 1 л моторного масла на
 // вынос — без вопроса «Это замена масла?»; флажок — на экране «Услуги».
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { personValue, pickMaster } from './cashier'
+import { openPay, personValue, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -72,8 +72,11 @@ test('доливка на вынос: без клиента, мастер по �
 
   // Флажок на экране «Услуги»: в списке — «на вынос», в карточке — отмечен.
   await page.goto('/services')
-  await page.getByPlaceholder('Поиск').fill(RUN)
   const row = page.getByRole('row', { name: new RegExp(topupName) })
+  // Поиск появляется, только если услуг больше пяти (на пустой базе его нет).
+  const search = page.getByPlaceholder('Поиск')
+  await expect(row.or(search).first()).toBeVisible()
+  if (await search.isVisible()) await search.fill(RUN)
   await expect(row.getByText('на вынос')).toBeVisible()
   await row.getByText(topupName).click()
   await expect(page.getByTestId('service-takeaway').getByRole('checkbox')).toBeChecked()
@@ -99,6 +102,7 @@ test('доливка на вынос: без клиента, мастер по �
     expect(await personValue(masterSelect)).toBe('')
     if (withMaster) await pickMaster(page, master)
     const posted = page.waitForResponse((r) => r.url().endsWith('/api/v1/sales') && r.request().method() === 'POST')
+    await openPay(page)
     await page.getByRole('button', { name: 'Провести чек' }).first().click()
     const res = await posted
     expect(res.ok(), await res.text()).toBeTruthy()
@@ -156,6 +160,11 @@ test('режим кассы 1366×768: доливка на вынос с мас�
     return el.scrollHeight <= window.innerHeight + 1 && el.scrollWidth <= window.innerWidth + 1
   })
   expect(fits).toBe(true)
+  // «Оплатить» — внизу колонки на экране; «Провести чек» в окне оплаты — тоже на экране.
+  const payOpen = page.getByTestId('pay-open')
+  const payBox = (await payOpen.boundingBox())!
+  expect(payBox.y + payBox.height).toBeLessThanOrEqual(769)
+  await openPay(page)
   const submit = page.getByRole('button', { name: 'Провести чек' }).first()
   const box = (await submit.boundingBox())!
   expect(box.y + box.height).toBeLessThanOrEqual(769)

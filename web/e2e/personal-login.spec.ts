@@ -3,6 +3,7 @@
 // заработок» и меняет свой пароль в «Профиле».
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { openPay } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -89,6 +90,7 @@ test('кассир со своим входом: смена на себя без
     await a.getByPlaceholder(PICKER).fill(item)
     await a.getByRole('button', { name: new RegExp(`^${item}`) }).first().click()
     await expect(a.getByTestId('cart')).toContainText(item)
+    await openPay(a)
     await a.getByRole('button', { name: 'Провести чек' }).first().click()
     await expect(a.getByText(/Чек № \d+ проведён/)).toBeVisible()
 

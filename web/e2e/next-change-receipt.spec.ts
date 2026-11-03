@@ -6,7 +6,7 @@
 // Н5): подпись — товар, а не строка книжки; по видам замены; фильтры в чеке книжки по умолчанию.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, ensureShift, pickMaster, shiftOnTill } from './cashier'
+import { choosePerson, ensureShift, openPay, pickMaster, shiftOnTill } from './cashier'
 
 /** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
 const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
@@ -168,6 +168,7 @@ for (const mode of [
         await page.getByRole('button', { name: new RegExp(s.last) }).first().click()
       }
       await page.locator('#mileage').fill('220000')
+      await openPay(page)
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
@@ -264,6 +265,7 @@ for (const mode of [
         await expect(block.locator('[data-next-goods]').first()).toContainText(`${s.oilName} × 1 кан.`)
         await block.getByLabel(`Следующая замена: ${s.antiService}`).fill('280000')
         await expect(block.locator('[data-next-goods]').last()).toContainText(`${s.antiName} × 1`)
+        await openPay(page)
         await hit(page.getByRole('button', { name: 'Без сдачи' }))
         await hit(page.getByRole('button', { name: /Провести чек/ }).first())
         await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
@@ -303,6 +305,7 @@ for (const mode of [
       await fill([s.topup], [s.oilCode], '251000')
       await expect(page.getByTestId('oil-change-hint')).toHaveText('Это замена? Добавьте услугу замены масла двигателя')
       await expect(page.getByLabel(`Следующая замена: ${s.oilName}`)).toHaveValue('259000')
+      await openPay(page)
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()

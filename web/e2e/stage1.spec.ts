@@ -1,7 +1,7 @@
 // Главный путь этапа 1 в браузере: товар → приход → продажа → возврат → остатки, и права администратора.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickCashier } from './cashier'
+import { openPay, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -79,6 +79,7 @@ test('товар, приход, продажа, возврат и остаток
   await scan(page, code)
   await expect(page.getByText(product)).toBeVisible()
   // Касса с одним кассиром выбирает его сама; быстрая кнопка подставляет купюру.
+  await openPay(page)
   await page.getByRole('button', { name: money('1 000 с') }).click()
   await expect(page.getByLabel('Получено, с')).toHaveValue('1000')
   await expect(page.getByText('Сдача', { exact: true }).locator('..')).toContainText(money('500 с'))
@@ -158,6 +159,7 @@ test('касса работает без сети, чек уходит при е
   await scan(page, code)
   await pickCashier(page, cashier)
   await expect(page.getByText(/Нет сети/)).toBeVisible()
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № Ч-.* проведён/)).toBeVisible()
 

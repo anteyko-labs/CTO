@@ -1,9 +1,9 @@
 // Продажа только при открытой смене (задача 005 Н4, ADR-169): при связи без смены касса не даёт
-// пробить чек — вместо «Провести чек» «Открыть смену», плашка «пробить чек нельзя»; смену открыли —
+// пробить чек — вместо «Оплатить» «Открыть смену», плашка «пробить чек нельзя»; смену открыли —
 // чек проходит. Переключатель — «Настройки → Касса», по умолчанию включён.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { closeShiftIfOpen } from './cashier'
+import { closeShiftIfOpen, openPay } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -48,12 +48,12 @@ test('без смены чек не пробить: «Открыть смену�
   await page.getByPlaceholder(/Сканируйте штрихкод/).fill(item)
   await page.getByRole('button', { name: new RegExp(`^${item}`) }).first().click()
   await expect(page.getByRole('listitem').filter({ hasText: item })).toBeVisible()
-  // «Провести чек» нет — на его месте «Открыть смену».
-  const submit = page.getByTestId('sale-submit')
-  await expect(submit).toHaveText('Открыть смену')
-  await expect(page.getByRole('button', { name: /Провести чек/ })).toHaveCount(0)
+  // «Оплатить» нет — на его месте «Открыть смену» (задача 026).
+  const payOpen = page.getByTestId('pay-open')
+  await expect(payOpen).toHaveText('Открыть смену')
+  await expect(page.getByRole('button', { name: /Провести чек|Оплатить/ })).toHaveCount(0)
 
-  await submit.click()
+  await payOpen.click()
   const dialog = page.getByRole('dialog', { name: 'Открыть смену' })
   await dialog.locator('#shift-cashier').selectOption({ label: cashier })
   await dialog.locator('#shift-pin').fill('1234')
@@ -63,7 +63,10 @@ test('без смены чек не пробить: «Открыть смену�
   await expect(page.getByTestId('shift-cashier')).toContainText(cashier)
 
   // Чек в той же корзине — проходит.
-  await expect(submit).toHaveText('Провести чек')
+  await expect(payOpen).toHaveText('Оплатить')
+  await openPay(page)
+  const submit = page.getByTestId('sale-submit')
+  await expect(submit).toHaveText(/^Провести чек/)
   await submit.click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 })

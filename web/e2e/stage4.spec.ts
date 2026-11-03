@@ -1,7 +1,7 @@
 // Расчёт сотрудника за день и месяц, ревизия склада сканером (SPEC-07, SPEC-15).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { ensureShift, pickCashier } from './cashier'
+import { ensureShift, openPay, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -185,6 +185,7 @@ test('аккумуляторы на вес: приём из кассы и про
   await pickCashier(page, cashier)
   await page.getByLabel('Вес, кг', { exact: true }).last().fill('4')
   await page.getByLabel(/^Цена за кг/).last().fill('150')
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 })
@@ -280,6 +281,7 @@ test('аналог фильтра вместо отсутствующего и �
   await pickCashier(page, cashier)
   await page.getByLabel('Доставка (бесплатно)').check()
   await page.locator('#delivery-address').fill('г. Бишкек, ул. Ахунбаева 98')
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
   await page.getByRole('link', { name: 'Открыть', exact: true }).click()

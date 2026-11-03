@@ -1,7 +1,8 @@
 // Доработки SPEC-30 после проверки вживую: машина клиента встаёт сама, вид замены — отметками
 // с «Готово», удаление отложенного чека — с подтверждением, права без «Прихода» и «Товаров»,
-// режим кассы 1366×768 — оплата закреплена, «Не хватает» одной строкой.
+// режим кассы 1366×768 — «Оплатить» закреплена, «Не хватает» одной строкой в окне оплаты.
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
+import { ensureShift, openPay } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -94,6 +95,8 @@ test.describe('режим кассы 1366×768', () => {
     await goods(page.request, item, 250_000)
     const kinds = [`Замена А ${RUN}`, `Замена Б ${RUN}`]
     for (const name of kinds) await apiPost(page.request, '/services', { name, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+    // Смена открыта: без неё вместо «Оплатить» — «Открыть смену» (задача 005 Н4).
+    await ensureShift(page.request)
 
     await page.goto('/')
     await page.getByRole('button', { name: 'Режим кассы', exact: true }).click()
@@ -126,19 +129,26 @@ test.describe('режим кассы 1366×768', () => {
     await dialog.getByRole('button', { name: 'Готово' }).click()
     await expect(page.getByTestId('cart')).not.toContainText(kinds[1])
 
-    // Чего не хватает — одной строкой.
+    // Чего не хватает — одной строкой в окне «Оплата» (задача 026).
+    await openPay(page)
     const short = page.getByTestId('short-missing')
     await expect(short).toContainText('Не хватает:')
     await expect(short).toContainText('мастер')
     expect((await short.boundingBox())!.height).toBeLessThan(60)
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/4b-service.png` })
-    // Касание ведёт к первому недостающему: кассир (смены нет) или мастер.
+    // Касание ведёт к первому недостающему: кассир или мастер; поле в колонке — окно
+    // оплаты закрывается.
     await short.click()
+    await expect(page.getByRole('dialog', { name: 'Оплата' })).toHaveCount(0)
     await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toMatch(/^(cashier|master)-select$/)
 
-    // Итог и оплата закреплены: прокрутили данные клиента вниз — «Итого» и способы оплаты на месте.
-    const top = page.getByTestId('pay-top')
+    // Итог и «Оплатить» закреплены внизу колонки: прокрутили данные клиента вниз — они на месте.
     await page.getByTestId('pay-details').evaluate((el) => el.scrollTo(0, el.scrollHeight))
+    await expect(page.getByTestId('pay-footer').getByText('Итого:')).toBeInViewport()
+    await expect(page.getByTestId('pay-open')).toBeInViewport()
+    // В окне оплаты — итог и способы оплаты.
+    await openPay(page)
+    const top = page.getByTestId('pay-top')
     await expect(top.getByText('Итого')).toBeInViewport()
     await expect(top.getByRole('button', { name: 'Наличные', exact: true })).toBeInViewport()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/4b-service-scrolled.png` })
@@ -154,6 +164,7 @@ test.describe('режим кассы 1366×768', () => {
     expect(scroll).toBeLessThanOrEqual(1)
     await top.getByRole('button', { name: 'Наличные', exact: true }).click()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/4b-cash.png` })
+    await page.getByRole('dialog', { name: 'Оплата' }).getByRole('button', { name: 'Закрыть' }).click()
 
     // Клиент в сервисе — обязателен: подпись в окне.
     await page.locator('[data-client]').click()

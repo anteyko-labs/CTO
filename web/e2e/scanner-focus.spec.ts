@@ -5,7 +5,7 @@
 // у строки фильтра. Сканер здесь — как настоящий: знаки и Enter, без щелчка в поле поиска.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, pickMaster } from './cashier'
+import { choosePerson, openPay, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -220,6 +220,8 @@ for (const mode of [
       await picker(page).focus()
       await scan(page, g.air.code)
       await expect(qty(page, g.air.name)).toHaveValue('1')
+      // «Получено» — в окне оплаты (задача 026).
+      await openPay(page)
       const received = page.locator('[data-received]')
       await hit(received)
       await expect(received).toBeFocused()
@@ -320,6 +322,7 @@ for (const mode of [
       await open(page)
       const g = await goods(page.request)
       await scan(page, g.air.code)
+      await openPay(page)
       const card = page.locator('[data-pay]').getByRole('button', { name: 'Карта / QR банка', exact: true })
       await hit(card)
       await expect(card).toHaveAttribute('aria-pressed', 'true')
@@ -461,6 +464,7 @@ for (const mode of [
         await picker(page).focus()
         await scan(page, g.air.code)
         await expect(qty(page, g.air.name)).toHaveValue('1')
+        await openPay(page)
         await page.getByRole('button', { name: 'Без сдачи' }).tap()
         await page.getByRole('button', { name: /Провести чек/ }).tap()
         await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
@@ -482,6 +486,8 @@ for (const mode of [
         // Быстро две цифры подряд — не скан: обе остаются в поле.
         await page.keyboard.type('12', { delay: 5 })
         await expect(q).toHaveValue('312')
+        // «Получено» — в окне оплаты (задача 026).
+        await openPay(page)
         const received = page.locator('[data-received]')
         await received.click()
         await page.keyboard.type('5000', { delay: 90 })

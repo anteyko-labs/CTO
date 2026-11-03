@@ -2,7 +2,7 @@
 // незнакомого кода нет «Новый товар» даже у владельца; товар с остатком 0 — «нет в наличии», в чеке
 // красной строкой и «Провести чек» закрыт.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { ensureShift } from './cashier'
+import { ensureShift, openPay } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -60,5 +60,6 @@ test('касса: не заводит товар, нуль — «нет в на�
   await row.click()
   await expect(page.getByTestId('cart')).toContainText(name)
   await expect(page.getByTestId('cart')).toContainText('больше, чем на складе')
+  await openPay(page)
   await expect(page.getByRole('button', { name: 'Провести чек' })).toBeDisabled()
 })

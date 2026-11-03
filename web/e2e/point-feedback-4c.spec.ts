@@ -3,7 +3,7 @@
 // прокручивается.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { ensureShift, pickMaster } from './cashier'
+import { ensureShift, openPay, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -159,9 +159,9 @@ test.describe('режим кассы 1366×768', () => {
     const left = page.getByTestId('service-left')
     await expect(left).toBeVisible()
     for (const label of ['Мастер', 'Вид замены', 'Клиент']) await expect(left.getByText(label, { exact: false }).first()).toBeInViewport()
-    // Справа — тип, итог, оплата и «Провести»; данных замены там нет.
-    const top = page.getByTestId('pay-top')
-    expect((await top.boundingBox())!.x).toBeGreaterThan((await left.boundingBox())!.x + (await left.boundingBox())!.width - 1)
+    // Справа — тип, итог и «Оплатить» (оплата — в окне, задача 026); данных замены там нет.
+    const column = page.getByTestId('pay-column')
+    expect((await column.boundingBox())!.x).toBeGreaterThan((await left.boundingBox())!.x + (await left.boundingBox())!.width - 1)
     await expect(page.getByTestId('pay-details').locator('#master-select')).toHaveCount(0)
     await expect(left.locator('#master-select')).toBeVisible()
     // Слева под строками чека: верх блока — ниже списка.
@@ -188,10 +188,16 @@ test.describe('режим кассы 1366×768', () => {
       expect((await l.boundingBox())!.height, await l.evaluate((e) => e.id || e.textContent)).toBeGreaterThanOrEqual(56)
     }
     expect(await noPageScroll(page)).toBe(true)
-    expect(await inView(page, page.getByRole('button', { name: /Провести чек/ }))).toBe(true)
+    expect(await inView(page, page.getByTestId('pay-open'))).toBe(true)
+    await expect(page.getByTestId('pay-footer').getByText('Итого:')).toBeInViewport()
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/17-service-left.png` })
+    // В окне оплаты — итог, способы оплаты и «Провести чек».
+    await openPay(page)
+    const top = page.getByTestId('pay-top')
     await expect(top.getByText('Итого')).toBeInViewport()
     await expect(top.getByRole('button', { name: 'Наличные', exact: true })).toBeInViewport()
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/17-service-left.png` })
+    expect(await inView(page, page.getByRole('button', { name: /Провести чек/ }))).toBe(true)
+    await page.getByRole('dialog', { name: 'Оплата' }).getByRole('button', { name: 'Закрыть' }).tap()
 
     // На вынос — данные клиента снова справа, блока слева нет.
     await page.getByRole('button', { name: 'На вынос' }).tap()

@@ -3,7 +3,7 @@
 // сверяется с каталогом перед проведением; касса открывается и без защищённого контекста.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickCashier } from './cashier'
+import { openPay, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -78,6 +78,7 @@ test('пока чек проводится, его не отложить и не
   await pickCashier(page, cashier)
   await scan(page, a.barcodes[0])
   await expect(page.getByTestId('cart').getByText(a.name)).toBeVisible()
+  await openPay(page)
   await page.getByRole('button', { name: money('1 000 с') }).click()
 
   // Ответ сервера задержан: чек «в пути».
@@ -131,6 +132,7 @@ test('цена сменилась, пока товар лежал в чеке, �
   // Владелец снизил цену, касса об этом не знает.
   const res = await page.request.patch(`/api/v1/products/${p.id}/prices`, { data: { sale_price_tyiyn: 35_000 }, headers: DEVICE })
   expect(res.ok(), await res.text()).toBeTruthy()
+  await openPay(page)
   await page.getByRole('button', { name: money('500 с') }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   // Чек не проведён по старой цене: строка — по новой, кассир видит, что поменялось.

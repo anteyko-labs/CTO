@@ -1,7 +1,7 @@
 // Касса по доработкам 21.10.2026 (SPEC-30 §1–4): оплата «По счёту», вид замены в чеке «В сервис» с
 // ценой по нашему маслу, данные клиента для замены, правка цены только с правом «Скидка в чеке».
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { pickCashier, pickMaster } from './cashier'
+import { ensureShift, openPay, pickCashier, pickMaster } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -69,13 +69,17 @@ test('«По счёту»: без клиента не провести, с фи�
   await scan(page, code)
   await expect(page.getByRole('listitem').filter({ hasText: product })).toBeVisible()
   await pickCashier(page, cashier)
+  await openPay(page)
   await payButton(page, 'По счёту').click()
   await expect(page.getByTestId('pay-dest')).toHaveText(/^→ .+ · без комиссии$/)
   await expect(page.getByTestId('invoice-needs-client')).toBeVisible()
   const submit = page.getByRole('button', { name: 'Провести чек' })
   await expect(submit).toBeDisabled()
+  // Клиент — в колонке кассы: окно оплаты закрыли, выбрали фирму, открыли снова (задача 026).
+  await page.keyboard.press('Escape')
   await page.locator('[data-client-input]').fill(firm)
   await page.getByRole('button', { name: new RegExp(`^${firm}`) }).click()
+  await openPay(page)
   await expect(page.getByTestId('invoice-needs-client')).toHaveCount(0)
   await submit.click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
@@ -135,7 +139,10 @@ test('«В сервис»: вид замены, бесплатно с нашим
   const submit = page.getByRole('button', { name: 'Провести чек' })
   const needs = page.getByTestId('service-client-needs')
   await expect(needs).toContainText('телефон клиента')
+  // «Провести чек» — в окне оплаты (задача 026): закрыто, пока не хватает данных клиента.
+  await openPay(page)
   await expect(submit).toBeDisabled()
+  await page.keyboard.press('Escape')
   // Клиента находят по госномеру — машина встаёт сама.
   await page.locator('[data-client-input]').fill(plate)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
@@ -146,6 +153,7 @@ test('«В сервис»: вид замены, бесплатно с нашим
   await expect(needs).not.toContainText('телефон клиента')
   await page.locator('#mileage').fill('150000')
   await expect(needs).toHaveCount(0)
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await submit.click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
@@ -179,6 +187,8 @@ test('скидка: без права цену можно только подн�
   const admin = `kassa${RUN}`
   const password = `pass-${RUN}-${Math.random().toString(36).slice(2)}`
   await apiPost(page.request, '/users', { login: admin, password, full_name: `Касса ${RUN}`, role: 'admin' })
+  // Без смены вместо «Оплатить» — «Открыть смену» (задача 005 Н4).
+  await ensureShift(page.request)
   const ctx = await browser.newContext()
   const adminPage = await ctx.newPage()
   await login(adminPage, admin, password)
@@ -191,9 +201,13 @@ test('скидка: без права цену можно только подн�
   await expect(price).toBeEditable()
   await price.fill('500')
   await expect(line.getByTestId('price-below-list')).toBeVisible()
+  // «Не хватает» — в окне оплаты (задача 026).
+  await openPay(adminPage)
   await expect(adminPage.getByRole('status').filter({ hasText: 'цена ниже каталожной' })).toBeVisible()
+  await adminPage.keyboard.press('Escape')
   await price.fill('700')
   await expect(line.getByTestId('price-below-list')).toHaveCount(0)
+  await openPay(adminPage)
   await expect(adminPage.getByRole('status').filter({ hasText: 'цена ниже каталожной' })).toHaveCount(0)
   await ctx.close()
 })

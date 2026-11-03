@@ -62,6 +62,21 @@ async function openPadAt(page: Page, field: Locator) {
   await expect(page.getByTestId('keypad')).toBeVisible()
 }
 
+/** Окно «Оплата» — касанием «Оплатить» внизу колонки. */
+async function openPay(page: Page) {
+  const dialog = page.getByRole('dialog', { name: 'Оплата' })
+  if (await dialog.isVisible()) return
+  await page.getByTestId('pay-open').tap()
+  await expect(dialog).toBeVisible()
+}
+
+/** Закрыть окно «Оплата» крестиком. */
+async function closePay(page: Page) {
+  const dialog = page.getByRole('dialog', { name: 'Оплата' })
+  await dialog.getByRole('button', { name: 'Закрыть' }).first().tap()
+  await expect(dialog).toHaveCount(0)
+}
+
 async function hidePad(page: Page) {
   await page.getByRole('group', { name: /клавиатура/i }).getByRole('button', { name: 'Скрыть', exact: true }).tap()
   await expect(page.getByTestId('keypad')).toHaveCount(0)
@@ -128,6 +143,9 @@ test('режим кассы: крупно, без меню, продажа эк�
   await expect(qty).toHaveValue('3')
   await hidePad(page)
 
+  // «Оплатить» внизу колонки — крупная, оплата — в окне.
+  expect((await size(page.getByTestId('pay-open'))).height).toBeGreaterThanOrEqual(72)
+  await openPay(page)
   const received = page.locator('[data-received]')
   await expect(received).toHaveAttribute('inputmode', 'none')
   await openPadAt(page, received)
@@ -248,11 +266,13 @@ test('режим кассы: во весь экран без прокрутки 
   await page.reload()
   await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
   await expect(page.getByText('Чек пуст')).toBeVisible()
+  // «Оплатить» — всегда внизу колонки на экране; «Провести чек» — в окне оплаты.
+  const payOpen = page.getByTestId('pay-open')
   const submit = page.getByRole('button', { name: 'Провести чек' })
   for (const view of [{ width: 1366, height: 768 }, { width: 1920, height: 1080 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(view)
     expect(await noPageScroll(page), `пустой чек ${view.width}×${view.height}`).toBe(true)
-    expect(await inView(page, submit)).toBe(true)
+    expect(await inView(page, payOpen)).toBe(true)
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-${view.width}-empty.png` })
   }
 
@@ -292,7 +312,11 @@ test('режим кассы: во весь экран без прокрутки 
     const cartBox = (await cart.boundingBox())!
     const lastBox = (await last.boundingBox())!
     expect(lastBox.y + lastBox.height).toBeLessThanOrEqual(cartBox.y + cartBox.height + 1)
-    // Главные кнопки на экране и крупные.
+    // Главные кнопки на экране и крупные: «Итого» и «Оплатить» внизу колонки, оплата — в окне.
+    expect(await inView(page, payOpen)).toBe(true)
+    await expect(page.getByTestId('pay-footer')).toContainText(/12\s000\sс/)
+    expect((await size(payOpen)).height).toBeGreaterThanOrEqual(72)
+    await openPay(page)
     expect(await inView(page, submit)).toBe(true)
     await expect(submit).toContainText(/12\s000\sс/)
     expect((await size(submit)).height).toBeGreaterThanOrEqual(72)
@@ -301,6 +325,7 @@ test('режим кассы: во весь экран без прокрутки 
       expect(await inView(page, b), label).toBe(true)
       expect((await size(b)).height).toBeGreaterThanOrEqual(64)
     }
+    await closePay(page)
     for (const l of [last.getByRole('button', { name: 'Больше' }), last.getByRole('button', { name: 'Меньше' }), last.getByRole('button', { name: 'Удалить строку' })]) {
       const s = await size(l)
       expect(s.height).toBeGreaterThanOrEqual(56)
@@ -344,6 +369,10 @@ test('клавиатура режима кассы: только по кнопк
     paid_from: await ownerSafe(page.request),
     lines: [{ product_id: p.id, qty: 5, cost_tyiyn: 50_000 }],
   })
+  // «Получено» — в окне оплаты, оно открывается при открытой смене.
+  const shiftCashier = await apiPost<{ id: string }>(page.request, '/employees', { full_name: `Кассир клавиатуры ${RUN}`, is_cashier: true, pin: '1593' })
+  await closeOpenShift(page.request)
+  await apiPost(page.request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: shiftCashier.id, cashier_pin: '1593' })
 
   await page.goto('/')
   await page.evaluate(() => localStorage.setItem('avtodom.cashier_mode', '1'))
@@ -405,13 +434,21 @@ test('клавиатура режима кассы: только по кнопк
   await expect(cart.locator('li')).toHaveCount(1)
   await expect(cart).toContainText(name)
 
-  // Открытая клавиатура остаётся при переходе к другому полю: у «Получено» — цифры.
+  // Открытая клавиатура остаётся при переходе к другому полю: у «Получено» (в окне оплаты) — цифры.
+  // Клавиатура букв закрывает почти всю «Оплатить» — касаемся её открытого правого края.
+  {
+    const payOpen = page.getByTestId('pay-open')
+    const b = (await payOpen.boundingBox())!
+    await payOpen.tap({ position: { x: b.width - 12, y: b.height / 2 } })
+    await expect(page.getByRole('dialog', { name: 'Оплата' })).toBeVisible()
+  }
   const received = page.locator('[data-received]')
   await received.tap()
   await expect(page.getByTestId('keypad')).toBeVisible()
   await expect(kbd).toHaveCount(0)
   await tapKeys(page, '500')
   await expect(received).toHaveValue('500')
+  await closePay(page)
   const qty = page.getByRole('textbox', { name: 'Кол-во' })
   // Обратно в поиск — снова буквы, без нажатия кнопки.
   await picker.tap()
@@ -463,6 +500,7 @@ test('клавиатура режима кассы: только по кнопк
   await expect(page.getByText('Чек пуст')).toBeVisible()
   await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
   await expect(page.getByRole('link', { name: 'Сводка' })).toBeVisible()
+  await closeOpenShift(page.request)
 })
 
 test('режим кассы: мастер и кассир кнопками, ✕ отложенного, «Нет» и «+ остаток» — от 56 (SPEC-36 §16)', async ({ page }) => {
@@ -519,13 +557,19 @@ test('режим кассы: мастер и кассир кнопками, ✕ 
   await choosePerson(page, 'cashier-select', cashier)
   await expect(page.locator('[data-person-pick="cashier-select"]')).toContainText(cashier)
 
-  // «+ остаток» в смешанной оплате.
+  // «+ остаток» в смешанной оплате: окно оплаты — при открытой смене (без неё «Открыть смену»).
+  const emp = (await apiGet<{ id: string; full_name: string }[]>(page.request, '/employees')).find((e) => e.full_name === cashier)
+  await apiPost(page.request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: emp!.id, cashier_pin: '1470' })
+  await page.reload()
+  await expect(page.getByTestId('pay-open')).toHaveText('Оплатить')
+  await openPay(page)
   await page.locator('[data-pay]').getByRole('button', { name: 'Смешанная', exact: true }).tap()
   await big(page.getByRole('button', { name: 'остаток → Наличные' }), '+ остаток')
   expect(await noPageScroll(page)).toBe(true)
   await page.getByRole('button', { name: 'остаток → Наличные' }).tap()
   await expect(page.getByTestId('mixed-touch')).toContainText('Разнесено полностью')
   await page.locator('[data-pay]').getByRole('button', { name: 'Наличные', exact: true }).tap()
+  await closePay(page)
 
   // Мастер в чеке «В сервис» — кнопками; в окне выбора — тоже от 56.
   await page.getByRole('button', { name: 'В сервис' }).first().tap()
@@ -555,4 +599,5 @@ test('режим кассы: мастер и кассир кнопками, ✕ 
   await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
   await page.getByRole('button', { name: 'Точно очистить?' }).tap()
   await page.evaluate(() => localStorage.removeItem('avtodom.parked'))
+  await closeOpenShift(page.request)
 })

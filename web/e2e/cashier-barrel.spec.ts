@@ -2,6 +2,7 @@
 // «Розлив, л», фокус в литрах, сумма по цене литра, чек проводится; канистра 4 л — как прежде;
 // порог 250 в настройках — бочка 200 л снова канистрой. В конце — настройки как были.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { openPay } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -70,6 +71,7 @@ test('бочка 200 л — розлив литрами, канистра 4 л �
   await addToCart(page, can)
   await expect(page.getByLabel('Канистры')).toHaveValue('1')
   // 4,5 л × 100 с + канистра 3 000 с.
+  await openPay(page)
   await expect(page.getByTestId('pay-top')).toContainText(money('3 450 с'))
   await page.getByRole('button', { name: 'Провести чек' }).first().click()
   await page.getByRole('button', { name: 'Нет, на вынос' }).click()

@@ -3,7 +3,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { drawSignature, SIGNATURE_PNG, signDebtAtTill } from './sign'
 import { ownerSafe } from './safe'
-import { pickCashier, pickMaster } from './cashier'
+import { openPay, pickCashier, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -200,11 +200,16 @@ test('услуга «масло клиента»: ставка мастера и
   await pickMaster(page, master)
   // Без клиента не провести: касса отмечает недостающее.
   await expect(page.getByTestId('service-client-needs')).toContainText('телефон клиента')
+  await openPay(page)
   await expect(page.getByRole('button', { name: 'Провести чек' })).toBeDisabled()
+  // Клиент — в колонке кассы: окно оплаты закрываем.
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Оплата' })).toBeHidden()
   await page.locator('[data-client-input]').fill(plate)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
   await page.locator('#mileage').fill('64000')
   await expect(page.getByTestId('service-client-needs')).toHaveCount(0)
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
@@ -241,6 +246,7 @@ test('продажа в долг: ПИН из кассы и печать рас�
   await pickCashier(page, cashier)
   await page.locator('[data-client-input]').fill(client)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
+  await openPay(page)
   await payButton(page, 'В долг').click()
 
   // Без ПИН документ о долге не составить: касса просит его и не проводит чек.
@@ -298,6 +304,7 @@ test('повторный долг: в расписке прежний долг �
   await pickCashier(page, cashier)
   await page.locator('[data-client-input]').fill(client)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
+  await openPay(page)
   await payButton(page, 'В долг').click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await signDebtAtTill(page)
@@ -338,6 +345,7 @@ test('долг с экрана покупателя: подпись пером �
   // Экран покупателя дублирует чек кассы.
   await expect(screen.getByTestId('customer-cart')).toContainText(product)
   await expect(screen.getByTestId('customer-cart-total')).toContainText(money('700 с'))
+  await openPay(page)
   await payButton(page, 'В долг').click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
 
@@ -351,6 +359,7 @@ test('долг с экрана покупателя: подпись пером �
   await expect(screen.getByTestId('customer-cart')).toBeVisible()
   await expect(page.getByText(/Чек № \d+ проведён/)).toHaveCount(0)
 
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(sign).toBeVisible()
   await expect(sign.getByRole('button', { name: 'Подписать' })).toBeDisabled()
@@ -446,6 +455,7 @@ test('подарок по порогу: 1 л розлива мало, канис
   await expect(giftLine).toContainText(money('0 с'))
 
   await pickCashier(page, cashier)
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   // Масло на вынос — касса спрашивает, не замена ли это (SPEC-29 §18).
@@ -560,6 +570,7 @@ test('цена ниже закупочной: касса показывает о
   const line = page.getByRole('listitem').filter({ hasText: product })
   await line.getByRole('textbox').nth(1).fill('100')
   await pickCashier(page, cashier)
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/строка 1: цена ниже закупочной \(300\sс\), дешевле продать нельзя/)).toBeVisible()
@@ -597,9 +608,13 @@ test('замена в сервисе у физлица: машина, обяза
   await page.getByLabel('Госномер').fill(plate)
   await page.getByRole('button', { name: 'Добавить', exact: true }).click()
   const submit = page.getByRole('button', { name: 'Провести чек' })
+  await openPay(page)
   await expect(page.getByRole('status').filter({ hasText: 'пробег машины — спросите у клиента' })).toBeVisible()
   await expect(submit).toBeDisabled()
+  // Пробег — в колонке кассы: окно оплаты закрываем.
+  await page.keyboard.press('Escape')
   await page.locator('#mileage').fill('120500')
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await submit.click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()

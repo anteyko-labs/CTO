@@ -2,7 +2,7 @@
 // что создаются; исходный сторнируется, верный проводится, оба ссылаются друг на друга.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { ensureShift } from './cashier'
+import { ensureShift, openPay } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -57,9 +57,14 @@ test('исправить чек: количество в той же кассе,
   await expect(qty).toHaveValue('1')
   await expect(page.locator('#cashier-select')).not.toHaveValue('')
   await qty.fill('2')
+  // «Сохранить исправление» — в окне оплаты; без причины закрыто.
+  await openPay(page)
   const save = page.getByRole('button', { name: 'Сохранить исправление' })
   await expect(save).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Оплата' })).toBeHidden()
   await page.locator('#correction-comment').fill('кассир пробил одну штуку вместо двух')
+  await openPay(page)
   await save.click()
 
   // Новый чек: 1 000 с, «исправление № N» и что поменялось.

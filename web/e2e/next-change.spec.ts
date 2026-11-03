@@ -3,7 +3,7 @@
 // чеке и при повторной печати; без сети — уходит с чеком и печатается из очереди. Режим кассы
 // 1366×768 — блок помещается без прокрутки страницы, цели касания ≥ 56.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { pickCashier, pickMaster } from './cashier'
+import { openPay, pickCashier, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -134,19 +134,25 @@ test.describe('режим кассы 1366×768', () => {
       return el.scrollHeight <= window.innerHeight + 1 && el.scrollWidth <= window.innerWidth + 1
     })
     expect(noScroll).toBe(true)
-    await expect(page.getByRole('button', { name: /Провести чек/ })).toBeInViewport()
+    await expect(page.getByTestId('pay-open')).toBeInViewport()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/next-change-1366.png` })
 
     // Меньше пробега сейчас — «Провести» нельзя, подсказка у поля.
     await oilField.fill('200000')
     await expect(block.getByText(/не меньше пробега сейчас/)).toBeVisible()
+    // «Провести чек» и «Не хватает» — в окне оплаты (задача 026).
+    const payDialog = page.getByRole('dialog', { name: 'Оплата' })
+    await openPay(page)
     await expect(page.getByRole('button', { name: /Провести чек/ })).toBeDisabled()
     await expect(page.getByText(/Не хватает:.*следующая замена/)).toBeVisible()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/next-change-1366-low.png` })
+    await payDialog.getByRole('button', { name: 'Закрыть' }).tap()
     await oilField.fill('225000')
     await expect(block.getByText(/не меньше пробега сейчас/)).toHaveCount(0)
     // Прочее для проведения может не хватать (оплата, кассир), но не следующей замены.
+    await openPay(page)
     await expect(page.getByText(/Не хватает:.*следующая замена/)).toHaveCount(0)
+    await payDialog.getByRole('button', { name: 'Закрыть' }).tap()
 
     // «+ ещё строку» — только позиции этого чека (уточнение 26.10.2026): обе услуги уже строками,
     // товаров со строкой книжки нет — предложить нечего, кнопки нет (справочник услуг не предлагается).
@@ -231,7 +237,7 @@ test.describe('режим кассы 1366×768', () => {
         return el.scrollHeight <= window.innerHeight + 1 && el.scrollWidth <= window.innerWidth + 1
       })
     expect(await noScroll()).toBe(true)
-    await expect(page.getByRole('button', { name: /Провести чек/ })).toBeInViewport()
+    await expect(page.getByTestId('pay-open')).toBeInViewport()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/service-3-lines-1366.png` })
 
     // «Мастер рекомендовал» — кнопкой, поле в окне; записанное видно на кнопке.
@@ -279,6 +285,7 @@ test('чек «В сервис»: следующая замена в книжк�
     const block = page.getByTestId('next-change')
     await expect(block.getByLabel(`Следующая замена: ${s.oil}`)).toHaveValue('225000')
     await block.getByLabel(`Следующая замена: ${s.anti}`).fill(antiValue)
+    await openPay(page)
     await page.getByRole('button', { name: 'Без сдачи' }).click()
     await page.getByRole('button', { name: 'Провести чек' }).click()
     await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()

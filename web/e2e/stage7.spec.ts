@@ -2,7 +2,7 @@
 // книжка по каждому фильтру.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { ensureShift, pickCashier } from './cashier'
+import { ensureShift, openPay, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -92,6 +92,8 @@ test('аккумулятор в оплату: 10 000 с − 12 кг × 50 с, в
     await picker.press('Enter')
     // Полярность в названии строки: «(П)» — обратная.
     await expect(page.getByText(`${name} (П)`)).toBeVisible()
+    // Сдачу аккумулятора в обычном виде отмечают в окне оплаты.
+    await openPay(page)
     await page.getByRole('button', { name: 'Сдал аккумулятор' }).click()
     await page.locator('#battery-kg').fill('12')
     const box = page.getByTestId('battery-pay')

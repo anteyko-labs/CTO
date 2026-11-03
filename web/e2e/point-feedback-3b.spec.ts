@@ -2,6 +2,7 @@
 // смены и пересчёт по остатку, вопрос «Это замена масла?», марка и модель машины из справочника и
 // пробег в милях, кнопки «Внести / Изъять / Перевести» у счёта.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { openPay } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -107,6 +108,7 @@ test('«Это замена масла?» перед чеком на вынос 
     await picker.fill(code)
     await picker.press('Enter')
     await expect(page.getByText(`Масло 5W-40 ${RUN}`)).toBeVisible()
+    await openPay(page)
     await page.getByRole('button', { name: 'Карта / QR банка', exact: true }).click()
     await page.getByRole('button', { name: 'Провести чек' }).first().click()
   }
@@ -118,11 +120,15 @@ test('«Это замена масла?» перед чеком на вынос 
   await question.getByRole('button', { name: 'Да, замена' }).click()
   // Замена — сразу выбор вида замены (ADR-096); закрыли, не выбрав.
   await expect(page.getByRole('dialog', { name: 'Вид замены' })).toBeVisible()
-  await page.keyboard.press('Escape')
+  await page.getByRole('dialog', { name: 'Вид замены' }).getByRole('button', { name: 'Закрыть' }).click()
+  // «Да, замена» закрыла и окно «Оплата» (задача 026): тип чека и мастер — в колонке.
+  await expect(page.getByRole('dialog', { name: 'Оплата' })).toBeHidden()
   await expect(page.locator('#master-select')).toBeVisible()
   await expect(page.getByRole('button', { name: 'В сервис' })).toHaveClass(/bg-sky-600/)
   // Передумали: снова на вынос — второй раз для этого чека не спрашиваем.
   await page.getByRole('button', { name: 'На вынос' }).click()
+  await expect(page.getByRole('button', { name: 'На вынос' })).toHaveClass(/bg-sky-600/)
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).first().click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
   await expect(question).toHaveCount(0)

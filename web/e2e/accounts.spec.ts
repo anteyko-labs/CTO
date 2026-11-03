@@ -3,7 +3,7 @@
 // продажей и комиссией банка; ставка меняется в карточке счёта с историей.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickCashier } from './cashier'
+import { openPay, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -81,6 +81,7 @@ test('свой банк: завести, продать картой на нег
   await picker.fill(code)
   await picker.press('Enter')
   await expect(page.getByText(item)).toBeVisible()
+  await openPay(page)
   await page.locator('[data-pay]').getByRole('button', { name: 'Карта / QR банка', exact: true }).click()
   await page.getByTestId('pay-bank').getByRole('button', { name: bankName }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()

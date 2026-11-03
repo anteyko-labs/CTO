@@ -1,6 +1,7 @@
 // Удобный доступ и подписи оплат (SPEC-29 §25): оприходование — в «Приходе» (ADR-086), «Возврат
 // поставщику» в меню «Склад», «Внести / Изъять» в меню «Деньги», подписи кнопок оплаты на кассе — куда идут деньги.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { openPay, shiftOnTill } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -95,7 +96,18 @@ test('меню «Деньги» → «Внести / Изъять»: счёт в
 
 test('касса: «Карта / QR банка» и «QR владельцу» с подписью, куда идут деньги', async ({ page }) => {
   await login(page)
+  // Способы оплаты — в окне «Оплата» (задача 026): оно открывается, когда в чеке есть строка.
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Подписи оплат ${RUN}`, kind: 'other' })
+  const code = `29${RUN}77`
+  await product(page.request, cat.id, `Ветошь оплат ${RUN}`, code, 10_000)
   await page.goto('/')
+  const picker = page.getByPlaceholder(/Сканируйте штрихкод/)
+  await picker.fill(code)
+  await picker.press('Enter')
+  await expect(page.getByTestId('cart').getByRole('listitem')).toHaveCount(1)
+  // Без смены вместо «Оплатить» — «Открыть смену» (задача 005 Н4).
+  await shiftOnTill(page)
+  await openPay(page)
   const pay = page.locator('[data-pay]')
   await expect(pay.getByRole('button', { name: 'Карта / QR банка', exact: true })).toBeVisible()
   await expect(pay.getByRole('button', { name: 'QR владельцу', exact: true })).toBeVisible()

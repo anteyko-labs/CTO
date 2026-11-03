@@ -6,7 +6,7 @@
 // (печатный чек — только жидкости); удалили услугу из чека — строка ушла.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, pickMaster, shiftOnTill } from './cashier'
+import { choosePerson, openPay, pickMaster, shiftOnTill } from './cashier'
 
 /** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
 const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
@@ -272,7 +272,7 @@ for (const mode of [
         await expect(block.locator('[data-next-label]').filter({ hasText: s.gur })).toBeVisible()
         await expect(block).toBeInViewport({ ratio: 1 })
         expect(await noScroll(page)).toBe(true)
-        await expect(page.getByRole('button', { name: /Провести чек/ })).toBeInViewport()
+        await expect(page.getByTestId('pay-open')).toBeInViewport()
       }
       await shot(page, 'next-cart-row-1366')
 
@@ -307,10 +307,14 @@ for (const mode of [
       // Лишний ноль — подсказка «проверьте», провести можно.
       await shaftField.fill('437000')
       await expect(block.getByTestId('next-far')).toContainText(/через 220\s000 км — проверьте/)
+      // «Не хватает» — в окне оплаты (задача 026): следующей замены там нет.
+      await openPay(page)
       await expect(page.getByText(/Не хватает:.*следующая замена/)).toHaveCount(0)
+      await hit(page.getByRole('dialog', { name: 'Оплата' }).getByRole('button', { name: 'Закрыть' }))
       await shaftField.fill('237000')
       await expect(block.getByTestId('next-far')).toHaveCount(0)
 
+      await openPay(page)
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
@@ -387,6 +391,7 @@ for (const mode of [
           const block = page.getByTestId('next-change')
           await expect(block.getByLabel(`Следующая замена: ${s.service}`)).toHaveValue('225000')
           if (!mode.touch) await expect(block.getByLabel(`Следующая замена: ${s.antiService}`)).toHaveValue('277000')
+          await openPay(page)
           await hit(page.getByRole('button', { name: 'Без сдачи' }))
           await hit(page.getByRole('button', { name: /Провести чек/ }).first())
           await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()

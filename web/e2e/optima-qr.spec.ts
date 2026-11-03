@@ -200,6 +200,10 @@ test('QR на сумму чека в режиме кассы: крупно, от
     await expect(screen.getByTestId('customer-idle')).toBeVisible()
     await page.getByPlaceholder(PICKER).fill(name)
     await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
+    // Оплата — в окне по «Оплатить» (задача 026).
+    await page.getByTestId('pay-open').tap()
+    const payDialog = page.getByRole('dialog', { name: 'Оплата' })
+    await expect(payDialog).toBeVisible()
     // Наличными кнопки QR нет; «Карта / QR банка» — есть, на сумму к оплате.
     await expect(page.getByTestId('bank-qr-create')).toHaveCount(0)
     await page.getByRole('button', { name: 'Карта / QR банка' }).tap()
@@ -219,12 +223,12 @@ test('QR на сумму чека в режиме кассы: крупно, от
     expect(bank.generated).toBe(1)
     expect(bank.lastBody).toContain('"sum":500.00')
 
-    // Второй QR: крупно во всю правую колонку, страница не прокручивается, «Провести» ждёт оплату.
+    // Второй QR: крупно во всё окно оплаты, страница не прокручивается, «Провести» ждёт оплату.
     const created = page.waitForResponse((r) => r.url().endsWith('/api/v1/bank-qr') && r.request().method() === 'POST')
     await create.tap()
     const qr = (await (await created).json()) as { id: string }
     await expect(panel.getByRole('img')).toBeVisible()
-    const col = await size(page.getByTestId('pay-column'))
+    const col = await size(payDialog)
     const box = await size(panel)
     expect(box.width).toBeGreaterThanOrEqual(col.width - 2)
     expect(box.height).toBeGreaterThanOrEqual(col.height - 2)
@@ -257,6 +261,7 @@ test('QR на сумму чека в режиме кассы: крупно, от
     await page.getByPlaceholder(PICKER).fill(name)
     await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
     await page.getByRole('button', { name: 'Больше' }).tap()
+    await page.getByTestId('pay-open').tap()
     await page.getByRole('button', { name: 'Карта / QR банка' }).tap()
     await expect(create).toContainText(/1\s000\sс/)
     const created3 = page.waitForResponse((r) => r.url().endsWith('/api/v1/bank-qr') && r.request().method() === 'POST')
@@ -266,6 +271,7 @@ test('QR на сумму чека в режиме кассы: крупно, от
     // Оплата не теряется после перезагрузки страницы (ADR-130): касса сама предлагает привязать её.
     await page.reload()
     await page.getByRole('button', { name: 'Меньше' }).tap()
+    await page.getByTestId('pay-open').tap()
     bank.paid.add(`e2e${RUN}tx3`)
     const stray = page.getByTestId('bank-qr-stray')
     await expect(stray).toContainText(/Оплачен QR на 1\s000\sс — привязать к чеку/, { timeout: 15_000 })
@@ -276,6 +282,9 @@ test('QR на сумму чека в режиме кассы: крупно, от
     await page.waitForTimeout(3000)
     await expect(page.getByText(/Чек № \d+ проведён/)).toHaveCount(0)
     expect((await api<{ sale_id: string | null }>(page.request, 'GET', `/bank-qr/${qr3.id}`)).sale_id).toBeNull()
+    // Количество — в чеке за окном: окно закрываем крестиком.
+    await payDialog.getByRole('button', { name: 'Закрыть' }).tap()
+    await expect(payDialog).toHaveCount(0)
     await page.getByRole('button', { name: 'Больше' }).tap()
     await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible({ timeout: 15_000 })
     expect((await api<{ sale_id: string | null }>(page.request, 'GET', `/bank-qr/${qr3.id}`)).sale_id).toBeTruthy()

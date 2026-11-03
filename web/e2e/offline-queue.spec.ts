@@ -2,7 +2,7 @@
 // машина находятся по снимку, неверный пробег не теряет чек, отклонённый сервером чек виден на кассе.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickMaster } from './cashier'
+import { openPay, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -136,6 +136,7 @@ test('без сети: перезагрузка, клиент из снимка,
   await page.locator('#mileage').fill('99999999999')
   // Поле не даёт ввести больше 7 цифр; 9 999 999 — вне диапазона, но чек без сети не теряется.
   await expect(page.locator('#mileage')).toHaveValue('9999999')
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).first().click()
   await expect(page.getByText(/Чек № Ч-.* проведён/)).toBeVisible()
 

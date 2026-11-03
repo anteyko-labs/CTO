@@ -3,6 +3,7 @@
 // администратор без права — кнопка неактивна, с правом — проводит в пределе, свыше — сервер не
 // проводит; экран чека в режиме кассы — без себестоимости. В конце — настройки как были.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { openPay } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -54,6 +55,8 @@ async function addToCart(page: Page, name: string) {
 test('настройки кассы: место кнопок, «Ещё действия…», набор «Частое — у итога» и «Как было»', async ({ page }) => {
   await login(page)
   await resetCashier(page.request)
+  // Кнопки «у итога» — в окне оплаты: нужен товар в чеке и открытая смена.
+  const { name } = await goodsAndShift(page.request, 'Р')
   await page.goto('/settings')
   await page.getByRole('link', { name: /Кнопки режима кассы и их место/ }).click()
   await expect(page.getByRole('heading', { name: 'Касса', exact: true })).toBeVisible()
@@ -72,12 +75,16 @@ test('настройки кассы: место кнопок, «Ещё дейс�
   await page.goto('/')
   await page.getByRole('button', { name: 'Режим кассы', exact: true }).tap()
   await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
+  await addToCart(page, name)
   for (const pass of [1, 2]) {
     const actions = page.getByTestId('mode-actions')
     await expect(actions).toContainText('Принять оплату долга')
     await expect(actions).not.toContainText('Аккумуляторы на вес')
     await expect(actions).not.toContainText('Мелкий расход')
+    await openPay(page)
     await expect(page.getByTestId('mode-total-buttons')).toContainText('Баллы клиента')
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: 'Оплата' })).toHaveCount(0)
     await expect(page.getByTestId('mode-pay-buttons')).not.toContainText('Баллы клиента')
     await actions.getByRole('button', { name: 'Ещё действия…' }).tap()
     const more = page.getByTestId('more-actions-modal')
@@ -86,6 +93,8 @@ test('настройки кассы: место кнопок, «Ещё дейс�
     await expect(more).toHaveCount(0)
     if (pass === 1) await page.reload()
   }
+  await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
+  await page.getByRole('button', { name: 'Точно очистить?' }).tap()
   await page.getByTestId('cashier-mode-bar').getByRole('button', { name: 'Выйти из режима кассы' }).tap()
 
   // Готовый набор и «Как было».
@@ -116,15 +125,22 @@ test('скидка на кассе: владелец 10 % на чек, экра�
   await expect(dialog.getByTestId('discount-preview')).toContainText(money('Скидка −100 с · итого 900 с'))
   await dialog.getByRole('button', { name: 'Применить' }).tap()
   await expect(dialog).toHaveCount(0)
+  const pay = page.getByRole('dialog', { name: 'Оплата' })
+  await openPay(page)
   await expect(page.getByTestId('check-discount')).toContainText(money('Скидка −100 с'))
   await expect(page.getByTestId('pay-top')).toContainText(money('900 с'))
-  // До проведения скидку можно убрать и дать снова.
+  // До проведения скидку можно убрать и дать снова; «Скидка» — в колонке, окно оплаты закрыть.
+  await pay.getByRole('button', { name: 'Закрыть' }).first().tap()
+  await expect(pay).toHaveCount(0)
   await page.getByTestId('discount-open').tap()
   await dialog.getByRole('button', { name: 'Убрать скидку' }).tap()
+  await openPay(page)
   await expect(page.getByTestId('check-discount')).toHaveCount(0)
+  await pay.getByRole('button', { name: 'Закрыть' }).first().tap()
   await page.getByTestId('discount-open').tap()
   await dialog.getByRole('button', { name: '10 %', exact: true }).tap()
   await dialog.getByRole('button', { name: 'Применить' }).tap()
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).tap()
   await page.getByRole('button', { name: /Провести чек/ }).tap()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
@@ -147,6 +163,8 @@ test('скидка на кассе: владелец 10 % на чек, экра�
   await login(a, admin, password)
   await a.goto('/')
   await addToCart(a, name)
+  // Обычный вид: «Скидка» — в окне оплаты.
+  await openPay(a)
   await expect(a.getByTestId('discount-open')).toBeDisabled()
   await expect(a.getByTestId('discount-open')).toHaveText('Скидка — даёт владелец')
 
@@ -157,6 +175,7 @@ test('скидка на кассе: владелец 10 % на чек, экра�
   await api(page.request, 'PUT', '/settings/cashier', { op_id: crypto.randomUUID(), admin_limit_pct: 5 })
   await a.reload()
   await expect(a.getByTestId('cart')).toContainText(name)
+  await openPay(a)
   await a.getByTestId('discount-open').click()
   const ad = a.getByRole('dialog', { name: 'Скидка' })
   await expect(ad).toContainText('Предел скидки администратора: 5 %')

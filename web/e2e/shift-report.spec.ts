@@ -3,6 +3,7 @@
 // показывают документы смены.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { openPay } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -82,6 +83,7 @@ test('отчёт смены: движение денег, вкладки и от
   await expect(cart.getByText(oil)).toBeVisible()
   await cart.locator('li', { hasText: oil }).getByRole('button', { name: 'Удалить строку' }).click()
   await expect(cart.getByText(oil)).toHaveCount(0)
+  await openPay(page)
   await page.getByRole('button', { name: 'Провести чек' }).first().click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 

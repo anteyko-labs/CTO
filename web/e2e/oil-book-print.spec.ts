@@ -4,7 +4,7 @@
 // печатается сама; «Настройки → Масляная книжка и печать» убирает блок книжки из товарного чека.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, ensureShift, pickCashier, pickMaster, shiftOnTill } from './cashier'
+import { choosePerson, ensureShift, openPay, pickCashier, pickMaster, shiftOnTill } from './cashier'
 
 /** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
 const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
@@ -189,6 +189,8 @@ test('чек без цели кассира: «Печать книжки» в э
   await expect(page.getByTestId('correction-banner')).toContainText(`№ ${sale.number}`)
   await page.locator('#correction-comment').fill('проверка книжки после исправления')
   const before = (await prints(page)).length
+  // «Сохранить исправление» — в окне оплаты (задача 026).
+  await openPay(page)
   await page.getByRole('button', { name: 'Сохранить исправление' }).click()
   await expect(page).toHaveURL(/\/sales\/[0-9a-f-]+$/)
   await expect(page).not.toHaveURL(new RegExp(sale.id))
@@ -287,6 +289,7 @@ test('«В сервис» с маслом и фильтрами: чек книж
   await page.locator('#mileage').fill('130000')
   // Фильтры с маслом своих строк не дают — они под строкой масла.
   await expect(page.getByTestId('next-filters')).toContainText(`W712-${tag} (масляный), C2201-${tag} (воздушный), CU2939-${tag} (салонный) на тот же пробег`)
+  await openPay(page)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   const before = (await prints(page)).length
   await page.getByRole('button', { name: /Провести чек/ }).first().click()
@@ -382,6 +385,7 @@ test('«Товарный чек после любого чека»: чек «Н�
     await picker.fill(code)
     await picker.press('Enter')
     await expect(page.getByText(item)).toBeVisible()
+    await openPay(page)
     await page.getByRole('button', { name: 'Провести чек' }).click()
     await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
   }
@@ -437,6 +441,7 @@ test('QR — своя наклейка своей печатью после кн
       await page.getByTestId('fix-button').click()
       await page.locator('#correction-comment').fill(comment)
       const url = page.url()
+      await openPay(page)
       await page.getByRole('button', { name: 'Сохранить исправление' }).click()
       await expect(page).not.toHaveURL(url)
       await expect(page.getByRole('button', { name: 'Печать книжки' })).toBeVisible()
