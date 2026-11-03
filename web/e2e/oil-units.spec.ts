@@ -349,3 +349,45 @@ test('«Сканер товаров» в пересчёте: масло — «к
   await apiPost(page.request, `/revisions/${draft.id}/cancel`, {})
   await mode.uncheck()
 })
+
+// Задача 027: цена продажи масла вводится и за литр — в приходе и в оприходовании; товару ставится
+// цена канистры (ADR-074), наценка — к ней.
+test('приход и оприходование: продажа масла за литр — цена канистры считается сама', async ({ page }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла продажи литра ${RUN}`, kind: 'oil' })
+  const code = `37${RUN}01`
+  const p = await oil(page.request, cat.id, `Масло продажа литра ${RUN}`, code, 4000)
+  const supplier = await apiPost<{ id: string }>(page.request, '/suppliers', { name: `Поставщик продажи литра ${RUN}` })
+
+  await page.goto('/receipts/new')
+  await page.locator('#receipt-picker').fill(code)
+  await page.locator('#receipt-picker').press('Enter')
+  await expect(page.locator('#line-1-sale')).toHaveValue('2500')
+  await expect(page.locator('#line-1-sale-l')).toHaveValue('625')
+  await page.locator('#line-1-sale-l').fill('550')
+  await expect(page.locator('#line-1-sale')).toHaveValue('2200')
+  // Наценка — к закупке канистры 1 800 с.
+  await expect(page.getByLabel('Наценка, %')).toHaveValue('22,2')
+  await page.locator('#receipt-supplier').selectOption(supplier.id)
+  await page.getByLabel('Вся в долг').check()
+  const print = page.getByLabel('Печатать этикетки')
+  if (await print.isChecked()) await print.uncheck()
+  await page.getByRole('button', { name: 'Провести приход' }).first().click()
+  await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
+  expect((await apiGet<{ sale_price_tyiyn: number }>(page.request, `/products/${p.id}`)).sale_price_tyiyn).toBe(220_000)
+
+  // Оприходование литрами: продажа за литр 600 → канистра 2 400 с.
+  await page.goto('/receipts/new?kind=stock_in')
+  await page.locator('#receipt-picker').fill(code)
+  await page.locator('#receipt-picker').press('Enter')
+  await expect(page.getByTestId('line-1-mode-l')).toHaveAttribute('aria-checked', 'true')
+  await page.locator('#line-1-price').fill('450')
+  await page.locator('#line-1-sale-l').fill('600')
+  await expect(page.locator('#line-1-sale')).toHaveValue('2400')
+  await page.locator('#receipt-comment').fill(`продажа литра ${RUN}`)
+  const print2 = page.getByLabel('Печатать этикетки')
+  if ((await print2.count()) > 0 && (await print2.isChecked())) await print2.uncheck()
+  await page.getByRole('button', { name: 'Провести оприходование' }).click()
+  await expect(page.getByRole('heading', { name: /^Оприходование № \d+$/ })).toBeVisible()
+  expect((await apiGet<{ sale_price_tyiyn: number }>(page.request, `/products/${p.id}`)).sale_price_tyiyn).toBe(240_000)
+})

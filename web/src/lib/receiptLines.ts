@@ -153,6 +153,8 @@ export interface PriceFields {
   salePrice: string
   /** Строка масла канистрами: введённая цена за литр; не задана — вводили цену канистры. */
   literPrice?: string
+  /** Масло: введённая цена продажи за литр (задача 027); не задана — вводили цену канистры. */
+  saleLiterPrice?: string
 }
 
 /** Закупка в единицах цены продажи: в режиме «л» цена литра × тара = цена канистры (ADR-074/075). */
@@ -221,14 +223,32 @@ export const withSalePrice = (l: PriceFields, salePrice: string, tare?: number):
   ...l,
   salePrice,
   markup: markupOf(l.price, salePrice, tare),
+  saleLiterPrice: undefined,
 })
+
+/**
+ * Масло — ввели цену продажи за литр (задача 027): хранится одна цена — канистры (ADR-074), она =
+ * литр × объём с одним округлением (`perCan`); наценка — к ней. Введённый литр остаётся в поле.
+ */
+export function withSaleLiterPrice(l: PriceFields, literPrice: string, containerMl: number, tare?: number): PriceFields {
+  const v = parseSom(literPrice)
+  const salePrice = v === null ? '' : somInput(perCan(v, containerMl))
+  return { ...l, salePrice, saleLiterPrice: literPrice, markup: markupOf(l.price, salePrice, tare) }
+}
+
+/** Поле «за литр» цены продажи масла: введённое, иначе — из цены канистры (perLiter). */
+export function saleLiterText(l: Pick<PriceFields, 'salePrice' | 'saleLiterPrice'>, containerMl: number): string {
+  if (l.saleLiterPrice !== undefined) return l.saleLiterPrice
+  const v = parseSom(l.salePrice)
+  return v === null ? '' : somInput(perLiter(v, containerMl))
+}
 
 /** Поменяли наценку: цена продажи = закупка × (1 + наценка), до тыйына (`saleFromMarkup`). */
 export function withMarkup(l: PriceFields, markup: string, tare?: number): PriceFields {
   const cost = costPerSaleUnit(l.price, tare)
   const m = parsePermille(markup)
   const sale = cost === null || m === null ? null : saleFromMarkup(cost, m)
-  return { ...l, markup, salePrice: sale === null ? l.salePrice : somInput(sale) }
+  return { ...l, markup, salePrice: sale === null ? l.salePrice : somInput(sale), saleLiterPrice: sale === null ? l.saleLiterPrice : undefined }
 }
 
 /**
