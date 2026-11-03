@@ -49,6 +49,7 @@ import {
   lineCalc,
   literHints,
   literPriceText,
+  saleLiterText,
   literTare,
   nextCount,
   priceJumpText,
@@ -57,6 +58,7 @@ import {
   withEntry,
   withLiterPrice,
   withMarkup,
+  withSaleLiterPrice,
   withSalePrice,
   type QtyMode,
 } from '../lib/receiptLines'
@@ -1048,8 +1050,9 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                       )}
                     </td>
                     <td className="px-2 py-2">
-                      <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        %
+                      {/* Наценка к закупке: закупка + N % = цена продажи (задача 027 — подписью, не «%»). */}
+                      <label className="flex flex-col gap-1 text-xs font-medium text-slate-700">
+                        Наценка, %
                         <input
                           id={`line-${i + 1}-markup`}
                           aria-label="Наценка, %"
@@ -1078,6 +1081,21 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                         <div className="mt-1 text-xs text-amber-700" data-testid="new-sale-price">
                           было {formatSom(l.product.sale_price_tyiyn)} — новая цена с проведением
                         </div>
+                      )}
+                      {oil && (
+                        // Продажа масла и за литр (задача 027): канистра посчитается сама, хранится она (ADR-074).
+                        <label className="mt-1 flex flex-col gap-1 text-xs text-slate-500" data-testid="sale-per-l">
+                          за литр, с
+                          <input
+                            id={`line-${i + 1}-sale-l`}
+                            aria-label="Продажа за литр"
+                            className="w-28"
+                            inputMode="decimal"
+                            value={saleLiterText(l, l.product.container_ml ?? 0)}
+                            onKeyDown={onFieldKey(i + 1, 'sale')}
+                            onChange={(e) => updateLine(l.key, withSaleLiterPrice(l, e.target.value, l.product.container_ml ?? 0, tare))}
+                          />
+                        </label>
                       )}
                       {oil && typeof c !== 'string' && l.product.container_ml && (
                         // Розлив — от цены канистры, как в карточке (ADR-074).

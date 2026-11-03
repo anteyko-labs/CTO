@@ -18,6 +18,8 @@ import {
   withLiterPrice,
   withMarkup,
   withSalePrice,
+  withSaleLiterPrice,
+  saleLiterText,
 } from './receiptLines'
 import type { Product } from './types'
 
@@ -270,5 +272,50 @@ describe('цена за литр в строке канистрами (зада�
     expect(unitCostPerLiter({ unit: 'ml', container_ml: 4000, qty: 8000, cost_tyiyn: 360_000 })).toBe(45_000)
     expect(unitCostPerLiter({ unit: 'piece', container_ml: null, qty: 2, cost_tyiyn: 1000 })).toBeNull()
     expect(unitCostPerLiter({ unit: 'ml', container_ml: 4000, qty: -8000, cost_tyiyn: -360_000 })).toBeNull()
+  })
+})
+
+describe('цена продажи масла за литр (задача 027)', () => {
+  const oil = product({ unit: 'ml', container_ml: 4000, sale_price_tyiyn: 200_000, last_purchase_price_tyiyn: 160_000 })
+  const barrel = product({ unit: 'ml', container_ml: 200_000, sale_price_tyiyn: 10_000_000 })
+
+  it('канистра 4 л: ввели 550 с/л → продажа канистры 2 200 с, наценка от закупки 1 600 с', () => {
+    const base = { product: oil, count: '2', mode: 'can' as const, ...initialPrices(oil) }
+    expect(saleLiterText(base, 4000)).toBe('500')
+    const l = { ...base, ...withSaleLiterPrice(base, '550', 4000) }
+    expect(l.salePrice).toBe('2200')
+    expect(saleLiterText(l, 4000)).toBe('550')
+    expect(l.markup).toBe('37,5')
+    const c = lineCalc(l)
+    expect(typeof c !== 'string' && [c.salePrice, c.sale]).toEqual([220_000, 440_000])
+  })
+
+  it('ввели канистру 2 010 с → за литр 502,50; наценка → литр из новой канистры', () => {
+    const base = { product: oil, count: '1', mode: 'can' as const, ...initialPrices(oil) }
+    const typed = { ...base, ...withSaleLiterPrice(base, '550', 4000) }
+    const can = { ...typed, ...withSalePrice(typed, '2010') }
+    expect(saleLiterText(can, 4000)).toBe('502,50')
+    const m = { ...typed, ...withMarkup(typed, '25') }
+    expect(m.salePrice).toBe('2000')
+    expect(saleLiterText(m, 4000)).toBe('500')
+  })
+
+  it('строка литрами и бочка 200 л — то же; наценка к закупке канистры', () => {
+    const base = { product: oil, count: '8', mode: 'l' as const, ...initialPrices(oil, 4000) }
+    const l = { ...base, ...withSaleLiterPrice(base, '600', 4000, 4000) }
+    expect(l.salePrice).toBe('2400')
+    expect(l.markup).toBe('50,0')
+    const c = lineCalc(l)
+    expect(typeof c !== 'string' && c.sale).toBe(480_000)
+    const b = { product: barrel, count: '1', mode: 'can' as const, ...initialPrices(barrel) }
+    expect(withSaleLiterPrice(b, '520', 200_000).salePrice).toBe('104000')
+  })
+
+  it('пустое и неверное — цены нет, строка просит цену продажи', () => {
+    const base = { product: oil, count: '1', mode: 'can' as const, ...initialPrices(oil) }
+    const bad = { ...base, ...withSaleLiterPrice(base, 'абв', 4000) }
+    expect(bad.salePrice).toBe('')
+    expect(bad.markup).toBe('')
+    expect(saleLiterText(bad, 4000)).toBe('абв')
   })
 })
