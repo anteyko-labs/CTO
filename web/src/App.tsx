@@ -244,6 +244,8 @@ function Shell() {
   const touch = useTouchMode()
   const acceptanceMode = useAcceptanceMode()
   const { pathname } = useLocation()
+  // Касса на широком экране — ровно во весь экран: меню, чек и колонка оплаты прокручиваются каждый сам.
+  const fitScreen = touch || pathname === '/'
   useEffect(() => {
     document.documentElement.classList.toggle('cashier-mode', touch)
     return () => document.documentElement.classList.remove('cashier-mode')
@@ -301,7 +303,7 @@ function Shell() {
   return (
     <div className="min-h-screen md:flex">
       {!touch && (
-      <aside className="keep-dark no-print hidden bg-slate-900 p-4 md:block md:w-56 md:shrink-0">
+      <aside className="keep-dark no-print hidden bg-slate-900 p-4 md:sticky md:top-0 md:block md:h-dvh md:w-56 md:shrink-0 md:overflow-y-auto md:overscroll-contain">
         <div className="mb-6 hidden px-3 md:block">
           <div className="text-lg font-bold text-white">Avtodom</div>
           <div className="mt-1">
@@ -335,7 +337,7 @@ function Shell() {
         </div>
       )}
       {/* Режим кассы на широком экране — ровно во весь экран без прокрутки страницы (ui-rules §9). */}
-      <main className={`min-w-0 flex-1 ${touch ? 'pb-3 lg:flex lg:h-dvh lg:flex-col lg:overflow-hidden lg:pb-0' : 'pb-24'}`}>
+      <main className={`min-w-0 flex-1 ${touch ? 'pb-3' : 'pb-24'} ${fitScreen ? 'lg:flex lg:h-dvh lg:flex-col lg:overflow-hidden lg:pb-0' : ''}`}>
         <UpdateBanner />
         {!owner && !touch && <BotHint userId={user.id} />}
         <OfflineBar />
@@ -361,7 +363,7 @@ function Shell() {
             </div>
           </Modal>
         )}
-        <div className={touch ? 'px-3 pb-3 md:px-4 lg:min-h-0 lg:flex-1' : 'p-4 md:p-6'}>
+        <div className={`${touch ? 'px-3 pb-3 md:px-4' : 'p-4 md:p-6'} ${fitScreen ? 'lg:min-h-0 lg:flex-1' : ''}`}>
         <PageBoundary resetKey={pathname}>
         <Suspense fallback={<Loading />}>
         <Routes>

@@ -485,6 +485,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKgText: string } | null>(fix?.state.battery ?? null)
   const batteryLoad = useAction()
   const [confirmClear, setConfirmClear] = useState(false)
+  // Окно оплаты: способ, сдача, скидка, QR и «Провести чек» — по кнопке «Оплатить» внизу колонки.
+  const [payOpen, setPayOpen] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
   const attempt = useRef<{ key: string; opId: string } | null>(null)
   const [done, setDone] = useState<{ sale: Sale; change: number | null; book?: VehicleBook | null } | null>(null)
@@ -1527,8 +1529,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
 
   /** Перейти к недостающему: клиент в режиме кассы — в своём окне. */
+  // Чек проведён, отложен или очищен — окно оплаты закрывается.
+  useEffect(() => {
+    if (lines.length === 0 && !fix) setPayOpen(false)
+  }, [lines.length, fix])
   const goToMissing = (focus: string | undefined) => {
     if (!focus) return
+    // Не хватает поля из колонки (мастер, клиент…) — окно оплаты закрывается, поле видно.
+    if (payOpen && !document.querySelector(`[role="dialog"] ${focus}`)) setPayOpen(false)
     if (touch && focus === '[data-client]') {
       setClientOpen(true)
       if (!party) focusAfterRender('[data-client-input]')
@@ -2226,8 +2234,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     </>
   )
 
-  // Ошибка, чего не хватает, «Провести чек» и «Отложить» / «Очистить». В режиме кассы — отдельной
-  // карточкой внизу колонки: всегда на экране, что бы ни было выше.
+  // «Отложить» / «Очистить» — внизу колонки рядом с «Оплатить»; ошибка, чего не хватает и
+  // «Провести чек» — в окне оплаты.
   const parkClear = (
     <>
       <Button variant="secondary" className={`flex-1 ${touch ? 'min-h-[56px]! py-1! text-lg!' : ''}`} disabled={busy} onClick={park}>
@@ -2275,44 +2283,16 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       ) : (
         <Missing items={blockers} />
       )}
-      {touch && cs.submit_wide ? (
-        // «Настройки → Касса»: «Провести чек» во всю ширину, «Отложить» и «Очистить» — рядом над ним.
-        <div className="flex shrink-0 flex-col gap-1.5" data-testid="submit-wide">
-          {!fix && lines.length > 0 && <div className="flex gap-1.5">{parkClear}</div>}
-          <Button
-            className="min-h-[76px]! w-full flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
-            data-testid="sale-submit"
-            disabled={submitDisabled}
-            onClick={onSubmitClick}
-          >
-            {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
-            {due > 0 && !needShift && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
-          </Button>
-        </div>
-      ) : touch ? (
-        // Режим кассы: «Провести» слева, «Отложить» и «Очистить» столбиком справа — меньше высоты,
-        // больше места колонке оплаты.
-        <div className="flex shrink-0 items-stretch gap-2">
-          <Button
-            className="min-h-[76px]! min-w-0 flex-1 flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
-            data-testid="sale-submit"
-            disabled={submitDisabled}
-            onClick={onSubmitClick}
-          >
-            {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
-            {due > 0 && !needShift && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
-          </Button>
-          {!fix && lines.length > 0 && <div className="grid w-[38%] shrink-0 grid-rows-2 gap-1.5">{parkClear}</div>}
-        </div>
-      ) : (
-        <>
-          <Button className="min-h-14! py-3 text-lg!" data-testid="sale-submit" disabled={submitDisabled} onClick={onSubmitClick}>
-            {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
-          </Button>
-          <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
-          {!fix && lines.length > 0 && <div className="flex gap-2">{parkClear}</div>}
-        </>
-      )}
+      <Button
+        className={touch ? 'min-h-[76px]! w-full flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!' : 'min-h-14! py-3 text-lg!'}
+        data-testid="sale-submit"
+        disabled={submitDisabled}
+        onClick={onSubmitClick}
+      >
+        {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
+        {due > 0 && !needShift && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
+      </Button>
+      {!touch && <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>}
     </>
   )
 
@@ -2323,7 +2303,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       className={`grid ${
         touch
           ? 'grid-cols-1 gap-3 lg:h-full lg:grid-cols-[minmax(0,1fr)_27rem] lg:grid-rows-[auto_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_34rem]'
-          : 'gap-4 lg:grid-cols-[1fr_380px]'
+          : 'gap-4 lg:h-full lg:grid-cols-[1fr_380px]'
       }`}
     >
       {touch && (
@@ -2338,7 +2318,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           />
         </div>
       )}
-      <div className={`flex min-w-0 flex-col ${touch ? `${serviceLeft ? 'gap-2' : 'gap-3'} lg:min-h-0` : 'gap-4'}`}>
+      <div className={`flex min-w-0 flex-col ${touch ? `${serviceLeft ? 'gap-2' : 'gap-3'} lg:min-h-0` : 'gap-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-1'}`}>
         {fix && (
           <div className="flex flex-col gap-2">
             <CorrectionBanner label="чек" number={fix.number} comment={fixComment} onComment={setFixComment} />
@@ -2876,33 +2856,36 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         )}
       </div>
 
-      {/* В режиме кассы тип чека, «Итого» и оплата закреплены сверху колонки; мастер, вид замены,
-          клиент и редкое — под ними в своей прокрутке; «Провести чек» — внизу. Колонка помещается в экран. */}
-      <div className={`flex flex-col ${touch ? 'gap-3 lg:min-h-0' : 'gap-4'}`}>
+      {/* Колонка справа: тип чека, кассир, мастер, клиент и редкое — в своей прокрутке; внизу всегда
+          «Итого», «Оплатить», «Отложить» и «Очистить». Оплата и «Провести чек» — в окне по «Оплатить». */}
+      <div className={`flex flex-col ${touch ? 'gap-3' : 'gap-4'} lg:min-h-0`}>
         <div
-          className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-hidden' : 'gap-4'}`}
+          className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm' : 'gap-3'} lg:min-h-0 lg:flex-1 lg:overflow-hidden`}
           data-testid="pay-column"
         >
-        {/* Режим кассы: QR банка — во всю правую колонку, «Провести чек» остаётся внизу. */}
-        {touch && bankQr.qr && bankQr.qr.status !== 'paid' && (
-          <BankQrPanel
-            qr={bankQr.qr}
-            now={bankQr.now}
-            touch
-            busy={bankQr.busy}
-            lost={bankQr.lost}
-            onCancel={() => void bankQr.cancel()}
-            onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
-          />
-        )}
         <Card
           className={`flex flex-col ${
             touch
-              ? 'order-2 gap-2.5 rounded-none! border-0! border-t! border-slate-200! p-0! pt-2! shadow-none! lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
-              : 'gap-3'
+              ? 'gap-2.5 rounded-none! border-0! p-0! shadow-none! lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
+              : 'gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
           }`}
           data-testid="pay-details"
         >
+          {touch && (
+            <div className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-xl bg-slate-100 p-0.5">
+                {(['takeaway', 'service'] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={saleType === t}
+                    className={`min-h-[56px] rounded-lg px-1 text-lg font-semibold ${saleType === t ? 'bg-sky-600 text-white shadow' : 'text-slate-700 active:bg-white'}`}
+                    onClick={() => changeType(t)}
+                  >
+                    {t === 'takeaway' ? 'На вынос' : 'В сервис'}
+                  </button>
+                ))}
+              </div>
+          )}
           {!touch && (
             <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-base">
               {(['takeaway', 'service'] as const).map((t) => (
@@ -2995,36 +2978,41 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
         </Card>
 
-        <Card
-          className={`flex flex-col ${touch ? 'order-1 shrink-0 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'gap-3'}`}
-          data-testid="pay-top"
-        >
-          {touch ? (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <div className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-xl bg-slate-100 p-0.5 sm:w-[56%]">
-                {(['takeaway', 'service'] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    aria-pressed={saleType === t}
-                    className={`min-h-[56px] rounded-lg px-1 text-lg font-semibold ${saleType === t ? 'bg-sky-600 text-white shadow' : 'text-slate-700 active:bg-white'}`}
-                    onClick={() => changeType(t)}
-                  >
-                    {t === 'takeaway' ? 'На вынос' : 'В сервис'}
-                  </button>
-                ))}
-              </div>
-              <div className="flex min-w-0 flex-1 items-baseline justify-end gap-2">
-                <span className="text-sm text-slate-500">Итого</span>
-                <Money value={total} className="truncate text-3xl leading-tight font-bold" />
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-baseline justify-between">
-              <span className="text-sm text-slate-500">Итого</span>
-              <Money value={total} className="text-3xl font-bold" />
-            </div>
-          )}
+        {/* Внизу колонки — всегда на экране: сколько в чеке, «Оплатить», «Отложить» / «Очистить». */}
+        <div className="flex shrink-0 flex-col gap-2 border-t border-slate-200 pt-2" data-testid="pay-footer">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className={touch ? 'text-lg text-slate-600' : 'text-base text-slate-600'}>Итого:</span>
+            <Money value={due} className="truncate text-3xl leading-tight font-bold" />
+          </div>
+          <Button
+            className={touch ? 'min-h-[76px]! w-full py-2 text-2xl! font-bold! shadow-md' : 'min-h-14! py-3 text-lg! font-semibold!'}
+            data-testid="pay-open"
+            disabled={!fix && !needShift && lines.length === 0}
+            onClick={() => (needShift ? onSubmitClick() : setPayOpen(true))}
+          >
+            {fix ? 'К оплате и сохранению' : needShift ? 'Открыть смену' : 'Оплатить'}
+          </Button>
+          {!fix && lines.length > 0 && <div className="flex gap-2">{parkClear}</div>}
+        </div>
+        </div>
+        {payOpen && (
+        <Modal title="Оплата" wide onClose={() => setPayOpen(false)}>
+        {bankQr.qr && bankQr.qr.status !== 'paid' && (
+          <BankQrPanel
+            qr={bankQr.qr}
+            now={bankQr.now}
+            touch={touch}
+            busy={bankQr.busy}
+            lost={bankQr.lost}
+            onCancel={() => void bankQr.cancel()}
+            onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
+          />
+        )}
+        <div className="flex flex-col gap-3" data-testid="pay-top">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm text-slate-500">Итого</span>
+            <Money value={total} className="text-3xl font-bold" />
+          </div>
           {/* Скидка чека (задача 003 Н3): на сколько строки дешевле прайса; до проведения меняется. */}
           {checkDisc.discount > 0 && (
             <div className="-mt-1 flex items-center justify-end gap-2 text-sm text-amber-800" data-testid="check-discount">
@@ -3152,17 +3140,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 </div>
               )}
             </div>
-          )}
-          {!touch && bankQr.qr && bankQr.qr.status !== 'paid' && (
-            <BankQrPanel
-              qr={bankQr.qr}
-              now={bankQr.now}
-              touch={false}
-              busy={bankQr.busy}
-              lost={bankQr.lost}
-              onCancel={() => void bankQr.cancel()}
-              onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
-            />
           )}
           {!touch && total > 0 && (
             <div className="-mt-1 flex flex-wrap justify-end gap-x-4 gap-y-1">
@@ -3470,10 +3447,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               )}
             </div>
           )}
-          {!touch && submitBlock}
-        </Card>
+          {submitBlock}
         </div>
-        {touch && <Card className="flex shrink-0 flex-col gap-2 p-2.5">{submitBlock}</Card>}
+        </Modal>
+        )}
       </div>
       {lines.length > 0 && (
         <div className={`no-print fixed inset-x-0 z-20 ${touch ? 'bottom-0' : 'bottom-[52px]'} flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden`}>
