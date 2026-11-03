@@ -117,3 +117,12 @@ export async function pickCashier(page: Page, name: string): Promise<void> {
   await shiftOnTill(page, name)
   if (await select.isVisible()) await choosePerson(page, 'cashier-select', name)
 }
+
+/** Окно «Оплата» кассы (задача 026): способы оплаты, сдача и «Провести чек» — в нём, по кнопке
+ *  «Оплатить» внизу колонки. Уже открыто — ничего. */
+export async function openPay(page: Page): Promise<void> {
+  const dialog = page.getByRole('dialog', { name: 'Оплата' })
+  if (await dialog.isVisible()) return
+  await page.getByTestId('pay-open').click()
+  await expect(dialog).toBeVisible()
+}
