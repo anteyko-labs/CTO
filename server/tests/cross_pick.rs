@@ -366,8 +366,11 @@ async fn cross_pick_rights_and_no_key(pool: PgPool) {
     // Книжка для чека без сети — печатать после отправки (задача 003, хвост Н5): по умолчанию да,
     // владелец выключает, и выключенное сохраняется.
     assert_eq!(v["offline_book"], json!(true), "{v}");
+    // QR-наклейка после книжки (задача 024): по умолчанию да, выключенное сохраняется.
+    assert_eq!(v["qr_sticker"], json!(true), "{v}");
     let mut off = v.clone();
     off["offline_book"] = json!(false);
+    off["qr_sticker"] = json!(false);
     off["op_id"] = json!(Uuid::now_v7());
     let (s, saved) = call(
         &w.app,
@@ -384,6 +387,7 @@ async fn cross_pick_rights_and_no_key(pool: PgPool) {
     );
     let (_, again) = call(&w.app, "GET", "/api/v1/settings/oil-book", &w.admin, None).await;
     assert_eq!(again["offline_book"], json!(false), "{again}");
+    assert_eq!(again["qr_sticker"], json!(false), "{again}");
     // Неверный лимит — 422.
     let (s, _) = call(
         &w.app,

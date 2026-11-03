@@ -1,8 +1,9 @@
-// Печать масляной книжки на ленте 80 мм (SPEC-16, SPEC-27) и QR-код на Телеграм-бот.
+// Печать масляной книжки (SPEC-16, SPEC-27) и QR-наклейки на Телеграм-бот.
 // После чека — «чек книжки»: только этот чек — что поменяли по видам замены (услугам) и следующая
 // замена по пробегу; без мастера, «Рекомендовано» и истории (ADR-115, ADR-116). Подпись — товар, а
 // не строка книжки; фильтры — по настройке, по умолчанию с ними (задача 003 Н5). Из карточки
-// клиента — прежняя выписка: последняя замена по строкам, следующая по каждой строке и история.
+// клиента — выписка на ленте 80 мм: последняя замена по строкам и следующая по каждой строке.
+// QR в книжке нет: он — своей наклейкой и своей печатью (задача 024, ADR-187).
 import { printInFrame } from './printFrame'
 import QRCode from 'qrcode'
 import { get } from './api'
@@ -15,7 +16,6 @@ import {
   lineTitle,
   recordLines,
   recordMileage,
-  recordText,
   slotKey,
   slotNextText,
   slotsOfSale,
@@ -34,7 +34,7 @@ const esc = (s: string) =>
 let botCache: Promise<string | null> | null = null
 
 /** Ссылка на бота, если он подключён на сервере. Спрашивается один раз за сессию (SPEC-36 §16):
- *  книжка печатается после каждого чека «В сервис»; ключ бота меняется только
+ *  QR-наклейка печатается после каждого чека «В сервис»; ключ бота меняется только
  *  перезапуском сервера. Без ответа сервера не запоминается — следующая
  *  печать спросит снова. */
 export function botLink(): Promise<string | null> {
@@ -60,10 +60,6 @@ const STYLE = `<style>
     .next { border: 1.5px dashed #000; padding: 2mm; margin: 2mm 0; text-align: center; }
     .next .row { text-align: left; }
     .next .row b { font-size: 10.5pt; }
-    table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
-    td { padding: 0.5mm 1mm 0.5mm 0; vertical-align: top; }
-    .qr { text-align: center; margin-top: 3mm; }
-    .qr svg { width: 32mm; height: 32mm; }
     .muted { color: #333; font-size: 8.5pt; text-align: center; }
     .bk { border-top: 1px dashed #000; padding: 1mm 0; }
     .bk .grp { font-weight: bold; }
@@ -71,12 +67,6 @@ const STYLE = `<style>
   </style>`
 
 const row = (label: string, value: string) => `<div class="row"><span>${esc(label)}</span><b>${esc(value)}</b></div>`
-
-async function qrHtml(link: string | null): Promise<string> {
-  if (!link) return ''
-  const qr = await QRCode.toString(link, { type: 'svg', margin: 0, errorCorrectionLevel: 'M' })
-  return `<div class="qr">${qr}</div><div class="muted">Сканируйте камерой телефона: история замен,<br>напоминание о замене и бонусные баллы в Телеграм</div>`
-}
 
 const plateHtml = (b: VehicleBook) =>
   `<div class="plate">${esc(b.plate)}${b.brand || b.model ? ` · ${esc([b.brand, b.model].filter(Boolean).join(' '))}` : ''}</div>`
@@ -111,10 +101,6 @@ const LABEL_STYLE = `<style>
     .row { display: flex; justify-content: space-between; font-size: 9pt; line-height: 1.35; }
     .ttl { font-size: 9pt; font-weight: bold; margin-bottom: 1mm; }
     .ln { font-size: 7.5pt; line-height: 1.25; margin-bottom: 0.5mm; }
-    .two { display: flex; gap: 1.5mm; }
-    .two .txt { flex: 1; min-width: 0; }
-    .qr svg { width: 24mm; height: 24mm; display: block; shape-rendering: crispEdges; }
-    .qrt { font-size: 5.5pt; text-align: center; width: 24mm; line-height: 1.1; margin-top: 0.5mm; }
   </style>`
 
 /** Наклейки книжки: что залито и что менять дальше по видам замены. Пустой вид — без строки. */
@@ -131,8 +117,9 @@ export function labelLines(items: readonly BookItem[]) {
 }
 
 /** Чек книжки после чека (ADR-116, задача 003 Н5, задача 009): три наклейки 58×40 мм — на первой
- *  машина, дата и пробег, на второй что залито, на третьей следующая замена по видам и QR. */
-async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link: string | null, s: BookPrint): Promise<string> {
+ *  машина, дата и пробег, на второй что залито, на третьей следующая замена по видам (без QR —
+ *  он своей наклейкой, задача 024). */
+function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, s: BookPrint): string {
   const printed = printedLine(r, s)
   const all = recordLines(r)
   const next = new Map(slotsOfSale(b, saleId).map((n) => [slotKey(n), slotNextText(n)]))
@@ -140,8 +127,6 @@ async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link:
   const { filled, next: nexts } = labelLines(items)
   const mileage = recordMileage(r)
   const car = [b.brand, b.model].filter(Boolean).join(' ')
-  // QR — крупно и с простым кодом: мелкий на термонаклейке телефон не читал (проба 02.11.2026).
-  const qr = link ? await QRCode.toString(link, { type: 'svg', margin: 0, errorCorrectionLevel: 'L' }) : ''
   const lines = (list: readonly string[]) => list.map((t) => `<div class="ln">${esc(t)}</div>`).join('')
   return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title>${LABEL_STYLE}</head><body>
     <div class="lbl">
@@ -156,10 +141,8 @@ async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link:
       ${lines(filled)}
     </div>
     <div class="lbl nx">
-      <div class="two">
-        <div class="txt"><div class="ttl">Следующая замена</div>${nexts.length ? lines(nexts) : '<div class="ln">—</div>'}</div>
-        ${qr ? `<div><div class="qr">${qr}</div><div class="qrt">История и напоминание в Телеграм</div></div>` : ''}
-      </div>
+      <div class="ttl">Следующая замена</div>
+      ${nexts.length ? lines(nexts) : '<div class="ln">—</div>'}
     </div>
   </body></html>`
 }
@@ -180,27 +163,21 @@ export function saleCheckOf(b: VehicleBook, saleId: string, s: BookPrint = {}): 
 }
 
 /** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); печатать нечего
- *  (`saleCheckOf`) — null, после чека прошлые замены не печатаются (ADR-130). Без `saleId` — выписка. */
-export async function oilBookHtml(
+ *  (`saleCheckOf`) — null, после чека прошлые замены не печатаются (ADR-130). Без `saleId` — выписка
+ *  без «Прошлых замен» и QR (задача 024). */
+export function oilBookHtml(
   b: VehicleBook,
-  opts: { client?: string | null; master?: string | null; link: string | null; saleId?: string | null; print?: BookPrint },
-): Promise<string | null> {
+  opts: { client?: string | null; master?: string | null; saleId?: string | null; print?: BookPrint } = {},
+): string | null {
   if (opts.saleId) {
     const own = saleCheckOf(b, opts.saleId, opts.print)
-    return own ? saleCheckHtml(b, own, opts.saleId, opts.link, opts.print ?? {}) : null
+    return own ? saleCheckHtml(b, own, opts.saleId, opts.print ?? {}) : null
   }
   const last = b.records[0]
   // Следующая замена по каждой строке книжки (SPEC-27), масло первым; только пробег (ADR-115);
   // подпись — что залили в последний раз (задача 003 Н5).
   const next = slotsWithNext(b)
     .map((n: SlotNext) => row(slotTitle(n), slotNextText(n)))
-    .join('')
-  const history = b.records
-    .slice(1, 4)
-    .map(
-      (r) =>
-        `<tr><td>${esc(formatDate(r.change_date))}</td><td>${esc(recordMileage(r) ?? '')}</td><td>${esc(recordText(r))}</td></tr>`,
-    )
     .join('')
   return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title>${STYLE}</head><body>
     <h1>Avtodom</h1>
@@ -219,16 +196,40 @@ export async function oilBookHtml(
         : '<div class="muted">Замен пока не было</div>'
     }
     ${next ? `<div class="next">Следующая замена${next}</div>` : ''}
-    ${history ? `<div class="muted">Прошлые замены</div><table>${history}</table>` : ''}
-    ${await qrHtml(opts.link)}
   </body></html>`
 }
 
-/** Печать на чековом принтере через диалог браузера; `saleId` — после этого чека (ADR-116). */
+/** QR-наклейка 58×40 мм на Телеграм-бот (задача 024, ADR-187): QR 22 мм слева, подпись справа.
+ *  Код попроще (`L`) и чёткие края — на термонаклейке телефон читает (ADR-180). */
+export async function qrStickerHtml(link: string): Promise<string> {
+  const qr = await QRCode.toString(link, { type: 'svg', margin: 0, errorCorrectionLevel: 'L' })
+  return `<!doctype html><html><head><meta charset="utf-8"><title>QR Телеграм-бота</title><style>
+    @page { size: 58mm 40mm; margin: 0; }
+    body { font-family: Arial, sans-serif; margin: 0; }
+    .lbl { width: 58mm; height: 40mm; box-sizing: border-box; padding: 2.5mm 3mm; display: flex; gap: 2.5mm; align-items: center; overflow: hidden; }
+    .qr svg { width: 22mm; height: 22mm; display: block; shape-rendering: crispEdges; }
+    .t { flex: 1; min-width: 0; font-size: 7.5pt; line-height: 1.2; }
+    .t b { display: block; font-size: 10pt; margin-bottom: 1mm; }
+    .t .m { font-weight: bold; font-size: 8pt; margin-bottom: 1.5mm; }
+  </style></head><body><div class="lbl"><div class="qr">${qr}</div><div class="t"><b>Avtodom</b><div class="m">Масляная книжка в Телеграм</div><div>История замен, напоминание и бонусные баллы. Наведите камеру телефона</div></div></div></body></html>`
+}
+
+/** QR-наклейка своей печатью (задача 024); бот не подключён — печатать нечего: false. */
+export async function printBotQr(): Promise<boolean> {
+  const link = await botLink()
+  if (!link) return false
+  printInFrame(await qrStickerHtml(link))
+  return true
+}
+
+/** Печать через диалог браузера; `saleId` — после этого чека (ADR-116). `qr` — после книжки ещё
+ *  QR-наклейка отдельной печатью (задача 024): два задания, сначала книжка. */
 export async function printOilBook(
   b: VehicleBook,
-  opts: { client?: string | null; master?: string | null; saleId?: string | null; print?: BookPrint } = {},
+  opts: { client?: string | null; master?: string | null; saleId?: string | null; print?: BookPrint; qr?: boolean } = {},
 ): Promise<void> {
-  const html = await oilBookHtml(b, { ...opts, link: await botLink() })
-  if (html) printInFrame(html)
+  const html = oilBookHtml(b, opts)
+  if (!html) return
+  printInFrame(html)
+  if (opts.qr) await printBotQr()
 }

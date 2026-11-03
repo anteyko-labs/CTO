@@ -7,7 +7,7 @@ import { ExportButton } from '../components/ExportButton'
 import { colsIf, exportTitle, tableSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
 import { kindQty } from '../lib/shiftReportExport'
 import { lineQtyText, printSale } from '../components/salePrint'
-import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { can } from '../lib/permissions'
@@ -22,7 +22,7 @@ import { divRound } from '../lib/money'
 import { returnWithholds } from '../lib/serviceSale'
 import { returnDebtCap, splitReturn } from '../lib/returnSplit'
 import type { VehicleBook } from '../lib/oilBook'
-import { printOilBook, saleCheckOf } from '../lib/oilBookPrint'
+import { printBotQr, printOilBook, saleCheckOf } from '../lib/oilBookPrint'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS } from '../lib/oilBookSettings'
 import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
@@ -286,6 +286,11 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   )
 }
 
+/** «Печать QR» — повторить QR-наклейку, если её зажевало (задача 024). */
+async function printQr() {
+  if (!(await printBotQr())) toast('Телеграм-бот не подключён — QR не напечатан', 'error')
+}
+
 export default function SaleView() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
@@ -314,7 +319,7 @@ export default function SaleView() {
     if (sale.sale_type !== 'service') return
     if (prefs.auto_receipt) printSale(sale, null, { bookBlock: prefs.receipt_block })
     if (prefs.auto_book && book.data && saleCheckOf(book.data, sale.id, prefs)) {
-      void printOilBook(book.data, { client: sale.party_name, master: sale.master_name, saleId: sale.id, print: prefs })
+      void printOilBook(book.data, { client: sale.party_name, master: sale.master_name, saleId: sale.id, print: prefs, qr: prefs.qr_sticker })
     }
   }, [fixed, sale, prefsLoad.data, prefs, bookVehicle, book.error, book.data, navigate])
   // На устройстве в режиме кассы себестоимость и прибыль не видны (задача 003 Н4): экран чека
@@ -386,6 +391,11 @@ export default function SaleView() {
                 onClick={() => book.data && void printOilBook(book.data, { client: sale.party_name, master: sale.master_name, saleId: sale.id, print: prefs })}
               >
                 Печать книжки
+              </Button>
+            )}
+            {book.data && prefsLoad.data && bookCheck && (
+              <Button variant="secondary" onClick={() => void printQr()}>
+                Печать QR
               </Button>
             )}
             {sale.kind === 'sale' && sale.party_id && sale.payments.some((p) => p.method === 'debt') && (

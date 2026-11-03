@@ -362,3 +362,63 @@ test('чек без сети и две вкладки кассы: чек ухо�
   expect(sent.number).toBeGreaterThan(0)
   await other.close()
 })
+
+test('QR — своя наклейка своей печатью после книжки; «Печать QR»; выключено — только книжка (задача 024)', async ({ page }) => {
+  test.setTimeout(90_000)
+  await page.addInitScript(PRINT_STUB)
+  // Бот подключён — у кассы есть ссылка для QR.
+  await page.route('**/api/v1/telegram/bot', (r) => r.fulfill({ json: { username: 'avtodom_test_bot' } }))
+  await login(page)
+  const { body, oilName } = await serviceBody(page.request, `${RUN}q`)
+  await ensureShift(page.request, body.cashier_id)
+  const sale = await api<{ id: string; number: number }>(page.request, 'POST', '/sales', body)
+  const initial = await api<Record<string, unknown>>(page.request, 'GET', '/settings/oil-book')
+  expect(initial.qr_sticker).toBe(true)
+  const isQr = (h: string) => h.includes('QR Телеграм-бота')
+  try {
+    await page.goto(`/sales/${sale.id}`)
+    // «Печать книжки» — только книжка, без QR.
+    await page.getByRole('button', { name: 'Печать книжки' }).click()
+    await expect.poll(async () => (await prints(page)).length).toBe(1)
+    const book = (await prints(page))[0]
+    expect(book).toContain(oilName)
+    expect(book).not.toContain('<svg')
+    expect(isQr(book)).toBe(false)
+    // «Печать QR» — одна наклейка 58×40 с QR.
+    await page.getByRole('button', { name: 'Печать QR' }).click()
+    await expect.poll(async () => (await prints(page)).length).toBe(2)
+    const qr = (await prints(page))[1]
+    expect(isQr(qr)).toBe(true)
+    expect(qr).toContain('size: 58mm 40mm')
+    expect(qr.match(/<svg/g)).toHaveLength(1)
+    expect(plain(qr)).toContain('Масляная книжка в Телеграм')
+
+    // «Исправить» — печать как после чека: два задания, сначала книжка, затем QR.
+    const fix = async (comment: string) => {
+      await page.getByTestId('fix-button').click()
+      await page.locator('#correction-comment').fill(comment)
+      const url = page.url()
+      await page.getByRole('button', { name: 'Сохранить исправление' }).click()
+      await expect(page).not.toHaveURL(url)
+      await expect(page.getByRole('button', { name: 'Печать книжки' })).toBeVisible()
+    }
+    let before = (await prints(page)).length
+    await fix('проверка QR после исправления')
+    await expect.poll(async () => (await prints(page)).length - before).toBe(2)
+    const [b2, q2] = (await prints(page)).slice(before)
+    expect(b2).toContain(oilName)
+    expect(isQr(b2)).toBe(false)
+    expect(isQr(q2)).toBe(true)
+
+    // Выключено — после чека только книжка; QR — кнопкой.
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, qr_sticker: false, op_id: crypto.randomUUID() })
+    await page.reload()
+    before = (await prints(page)).length
+    await fix('проверка без QR')
+    await expect.poll(async () => (await prints(page)).slice(before).some((h) => h.includes(oilName))).toBe(true)
+    await page.waitForTimeout(1_000)
+    expect((await prints(page)).slice(before).some(isQr)).toBe(false)
+  } finally {
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, op_id: crypto.randomUUID() })
+  }
+})

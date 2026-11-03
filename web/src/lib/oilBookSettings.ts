@@ -24,6 +24,8 @@ export interface OilBookSettings {
   filters_follow_oil: boolean
   /** Чек «В сервис» без сети: после отправки на сервер печатать чек книжки (задача 003, хвост Н5). */
   offline_book: boolean
+  /** После чека книжки — QR-наклейка на бота своей печатью (задача 024, ADR-187). */
+  qr_sticker: boolean
 }
 
 export const OIL_BOOK_DEFAULTS: OilBookSettings = {
@@ -35,6 +37,7 @@ export const OIL_BOOK_DEFAULTS: OilBookSettings = {
   qty_style: 'total',
   filters_follow_oil: true,
   offline_book: true,
+  qr_sticker: true,
 }
 
 /** Настройка поверх значений по умолчанию: у старого снимка части полей нет. */

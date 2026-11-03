@@ -6,6 +6,9 @@ describe('книжка для чека без сети (задача 003, хво
 
   it('по умолчанию — печатать после отправки; у старого снимка поля нет — тоже да', () => {
     expect(OIL_BOOK_DEFAULTS.offline_book).toBe(true)
+    // QR-наклейка после книжки — по умолчанию да; у старого снимка поля нет (задача 024).
+    expect(OIL_BOOK_DEFAULTS.qr_sticker).toBe(true)
+    expect(oilBookSettingsOf({ offline_book: false }).qr_sticker).toBe(true)
     expect(oilBookSettingsOf({ auto_book: true }).offline_book).toBe(true)
   })
 

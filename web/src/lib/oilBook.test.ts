@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { bookGroups, categorySlotText, lineNextText, lineSlotLabel, lineTitle, titleOf, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
-import { oilBookHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
+import { oilBookHtml, qrStickerHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
   id: '1',
@@ -137,7 +137,7 @@ describe('чек книжки после чека — только этот че
   })
 
   it('после чека без записи книжки — не печатаем, прошлых замен нет (ADR-130)', async () => {
-    expect(await oilBookHtml(book, { link: null, saleId: 'другой' })).toBeNull()
+    expect(await oilBookHtml(book, { saleId: 'другой' })).toBeNull()
   })
 
   it('в записи чека только «прочее» — чек книжки печатает работу её названием (задача 003 Н5)', async () => {
@@ -147,12 +147,12 @@ describe('чек книжки после чека — только этот че
       slots: [...(book.slots ?? []), { ...slot('other', 'Замена ГУР', '2026-10-28', 300_000, null), service_id: 'g1' }],
     }
     expect(saleCheckOf(gur, 's9')?.id).toBe('r9')
-    expect(plain(await oilBookHtml(gur, { link: null, saleId: 's9' }))).toContain('Залито и заменено · 09KG999ZXZ Замена ГУР Следующая замена Замена ГУР — на 300 000 км')
+    expect(plain(await oilBookHtml(gur, { saleId: 's9' }))).toContain('Залито и заменено · 09KG999ZXZ Замена ГУР Следующая замена Замена ГУР — на 300 000 км')
     expect(saleCheckOf(gur, 's8')?.id).toBe('r8')
   })
 
   it('по видам замены, товаром: масло клиента и фильтры с ним, антифриз; без мастера, рекомендаций и истории', async () => {
-    const text = plain(await oilBookHtml(book, { link: null, saleId: 's8', master: 'Бакыт', client: 'Асанов' }))
+    const text = plain(await oilBookHtml(book, { saleId: 's8', master: 'Бакыт', client: 'Асанов' }))
     expect(text).toContain('09KG999ZXZ Toyota Camry')
     expect(text).toContain('Дата 26.10.2026')
     expect(text).toContain('Пробег 250 000 км')
@@ -165,7 +165,7 @@ describe('чек книжки после чека — только этот че
   })
 
   it('настройка «Масляная книжка и печать»: без фильтров, запись только с фильтрами (задача 003 Н5)', async () => {
-    const fluids = plain(await oilBookHtml(book, { link: null, saleId: 's8', print: { with_filters: false } }))
+    const fluids = plain(await oilBookHtml(book, { saleId: 's8', print: { with_filters: false } }))
     expect(fluids).toContain('масло клиента (двигатель)')
     expect(fluids).not.toContain('W712')
     const onlyFilter: VehicleBook = {
@@ -177,7 +177,7 @@ describe('чек книжки после чека — только этот че
     expect(saleCheckOf(onlyFilter, 's10')?.id).toBe('r10')
     expect(saleCheckOf(onlyFilter, 's10', { with_filters: false })).toBeNull()
     expect(saleCheckOf(onlyFilter, 's10', { with_filters: false, print_filters_only: true })?.id).toBe('r10')
-    expect(plain(await oilBookHtml(onlyFilter, { link: null, saleId: 's10' }))).toContain('Фильтр A1 (воздушный) · 1 шт')
+    expect(plain(await oilBookHtml(onlyFilter, { saleId: 's10' }))).toContain('Фильтр A1 (воздушный) · 1 шт')
     expect(saleRecordOf(onlyFilter, 's10')?.id).toBe('r10')
   })
 
@@ -212,7 +212,7 @@ describe('чек книжки после чека — только этот че
         slot('fuel_filter', 'Фильтр топливный', '2026-10-31', 160_000, null),
       ],
     }
-    const text = plain(await oilBookHtml(car, { link: null, saleId: 's20' }))
+    const text = plain(await oilBookHtml(car, { saleId: 's20' }))
     expect(text).toContain(`${motor}: Mobil 1 5W-30 · 4 л, W712 (масляный) · 1 шт, C2201 (воздушный) · 1 шт, Фильтр салонный CU2939 · 1 шт`)
     expect(text).toContain(`${motor} — на 138 000 км`)
     expect(text).toContain('Mobil ATF 3309 · 1 л — на 170 000 км')
@@ -226,15 +226,28 @@ describe('чек книжки после чека — только этот че
     expect(categorySlotText({ book_slot: 'oil_filter', attributes: [{ key: 'filter_type', enabled: false }] }).main).toBe('Фильтр масляный')
   })
 
-  it('печать из карточки клиента — прежняя выписка с историей, только пробег', async () => {
-    const full = plain(await oilBookHtml(book, { link: null, master: 'Бакыт' }))
+  it('печать из карточки клиента — выписка без «Прошлых замен» и QR, только пробег (задача 024)', () => {
+    const html = oilBookHtml(book, { master: 'Бакыт' }) ?? ''
+    const full = plain(html)
     expect(full).toContain('Мастер Бакыт')
     expect(full).toContain('Рекомендовано салонный фильтр')
     expect(full).toContain('Фильтр A1 (воздушный) на 231 000 км')
     expect(full).toContain('масло клиента (двигатель) Фильтр W712 (масляный) · 1 шт')
-    expect(full).toMatch(/Прошлые замены 17\.10\.2026/)
-    expect(full).not.toContain('наступит раньше')
-    expect(full).not.toContain('или до')
+    for (const no of ['Прошлые замены', '17.10.2026', 'Телеграм', 'наступит раньше', 'или до']) expect(full).not.toContain(no)
+    expect(html).not.toContain('<svg')
+  })
+
+  it('чек книжки после чека — три наклейки без QR; QR — своя наклейка 58×40 (задача 024)', async () => {
+    const html = oilBookHtml(book, { saleId: 's8' }) ?? ''
+    expect(html.match(/class="lbl/g)).toHaveLength(3)
+    expect(html).not.toContain('<svg')
+    expect(plain(html)).not.toContain('Телеграм')
+    const qr = await qrStickerHtml('https://t.me/avtodom_test_bot')
+    expect(qr).toContain('size: 58mm 40mm')
+    expect(qr.match(/class="lbl/g)).toHaveLength(1)
+    expect(qr.match(/<svg/g)).toHaveLength(1)
+    expect(qr).toContain('width: 22mm; height: 22mm')
+    expect(plain(qr)).toContain('Avtodom Масляная книжка в Телеграм История замен, напоминание и бонусные баллы. Наведите камеру телефона')
   })
 })
 

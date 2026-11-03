@@ -54,7 +54,7 @@ import {
   type OwnIntervals,
 } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
-import { printOilBook, saleCheckOf, saleRecordOf } from '../lib/oilBookPrint'
+import { printBotQr, printOilBook, saleCheckOf, saleRecordOf } from '../lib/oilBookPrint'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, type OilBookSettings } from '../lib/oilBookSettings'
 import { ServicePicker } from '../components/ServicePicker'
 import { PersonPick } from '../components/PersonPick'
@@ -351,6 +351,11 @@ export interface CashierFix {
   originalId: string
   number: number | null
   state: SaleFixState
+}
+
+/** «Печать QR» — повторить QR-наклейку, если её зажевало (задача 024). */
+async function printQr() {
+  if (!(await printBotQr())) toast('Телеграм-бот не подключён — QR не напечатан', 'error')
 }
 
 export default function Cashier({ fix }: { fix?: CashierFix }) {
@@ -1497,7 +1502,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           // книжки не печатается (ADR-130, `saleCheckOf`); «прочее» со сроком печатается (задача 003
           // Н5); сам — по настройке.
           if (!prefs.auto_book || !saleCheckOf(book, sale.id, prefs)) return
-          return printOilBook(book, { client, master: sale.master_name, saleId: sale.id, print: prefs })
+          return printOilBook(book, { client, master: sale.master_name, saleId: sale.id, print: prefs, qr: prefs.qr_sticker })
         })
         .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
     }
@@ -2539,6 +2544,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id, print: prefs })}
                   >
                     Печать книжки
+                  </Button>
+                )}
+                {done.book && saleCheckOf(done.book, done.sale.id, prefs) && (
+                  <Button variant="secondary" onClick={() => void printQr()}>
+                    Печать QR
                   </Button>
                 )}
                 {done.sale.id ? (

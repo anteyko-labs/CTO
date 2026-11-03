@@ -21,7 +21,7 @@ interface Pending {
 }
 
 const print = (p: Pick<Pending, 'book' | 'sent' | 'prefs'>) =>
-  printOilBook(p.book, { client: p.sent.sale.party_name ?? null, master: p.sent.sale.master_name ?? null, saleId: p.sent.sale.id, print: p.prefs })
+  printOilBook(p.book, { client: p.sent.sale.party_name ?? null, master: p.sent.sale.master_name ?? null, saleId: p.sent.sale.id, print: p.prefs, qr: p.prefs.qr_sticker })
 
 export function OfflineBookPrints() {
   const [pending, setPending] = useState<Pending[]>([])

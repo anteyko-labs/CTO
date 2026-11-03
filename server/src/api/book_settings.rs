@@ -52,6 +52,9 @@ pub struct OilBookSettings {
     /// книжки (если включено `auto_book`); выключено — только кнопкой «Печать книжки» в
     /// уведомлении (задача 003, хвост Н5). По умолчанию — да.
     pub offline_book: bool,
+    /// После чека книжки касса печатает QR-наклейку на бота отдельным заданием (задача 024,
+    /// ADR-187); выключено — только кнопкой «Печать QR». По умолчанию — да.
+    pub qr_sticker: bool,
 }
 
 impl Default for OilBookSettings {
@@ -65,6 +68,7 @@ impl Default for OilBookSettings {
             qty_style: "total".into(),
             filters_follow_oil: true,
             offline_book: true,
+            qr_sticker: true,
         }
     }
 }
