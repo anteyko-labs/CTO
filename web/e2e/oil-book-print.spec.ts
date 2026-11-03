@@ -4,7 +4,7 @@
 // печатается сама; «Настройки → Масляная книжка и печать» убирает блок книжки из товарного чека.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, ensureShift, pickMaster, shiftOnTill } from './cashier'
+import { choosePerson, ensureShift, pickCashier, pickMaster, shiftOnTill } from './cashier'
 
 /** Части по порядку, между ними что угодно (чек книжки — три наклейки, задача 009). */
 const inOrder = (...parts: string[]) => new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*'))
@@ -361,6 +361,45 @@ test('чек без сети и две вкладки кассы: чек ухо�
   const sent = await api<{ number: number }>(page.request, 'GET', `/sales/by-op/${String(body.op_id)}`)
   expect(sent.number).toBeGreaterThan(0)
   await other.close()
+})
+
+test('«Товарный чек после любого чека»: чек «На вынос» печатается сам один раз, выключено — нет (задача 023)', async ({ page }) => {
+  await page.addInitScript(PRINT_STUB)
+  await login(page)
+  const tag = `${RUN}23`
+  const cashier = `Кассир автопечати ${tag}`
+  await api(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
+  const cat = await api<{ id: string }>(page.request, 'POST', '/categories', { name: `Автопечать ${tag}`, kind: 'other' })
+  const code = `23${tag}`
+  const item = `Ветошь автопечати ${tag}`
+  const p = await api<{ id: string }>(page.request, 'POST', '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name: item, sale_price_tyiyn: 10_000, barcodes: [code] })
+  await api(page.request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(page.request), lines: [{ product_id: p.id, qty: 5, cost_tyiyn: 5_000 }] })
+  const initial = await api<Record<string, unknown>>(page.request, 'GET', '/settings/oil-book')
+  const sell = async () => {
+    await page.goto('/')
+    await pickCashier(page, cashier)
+    const picker = page.getByPlaceholder(/Сканируйте штрихкод/)
+    await picker.fill(code)
+    await picker.press('Enter')
+    await expect(page.getByText(item)).toBeVisible()
+    await page.getByRole('button', { name: 'Провести чек' }).click()
+    await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+  }
+  const receipts = async () => (await prints(page)).filter((h) => h.includes('Товарный чек') && h.includes(item)).length
+  try {
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, auto_receipt: false, auto_receipt_all: true, op_id: crypto.randomUUID() })
+    await sell()
+    await expect.poll(receipts).toBe(1)
+    await page.waitForTimeout(500)
+    expect(await receipts()).toBe(1)
+
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, auto_receipt: false, auto_receipt_all: false, op_id: crypto.randomUUID() })
+    await sell()
+    await page.waitForTimeout(500)
+    expect(await receipts()).toBe(0)
+  } finally {
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, op_id: crypto.randomUUID() })
+  }
 })
 
 test('QR — своя наклейка своей печатью после книжки; «Печать QR»; выключено — только книжка (задача 024)', async ({ page }) => {

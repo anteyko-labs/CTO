@@ -20,6 +20,13 @@ const SWITCHES: { key: Exclude<keyof OilBookSettings, 'qty_style'>; title: strin
     off: 'Книжка — кнопкой «Печать книжки» в уведомлении',
   },
   {
+    key: 'auto_receipt_all',
+    group: 'print',
+    title: 'Товарный чек после любого чека — печатать сам',
+    on: 'Товарный чек печатается после каждого чека, и без сети тоже',
+    off: 'Товарный чек сам — только по настройке ниже',
+  },
+  {
     key: 'qr_sticker',
     group: 'print',
     title: 'QR-наклейка на Телеграм-бот после чека книжки — печатать отдельно',

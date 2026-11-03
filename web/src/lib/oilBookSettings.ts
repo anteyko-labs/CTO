@@ -13,6 +13,8 @@ export interface OilBookSettings {
   auto_book: boolean
   /** После чека «В сервис» печатать и товарный чек. */
   auto_receipt: boolean
+  /** После любого чека (на вынос, в сервис, без сети) печатать товарный чек (задача 023). */
+  auto_receipt_all: boolean
   /** Блок «Масляная книжка» в товарном чеке (ADR-116). */
   receipt_block: boolean
   /** В чеке книжки и блоке — ещё фильтры; по умолчанию — да (задача 003 Н5). */
@@ -31,6 +33,7 @@ export interface OilBookSettings {
 export const OIL_BOOK_DEFAULTS: OilBookSettings = {
   auto_book: true,
   auto_receipt: false,
+  auto_receipt_all: false,
   receipt_block: true,
   with_filters: true,
   print_filters_only: false,
@@ -45,6 +48,15 @@ export function oilBookSettingsOf(raw: Partial<OilBookSettings> | null | undefin
   const s = { ...OIL_BOOK_DEFAULTS, ...(raw ?? {}) }
   if (s.qty_style !== 'total' && s.qty_style !== 'split') s.qty_style = 'total'
   return s
+}
+
+/** Печатать ли товарный чек сам после проведённого чека: любой — по `auto_receipt_all`;
+ *  «В сервис» с машиной — по `auto_receipt`; проведённый по QR — всегда (задача 008). Один лист. */
+export function shouldAutoReceipt(
+  prefs: Pick<OilBookSettings, 'auto_receipt' | 'auto_receipt_all'>,
+  sale: { serviceWithVehicle: boolean; byQr: boolean },
+): boolean {
+  return prefs.auto_receipt_all || sale.byQr || (sale.serviceWithVehicle && prefs.auto_receipt)
 }
 
 let last: OilBookSettings = OIL_BOOK_DEFAULTS

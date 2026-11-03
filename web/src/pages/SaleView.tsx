@@ -23,7 +23,7 @@ import { returnWithholds } from '../lib/serviceSale'
 import { returnDebtCap, splitReturn } from '../lib/returnSplit'
 import type { VehicleBook } from '../lib/oilBook'
 import { printBotQr, printOilBook, saleCheckOf } from '../lib/oilBookPrint'
-import { loadOilBookSettings, OIL_BOOK_DEFAULTS } from '../lib/oilBookSettings'
+import { loadOilBookSettings, OIL_BOOK_DEFAULTS, shouldAutoReceipt } from '../lib/oilBookSettings'
 import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
@@ -316,8 +316,9 @@ export default function SaleView() {
     if (bookVehicle && !book.data && !book.error) return
     printedFix.current = sale.id
     navigate('.', { replace: true, state: null })
+    // Товарный чек после правки — как после чека (задача 023: при `auto_receipt_all` и «На вынос»).
+    if (shouldAutoReceipt(prefs, { serviceWithVehicle: sale.sale_type === 'service', byQr: false })) printSale(sale, null, { bookBlock: prefs.receipt_block })
     if (sale.sale_type !== 'service') return
-    if (prefs.auto_receipt) printSale(sale, null, { bookBlock: prefs.receipt_block })
     if (prefs.auto_book && book.data && saleCheckOf(book.data, sale.id, prefs)) {
       void printOilBook(book.data, { client: sale.party_name, master: sale.master_name, saleId: sale.id, print: prefs, qr: prefs.qr_sticker })
     }

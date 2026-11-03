@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { OIL_BOOK_DEFAULTS, offlineBookPlan, offlineBookTab, oilBookSettingsOf } from './oilBookSettings'
+import { OIL_BOOK_DEFAULTS, offlineBookPlan, offlineBookTab, oilBookSettingsOf, shouldAutoReceipt } from './oilBookSettings'
 
 describe('книжка для чека без сети (задача 003, хвост Н5)', () => {
   const service = { sale_type: 'service', vehicle_id: 'v1' }
@@ -65,5 +65,33 @@ describe('книжка для чека без сети при нескольки
     const f = device()
     expect(await f.tab('print', true)).toBe('notice')
     expect(f.prints()).toBe(0)
+  })
+})
+
+describe('товарный чек сам после чека (задача 023)', () => {
+  const off = { auto_receipt: false, auto_receipt_all: false }
+  const kinds = [
+    { serviceWithVehicle: false, byQr: false },
+    { serviceWithVehicle: true, byQr: false },
+  ]
+
+  it('по умолчанию — нет; у старого снимка поля нет — тоже нет', () => {
+    expect(OIL_BOOK_DEFAULTS.auto_receipt_all).toBe(false)
+    expect(oilBookSettingsOf({ auto_receipt: true }).auto_receipt_all).toBe(false)
+  })
+
+  it('«после любого чека» — печать на вынос и в сервис, с машиной и без', () => {
+    for (const k of kinds) {
+      expect(shouldAutoReceipt({ auto_receipt: false, auto_receipt_all: true }, k)).toBe(true)
+      expect(shouldAutoReceipt({ auto_receipt: true, auto_receipt_all: true }, k)).toBe(true)
+    }
+  })
+
+  it('выключено — как было: «В сервис» с машиной по auto_receipt, по QR — всегда', () => {
+    expect(shouldAutoReceipt(off, kinds[0])).toBe(false)
+    expect(shouldAutoReceipt(off, kinds[1])).toBe(false)
+    expect(shouldAutoReceipt({ ...off, auto_receipt: true }, kinds[0])).toBe(false)
+    expect(shouldAutoReceipt({ ...off, auto_receipt: true }, kinds[1])).toBe(true)
+    expect(shouldAutoReceipt(off, { serviceWithVehicle: false, byQr: true })).toBe(true)
   })
 })
