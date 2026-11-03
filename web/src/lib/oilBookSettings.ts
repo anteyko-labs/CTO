@@ -15,6 +15,8 @@ export interface OilBookSettings {
   auto_receipt: boolean
   /** После любого чека (на вынос, в сервис, без сети) печатать товарный чек (задача 023). */
   auto_receipt_all: boolean
+  /** Книжку печатает станция книжки — второе окно со своим принтером (задача 027). */
+  book_station: boolean
   /** Блок «Масляная книжка» в товарном чеке (ADR-116). */
   receipt_block: boolean
   /** В чеке книжки и блоке — ещё фильтры; по умолчанию — да (задача 003 Н5). */
@@ -34,6 +36,7 @@ export const OIL_BOOK_DEFAULTS: OilBookSettings = {
   auto_book: true,
   auto_receipt: false,
   auto_receipt_all: false,
+  book_station: false,
   receipt_block: true,
   with_filters: true,
   print_filters_only: false,

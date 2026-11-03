@@ -461,3 +461,33 @@ test('QR — своя наклейка своей печатью после кн
     await api(page.request, 'PUT', '/settings/oil-book', { ...initial, op_id: crypto.randomUUID() })
   }
 })
+
+test('станция книжки: книжка уходит на второе окно со своим принтером; станции нет — печать здесь (задача 027)', async ({ page, context }) => {
+  await context.addInitScript(PRINT_STUB)
+  await login(page)
+  const { sale, oilName } = await serviceSale(page.request)
+  const initial = await api<Record<string, unknown>>(page.request, 'GET', '/settings/oil-book')
+  const isBook = (h: string) => h.includes('Масляная книжка') && !h.includes('Товарный чек')
+  try {
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, book_station: true, op_id: crypto.randomUUID() })
+    // Станции ещё нет — книжка печатается здесь, касса говорит почему.
+    await page.goto(`/sales/${sale.id}`)
+    await page.getByRole('button', { name: 'Печать книжки' }).click()
+    await expect(page.getByText('Станция книжки не в сети — книжка печатается здесь')).toBeVisible()
+    await expect.poll(async () => (await prints(page)).filter(isBook).length).toBe(1)
+
+    // Окно станции книжки открыто — книжка печатается в нём, а не на кассе.
+    const station = await context.newPage()
+    await station.goto('/label-station?size=book')
+    await expect(station.getByText('Принтер: книжка — готов')).toBeVisible()
+    await page.reload()
+    await page.getByRole('button', { name: 'Печать книжки' }).click()
+    await expect(page.getByText('Книжка ушла на принтер книжки')).toBeVisible()
+    await expect.poll(async () => (await prints(station)).filter(isBook).length, { timeout: 15_000 }).toBe(1)
+    expect(plain((await prints(station)).find(isBook) ?? '')).toContain(`${oilName} · 4,5 л`)
+    await expect(station.getByLabel('Задания печати')).toContainText('напечатано')
+    expect((await prints(page)).filter(isBook)).toHaveLength(0)
+  } finally {
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, op_id: crypto.randomUUID() })
+  }
+})

@@ -134,3 +134,8 @@ oil_reminders + slot                                                            
 - `GET /book-slots` — свои строки точки, все со скрытыми, по названию: `[{id, name, interval_km, interval_days, hidden}]`. `POST /book-slots` `{op_id?, name, interval_km?, interval_days?}` — тот же объект; право — как у правки записи (`clients`). `PATCH /book-slots/{id}` `{op_id?, name?, interval_km?, interval_days?, hidden?}` (интервал `null` — снять) — владелец или администратор с правом `services`; чужая точка — 404. Скрытая пропадает из выбора, старые записи показывают её (текущее) название. Удаления нет.
 - Журнал: `book_slot.create`, `book_slot.update` (было → стало), правка записи `vehicle.oil_edit` — строки «Название: текст».
 - Проверка: `server/tests/oil_book_custom_slots.rs`, `server/tests/oil_book_check.rs` (`record_edit_with_custom_slot_logs_its_name`).
+
+## Станция книжки (задача 027)
+- Настройка «Книжку печатать на втором принтере» (`book_station`, по умолчанию нет): касса ставит книжку в очередь печати (`POST /label-jobs/book`, `size = book`), если станция книжки в сети; иначе, без связи или при ошибке — печатает здесь и говорит почему.
+- Станция книжки — `/label-station?size=book`, второе окно Chrome на моноблоке со своим профилем и принтером наклеек (`deploy/windows/install-book-station.ps1`); читает книжку машины и настройку и печатает тот же документ, что касса, и QR-наклейку, если просили. Задание книжки, не взятое за 2 мин, — «устарело».
+

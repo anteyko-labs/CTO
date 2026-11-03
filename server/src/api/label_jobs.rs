@@ -2,6 +2,8 @@
 //! станции на ПК склада забирает его по одному и печатает на принтер по умолчанию. Задача 014: у задания и станции —
 //! размер (`big`/`small`), каждая станция берёт только свои. Задача 021: у задания — за что цена
 //! на этикетке (`piece`/`liter`/`meter`), станция печатает по нему.
+//! Задача 027: станция книжки (`book`) — второе окно Chrome на моноблоке кассы; задание несёт
+//! машину и чек, станция сама читает книжку и печатает её на свой принтер.
 //! Этикетки — без права (SPEC-01): любой вошедший филиала; чужой филиал задание не видит (I16).
 
 use axum::extract::{Path, Query, State};
@@ -28,6 +30,7 @@ const STATION_ONLINE_SECS: f64 = 30.0;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/label-jobs", routing::get(list_jobs).post(create_job))
+        .route("/label-jobs/book", routing::post(create_book_job))
         .route("/label-jobs/take", routing::post(take_job))
         .route("/label-jobs/{id}", routing::get(get_job))
         .route("/label-jobs/{id}/done", routing::post(done_job))
@@ -59,12 +62,121 @@ struct Created {
     status: String,
 }
 
-/// Задание, просроченное в очереди (24 ч), — «устарело»; взятое станцией и не закрытое за
+/// Вид станции: размер этикетки (`big`/`small`) или станция книжки (`book`, задача 027).
+fn station_size(size: Option<&str>) -> AppResult<&'static str> {
+    match size {
+        Some("book") => Ok("book"),
+        other => label_size(other),
+    }
+}
+
+/// Задание «книжка» (задача 027): машина, чек и подписи — как у печати на кассе.
+#[derive(Serialize, Deserialize, Clone)]
+struct BookJob {
+    vehicle_id: Uuid,
+    #[serde(default)]
+    sale_id: Option<Uuid>,
+    #[serde(default)]
+    client: Option<String>,
+    #[serde(default)]
+    master: Option<String>,
+    /// После книжки — наклейка с QR бота (задача 024).
+    #[serde(default)]
+    qr: bool,
+}
+
+#[derive(Deserialize)]
+struct BookReq {
+    op_id: Uuid,
+    #[serde(flatten)]
+    book: BookJob,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BookCreated {
+    id: Uuid,
+    status: String,
+    station_online: bool,
+}
+
+const BOOK_KIND: &str = "label_job.book";
+
+/// Касса ставит книжку в очередь станции книжки (задача 027). Машина — любая из справочника
+/// клиентов (машины общие для филиалов), чужой — 404.
+async fn create_book_job(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<BookReq>,
+) -> AppResult<Json<BookCreated>> {
+    let mut book = req.book;
+    let trim = |v: Option<String>| {
+        v.map(|s| s.trim().chars().take(200).collect::<String>())
+            .filter(|s| !s.is_empty())
+    };
+    book.client = trim(book.client);
+    book.master = trim(book.master);
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op::<BookCreated>(&mut tx, &ctx, req.op_id, BOOK_KIND).await? {
+        return Ok(Json(done));
+    }
+    let plate = sqlx::query_scalar!(
+        "select plate from party_vehicles where id = $1",
+        book.vehicle_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if let Some(sale) = book.sale_id {
+        sqlx::query_scalar!(
+            "select id from sales where id = $1 and branch_id = $2",
+            sale,
+            ctx.user.branch_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    }
+    let id = ops::new_id();
+    let data = json!(book);
+    sqlx::query!(
+        r#"insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size, book)
+           values ($1, $2, $3, '[]'::jsonb, 1, $4, 'book', $5)"#,
+        id,
+        ctx.user.branch_id,
+        req.op_id,
+        ctx.user.id,
+        data
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "label_job",
+        Some(id),
+        json!({ "size": "book", "plate": plate, "book": data }),
+    )
+    .await?;
+    let station_online = station_online(&mut tx, ctx.user.branch_id, "book").await?;
+    let out = BookCreated {
+        id,
+        status: "queued".into(),
+        station_online,
+    };
+    ops::finish_op(&mut tx, &ctx, req.op_id, BOOK_KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Задание, просроченное в очереди (24 ч; книжка — 2 мин: клиент уже уехал, задача 027), — «устарело»; взятое станцией и не закрытое за
 /// 2 мин — снова в очередь (станция перезагрузилась).
 async fn housekeep(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     sqlx::query!(
         r#"update label_jobs set status = 'failed', error = 'устарело', done_at = now()
-           where branch_id = $1 and status = 'queued' and created_at < now() - interval '24 hours'"#,
+           where branch_id = $1 and status = 'queued'
+             and (created_at < now() - interval '24 hours'
+                  or (size = 'book' and created_at < now() - interval '2 minutes'))"#,
         branch_id
     )
     .execute(&mut *conn)
@@ -190,7 +302,9 @@ async fn job_rows(
     let rows = sqlx::query!(
         r#"select j.id, j.status, j.error, j.copies, j.size, j.created_at, j.done_at,
                   u.full_name as "created_by_name!",
-                  coalesce((select string_agg(p.name, ', ')
+                  coalesce('Книжка ' || (select v.plate from party_vehicles v
+                                         where v.id = (j.book->>'vehicle_id')::uuid),
+                           (select string_agg(p.name, ', ')
                             from jsonb_to_recordset(j.items) as x(product_id uuid, copies bigint)
                             join products p on p.id = x.product_id), '') as "what!"
            from label_jobs j join users u on u.id = j.created_by
@@ -224,7 +338,7 @@ async fn list_jobs(
     user: CurrentUser,
     Query(q): Query<LabelSizeQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let size = label_size(q.size.as_deref())?;
+    let size = station_size(q.size.as_deref())?;
     let mut conn = state.pool.acquire().await?;
     housekeep(&mut conn, user.branch_id).await?;
     let jobs = job_rows(&mut conn, user.branch_id, None).await?;
@@ -306,6 +420,9 @@ struct Taken {
     /// За что цена на этикетке (задача 021).
     price_per: String,
     items: Vec<TakeItem>,
+    /// Задание книжки (задача 027); у этикеток — нет.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    book: Option<serde_json::Value>,
 }
 
 /// Станция берёт одно задание из очереди: две станции одно не возьмут (SKIP LOCKED).
@@ -314,7 +431,7 @@ async fn take_job(
     user: CurrentUser,
     Json(req): Json<TakeReq>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let size = label_size(req.size.as_deref())?;
+    let size = station_size(req.size.as_deref())?;
     let mut conn = state.pool.acquire().await?;
     seen(&mut conn, &user, req.station_id, Some(size)).await?;
     housekeep(&mut conn, user.branch_id).await?;
@@ -324,7 +441,7 @@ async fn take_job(
                        where branch_id = $1 and size = $3 and status = 'queued'
                        order by created_at limit 1
                        for update skip locked)
-           returning id, items, copies, created_by, price_per"#,
+           returning id, items, copies, created_by, price_per, book"#,
         user.branch_id,
         req.station_id,
         size
@@ -357,6 +474,7 @@ async fn take_job(
         created_by_name,
         price_per: row.price_per,
         items,
+        book: row.book,
     } })))
 }
 

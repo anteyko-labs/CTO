@@ -20,6 +20,13 @@ const SWITCHES: { key: Exclude<keyof OilBookSettings, 'qty_style'>; title: strin
     off: 'Книжка — кнопкой «Печать книжки» в уведомлении',
   },
   {
+    key: 'book_station',
+    group: 'print',
+    title: 'Книжку печатать на втором принтере (станция книжки на моноблоке)',
+    on: 'Книжка уходит на принтер книжки; станции нет — печать здесь',
+    off: 'Книжка печатается здесь, на принтер этого окна',
+  },
+  {
     key: 'auto_receipt_all',
     group: 'print',
     title: 'Товарный чек после любого чека — печатать сам',

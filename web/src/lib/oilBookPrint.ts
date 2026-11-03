@@ -6,9 +6,10 @@
 // QR в книжке нет: он — своей наклейкой и своей печатью (задача 024, ADR-187).
 import { printInFrame } from './printFrame'
 import QRCode from 'qrcode'
-import { get } from './api'
+import { get, newOpId, post } from './api'
+import { toast } from '../components/ui'
 import { formatDate } from './format'
-import { OIL_BOOK_DEFAULTS, type OilBookSettings } from './oilBookSettings'
+import { loadOilBookSettings, OIL_BOOK_DEFAULTS, type OilBookSettings } from './oilBookSettings'
 import {
   bookGroups,
   isFluid,
@@ -224,12 +225,38 @@ export async function printBotQr(): Promise<boolean> {
 
 /** Печать через диалог браузера; `saleId` — после этого чека (ADR-116). `qr` — после книжки ещё
  *  QR-наклейка отдельной печатью (задача 024): два задания, сначала книжка. */
-export async function printOilBook(
-  b: VehicleBook,
-  opts: { client?: string | null; master?: string | null; saleId?: string | null; print?: BookPrint; qr?: boolean } = {},
-): Promise<void> {
+type BookOpts = { client?: string | null; master?: string | null; saleId?: string | null; print?: BookPrint; qr?: boolean }
+
+/** Книжка — на станцию книжки (задача 027): только если она в сети, иначе задание ждало бы в
+ *  очереди и вышло бы вторым листом, когда станцию включат. Нет связи, ошибка — `false`. */
+async function toBookStation(vehicleId: string, opts: BookOpts): Promise<boolean> {
+  try {
+    const list = await get<{ station_online: boolean }>('/label-jobs?size=book')
+    if (!list.station_online) {
+      toast('Станция книжки не в сети — книжка печатается здесь', 'error')
+      return false
+    }
+    await post('/label-jobs/book', {
+      op_id: newOpId(),
+      vehicle_id: vehicleId,
+      sale_id: opts.saleId ?? null,
+      client: opts.client ?? null,
+      master: opts.master ?? null,
+      qr: Boolean(opts.qr),
+    })
+    toast('Книжка ушла на принтер книжки')
+    return true
+  } catch {
+    toast('Станция книжки недоступна — книжка печатается здесь', 'error')
+    return false
+  }
+}
+
+export async function printOilBook(b: VehicleBook, opts: BookOpts = {}): Promise<void> {
   const html = oilBookHtml(b, opts)
   if (!html) return
+  // Станция книжки — по настройке «Масляная книжка и печать» (задача 027); без связи — здесь.
+  if ((await loadOilBookSettings()).book_station && navigator.onLine && (await toBookStation(b.vehicle_id, opts))) return
   printInFrame(html)
   if (opts.qr) await printBotQr()
 }

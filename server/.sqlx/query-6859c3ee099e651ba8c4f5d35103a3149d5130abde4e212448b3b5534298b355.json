@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select j.id, j.status, j.error, j.copies, j.size, j.created_at, j.done_at,\n                  u.full_name as \"created_by_name!\",\n                  coalesce((select string_agg(p.name, ', ')\n                            from jsonb_to_recordset(j.items) as x(product_id uuid, copies bigint)\n                            join products p on p.id = x.product_id), '') as \"what!\"\n           from label_jobs j join users u on u.id = j.created_by\n           where j.branch_id = $1 and ($2::uuid is null or j.id = $2)\n           order by j.created_at desc\n           limit 20",
+  "query": "select j.id, j.status, j.error, j.copies, j.size, j.created_at, j.done_at,\n                  u.full_name as \"created_by_name!\",\n                  coalesce('Книжка ' || (select v.plate from party_vehicles v\n                                         where v.id = (j.book->>'vehicle_id')::uuid),\n                           (select string_agg(p.name, ', ')\n                            from jsonb_to_recordset(j.items) as x(product_id uuid, copies bigint)\n                            join products p on p.id = x.product_id), '') as \"what!\"\n           from label_jobs j join users u on u.id = j.created_by\n           where j.branch_id = $1 and ($2::uuid is null or j.id = $2)\n           order by j.created_at desc\n           limit 20",
   "describe": {
     "columns": [
       {
@@ -67,5 +67,5 @@
       null
     ]
   },
-  "hash": "56275e78426ae401e09f381eaf6b142b83779023d92624a0dae4aa8eb34ddba8"
+  "hash": "6859c3ee099e651ba8c4f5d35103a3149d5130abde4e212448b3b5534298b355"
 }

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size, book)\n           values ($1, $2, $3, '[]'::jsonb, 1, $4, 'book', $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d1b3a9d969f38a34d48b46aca341c58656e0b3deb744d59c5cc3e2aed9e878b"
+}

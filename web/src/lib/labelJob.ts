@@ -6,9 +6,13 @@ export type LabelSize = 'big' | 'small'
 
 export const SIZE_BUTTON: Record<LabelSize, string> = { big: 'Большой штрихкод', small: 'Маленький штрихкод' }
 
-/** Размер станции из адреса `/label-station?size=small`; иначе — большой. */
-export function sizeFromSearch(search: string): LabelSize {
-  return new URLSearchParams(search).get('size') === 'small' ? 'small' : 'big'
+/** Вид станции: принтер этикеток или станция книжки на моноблоке кассы (задача 027). */
+export type StationSize = LabelSize | 'book'
+
+/** Вид станции из адреса `/label-station?size=small|book`; иначе — большой принтер этикеток. */
+export function sizeFromSearch(search: string): StationSize {
+  const size = new URLSearchParams(search).get('size')
+  return size === 'small' || size === 'book' ? size : 'big'
 }
 
 export type JobStatus = 'queued' | 'printing' | 'done' | 'failed'
@@ -19,7 +23,7 @@ export interface LabelJob {
   status: JobStatus
   error: string | null
   copies: number
-  size: LabelSize
+  size: StationSize
   created_by_name: string
   what: string
   created_at: string
@@ -97,9 +101,9 @@ export async function pollJob(id: string, deps: PollDeps): Promise<Plate | null>
 }
 
 /** Номер этой станции: один на браузер, хранится между перезапусками. */
-export function stationId(storage: Pick<Storage, 'getItem' | 'setItem'>, make: () => string, size: LabelSize = 'big'): string {
-  // У маленькой станции — свой номер: два окна в одном профиле браузера не путаются.
-  const key = size === 'small' ? 'avtodom.labelStation.small.id' : 'avtodom.labelStation.id'
+export function stationId(storage: Pick<Storage, 'getItem' | 'setItem'>, make: () => string, size: StationSize = 'big'): string {
+  // У маленькой станции и станции книжки — свой номер: два окна в одном профиле не путаются.
+  const key = size === 'big' ? 'avtodom.labelStation.id' : `avtodom.labelStation.${size}.id`
   const have = storage.getItem(key)
   if (have) return have
   const id = make()

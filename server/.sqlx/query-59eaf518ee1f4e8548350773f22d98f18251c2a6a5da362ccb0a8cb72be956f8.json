@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select plate from party_vehicles where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "plate",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "59eaf518ee1f4e8548350773f22d98f18251c2a6a5da362ccb0a8cb72be956f8"
+}

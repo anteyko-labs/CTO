@@ -2,13 +2,18 @@
 // филиала и печатает его на принтер по умолчанию. Chrome с --kiosk-printing печатает без окна.
 // Задача 014: `?size=small` — станция маленького принтера (30×20), без параметра — большого;
 // у каждого принтера своё окно Chrome со своим профилем (--user-data-dir).
+// Задача 027: `?size=book` — станция книжки на моноблоке кассы: печатает масляную книжку машины
+// (и QR-наклейку бота) тем же документом, что касса, на свой принтер наклеек.
 import { useEffect, useRef, useState } from 'react'
 import { labelsHtml, type LabelItem } from '../components/labels'
 import { Button, Card, CardTitle, ErrorBox, PageHeader } from '../components/ui'
 import { get, post, uuidv7 } from '../lib/api'
 import { sizeFromSearch, STATION_TICK_MS, stationId, type LabelJob } from '../lib/labelJob'
 import { isPricePer } from '../lib/labelText'
-import { printAsPage } from '../lib/printFrame'
+import { oilBookHtml, printBotQr } from '../lib/oilBookPrint'
+import { loadOilBookSettings } from '../lib/oilBookSettings'
+import type { VehicleBook } from '../lib/oilBook'
+import { printAsPage, printInFrame } from '../lib/printFrame'
 import type { LabelSettings, Product } from '../lib/types'
 
 interface Taken {
@@ -18,6 +23,17 @@ interface Taken {
   /** За что цена на этикетке — выбрано при печати (задача 021). */
   price_per?: string
   items: LabelItem[]
+  /** Задание книжки (задача 027). */
+  book?: { vehicle_id: string; sale_id: string | null; client: string | null; master: string | null; qr: boolean }
+}
+
+/** Книжка машины — тем же документом, что на кассе; печатать нечего — ошибка задания. */
+async function printBookJob(job: NonNullable<Taken['book']>): Promise<void> {
+  const [book, prefs] = await Promise.all([get<VehicleBook>(`/vehicles/${job.vehicle_id}/oil-book`), loadOilBookSettings()])
+  const html = oilBookHtml(book, { client: job.client, master: job.master, saleId: job.sale_id, print: prefs })
+  if (!html) throw new Error('в книжке нечего печатать')
+  printInFrame(html)
+  if (job.qr) await printBotQr()
 }
 
 const STATUS: Record<LabelJob['status'], string> = {
@@ -67,7 +83,15 @@ export default function LabelStation() {
       try {
         const res = await post<{ job: Taken | null }>('/label-jobs/take', { station_id: station.current, size })
         const job = res.job
-        if (job) {
+        if (job?.book) {
+          try {
+            await printBookJob(job.book)
+            await post(`/label-jobs/${job.id}/done`, { station_id: station.current })
+            setLast(`${job.created_by_name}: книжка`)
+          } catch (e) {
+            await post(`/label-jobs/${job.id}/failed`, { station_id: station.current, error: e instanceof Error ? e.message : String(e) })
+          }
+        } else if (job) {
           try {
             const settings = await get<LabelSettings>(settingsUrl)
             const items = job.items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
@@ -109,17 +133,21 @@ export default function LabelStation() {
 
   return (
     <div>
-      <PageHeader title={size === 'small' ? 'Станция этикеток — маленький принтер (30×20)' : 'Станция этикеток — большой принтер'} />
+      <PageHeader title={size === 'book' ? 'Станция книжки — принтер наклеек кассы' : size === 'small' ? 'Станция этикеток — маленький принтер (30×20)' : 'Станция этикеток — большой принтер'} />
       <Card className="mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <span className={`text-lg font-semibold ${error ? 'text-red-700' : 'text-emerald-700'}`}>{error ? 'Принтер: нет связи с сервером' : size === 'small' ? 'Принтер: маленькие этикетки — готов' : 'Принтер: большие этикетки — готов'}</span>
-          <Button variant="secondary" onClick={() => void test()}>
-            Пробная этикетка
-          </Button>
+          <span className={`text-lg font-semibold ${error ? 'text-red-700' : 'text-emerald-700'}`}>{error ? 'Принтер: нет связи с сервером' : size === 'book' ? 'Принтер: книжка — готов' : size === 'small' ? 'Принтер: маленькие этикетки — готов' : 'Принтер: большие этикетки — готов'}</span>
+          {size !== 'book' && (
+            <Button variant="secondary" onClick={() => void test()}>
+              Пробная этикетка
+            </Button>
+          )}
         </div>
         {last && <div className="mt-2 text-sm text-slate-600">Последнее: {last}</div>}
         <ErrorBox error={error} />
-        <p className="mt-2 text-xs text-slate-500">Держите эту страницу открытой: задания с телефонов печатаются сами.</p>
+        <p className="mt-2 text-xs text-slate-500">
+          {size === 'book' ? 'Держите это окно открытым: книжки с кассы печатаются сами.' : 'Держите эту страницу открытой: задания с телефонов печатаются сами.'}
+        </p>
       </Card>
       <Card>
         <CardTitle>Последние задания</CardTitle>

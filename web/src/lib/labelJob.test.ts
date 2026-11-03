@@ -111,3 +111,23 @@ describe('опрос статуса', () => {
     expect(n).toBe(1)
   })
 })
+
+describe('станция книжки (задача 027)', () => {
+  it('вид станции из адреса: book, small, иначе большой принтер', () => {
+    expect(sizeFromSearch('?size=book')).toBe('book')
+    expect(sizeFromSearch('?size=small')).toBe('small')
+    expect(sizeFromSearch('?size=huge')).toBe('big')
+    expect(sizeFromSearch('')).toBe('big')
+  })
+
+  it('у станции книжки — свой номер, не номер станции этикеток', () => {
+    const store = new Map<string, string>()
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) }
+    let n = 0
+    const make = () => `id-${++n}`
+    const big = stationId(storage, make)
+    const book = stationId(storage, make, 'book')
+    expect(book).not.toBe(big)
+    expect(stationId(storage, make, 'book')).toBe(book)
+  })
+})
