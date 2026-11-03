@@ -127,3 +127,12 @@ describe('строка «Скидка» в печатном чеке (задач
     expect(plain(saleHtml(s, null))).not.toContain('Скидка')
   })
 })
+
+describe('ширина товарного чека по ленте принтера', () => {
+  it('без жёстких 80 мм: на ленте 58 мм суммы справа не обрезаются, длинное название переносится', () => {
+    const html = saleHtml(sale({}), null)
+    expect(html).not.toMatch(/size:\s*80mm/)
+    expect(html).not.toMatch(/[^-]width:\s*72mm/)
+    expect(html).toContain('overflow-wrap: anywhere')
+  })
+})

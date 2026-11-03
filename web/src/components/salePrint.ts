@@ -54,8 +54,8 @@ export function saleHtml(sale: Sale, change: number | null, opts: { bookBlock?: 
   const discountRow = off > 0 ? `<tr><td>Скидка</td><td class="r">−${esc(formatSomExact(off))}</td></tr>` : ''
   const master = sale.master_name ? `<div>Мастер: ${esc(sale.master_name)}</div>` : ''
   return `<!doctype html><html><head><meta charset="utf-8"><title>Чек ${sale.number}</title><style>
-    @page { size: 80mm auto; margin: 3mm; }
-    body { font-family: Arial, sans-serif; font-size: 10pt; margin: 0; width: 72mm; }
+    @page { margin: 2mm; }
+    body { font-family: Arial, sans-serif; font-size: 10pt; margin: 0; width: auto; max-width: 72mm; overflow-wrap: anywhere; }
     h1 { font-size: 12pt; text-align: center; margin: 0 0 2mm; }
     table { width: 100%; border-collapse: collapse; }
     td { padding: 0.5mm 0; vertical-align: top; }
