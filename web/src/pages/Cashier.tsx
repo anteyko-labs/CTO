@@ -2876,8 +2876,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         )}
       </div>
 
-      {/* В режиме кассы мастер, вид замены, клиент и редкое — сверху колонки в своей прокрутке; тип чека,
-          «Итого» и оплата закреплены под ними, «Провести чек» — в самом низу. Колонка помещается в экран. */}
+      {/* В режиме кассы тип чека, «Итого» и оплата закреплены сверху колонки; мастер, вид замены,
+          клиент и редкое — под ними в своей прокрутке; «Провести чек» — внизу. Колонка помещается в экран. */}
       <div className={`flex flex-col ${touch ? 'gap-3 lg:min-h-0' : 'gap-4'}`}>
         <div
           className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-hidden' : 'gap-4'}`}
@@ -2898,7 +2898,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <Card
           className={`flex flex-col ${
             touch
-              ? 'order-2 gap-2.5 rounded-none! border-0! border-b! border-slate-200! p-0! pb-2! shadow-none! lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
+              ? 'order-2 gap-2.5 rounded-none! border-0! border-t! border-slate-200! p-0! pt-2! shadow-none! lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
               : 'gap-3'
           }`}
           data-testid="pay-details"
@@ -2996,7 +2996,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Card>
 
         <Card
-          className={`flex flex-col ${touch ? 'order-3 shrink-0 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'gap-3'}`}
+          className={`flex flex-col ${touch ? 'order-1 shrink-0 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'gap-3'}`}
           data-testid="pay-top"
         >
           {touch ? (
