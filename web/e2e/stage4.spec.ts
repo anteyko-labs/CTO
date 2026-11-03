@@ -163,6 +163,55 @@ test('кабинет юрлица: вход по ИНН, смена пароля
   await expect(page.getByText(/клиент сменил пароль/)).toBeVisible()
 })
 
+test('кабинет поставщика: вход по ИНН, накладные с оплатой, файл и акт сверки', async ({ page, browser }) => {
+  await login(page)
+  const inn = `8${RUN}54321`
+  const name = `ОсОО Поставщик ${RUN}`
+  const sup = await apiPost<{ id: string }>(page.request, '/suppliers', { name, kind: 'company', inn })
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Кабинет ${RUN}`, kind: 'other' })
+  const item = await apiPost<{ id: string }>(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name: `Щётка ${RUN}`, sale_price_tyiyn: 50_000 })
+  await apiPost(page.request, '/receipts', {
+    op_id: crypto.randomUUID(),
+    supplier_id: sup.id,
+    payment: 'debt',
+    supplier_doc: `К-${RUN}`,
+    lines: [{ product_id: item.id, qty: 3, cost_tyiyn: 300_000 }],
+  })
+
+  // Владелец видит блок кабинета в карточке поставщика.
+  await page.goto(`/suppliers/${sup.id}`)
+  await expect(page.getByTestId('cabinet-box')).toContainText('Кабинет поставщика')
+
+  const ctx = await browser.newContext()
+  const cab = await ctx.newPage()
+  await cab.goto('/cabinet')
+  await cab.getByLabel('ИНН организации').fill(inn)
+  await cab.getByLabel(/^Пароль/).fill('avtodom2026')
+  await cab.getByRole('button', { name: 'Войти' }).click()
+  await expect(cab.getByText('Это первый вход')).toBeVisible()
+  const pass = cab.locator('input[type=password]')
+  await pass.nth(0).fill('avtodom2026')
+  await pass.nth(1).fill('snab-secret-9')
+  await pass.nth(2).fill('snab-secret-9')
+  await cab.getByRole('button', { name: 'Сменить пароль' }).click()
+  await expect(cab.getByText(name)).toBeVisible()
+  await expect(cab.getByTestId('supplier-summary')).toContainText('Мы должны вам')
+  await expect(cab.getByTestId('supplier-summary')).toContainText(/3\s000\sс/)
+  const inv = cab.getByTestId('supplier-invoice').first()
+  await expect(inv).toContainText(`№ К-${RUN}`)
+  await expect(inv).toContainText('не оплачена')
+  // Файл к своей накладной.
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005000201a5c3f1d50000000049454e44ae426082', 'hex')
+  await inv.getByTestId('attach-input').setInputFiles({ name: 'scan.png', mimeType: 'image/png', buffer: png })
+  await expect(inv.getByRole('link', { name: /ваш/ })).toBeVisible()
+  for (const tab of ['Деньги', 'Возвраты']) await cab.getByRole('button', { name: tab }).click()
+  await cab.getByRole('button', { name: 'Акт сверки' }).click()
+  await expect(cab.getByText(/Сальдо/).first()).toBeVisible()
+  // Разделов клиента нет.
+  await expect(cab.getByRole('button', { name: 'Покупки' })).toHaveCount(0)
+  await ctx.close()
+})
+
 test('аккумуляторы на вес: приём из кассы и продажа не дешевле средней', async ({ page }) => {
   await login(page)
   const cashier = `Кассир АКБ ${RUN}`

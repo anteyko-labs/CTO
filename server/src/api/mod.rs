@@ -61,6 +61,7 @@ pub mod sales;
 pub mod shift_report;
 pub mod spending;
 pub mod stock_in;
+pub mod supplier_cabinet;
 pub mod supplier_debts;
 pub mod supplier_line_map;
 pub mod supplier_returns;
@@ -83,6 +84,7 @@ pub fn routes() -> Router<AppState> {
         .merge(bot_feed::routes())
         .merge(branches::routes())
         .merge(cabinet::routes())
+        .merge(supplier_cabinet::routes())
         .merge(cancelled_lines::routes())
         .merge(cash::routes())
         .merge(cashier_settings::routes())

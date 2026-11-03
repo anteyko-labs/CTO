@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into client_messages (id, branch_id, party_id, kind, test, channel, recipient,\n                                                text, template, language, params, status, error)\n                   values ($1, $2, $3, 'invoice', false, $4, $5, $6, '', '', '[]', $7, $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "49326c08c6693342e0c32d060a78fefb2a48ace8335dae78a006feeb360768c6"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select b.id, b.name from branches b\n           where exists (select 1 from party_ledger l where l.party_id = $1 and l.branch_id = b.id)\n              or b.id = (select branch_id from parties where id = $1)\n           order by b.is_main desc, b.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "37bb9f148236288b185cb8e57cef41f8e6278c3dc922170828c21ef45a7c9304"
+}

@@ -2023,6 +2023,7 @@ pub async fn pass(conn: &mut PgConnection, ch: &Channels, hour: u32, oil: bool) 
         return Ok(());
     }
     plan_purchases(conn, ch).await?;
+    crate::api::supplier_cabinet::plan_invoices(conn, ch).await?;
     plan_payments(conn, ch).await?;
     plan_monthly(conn, ch, hour).await?;
     if oil {

@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select dr.created_at, dr.kind, d.number, p.name, d.qty, p.unit, p.container_ml as \"container_ml?\",\n                  (dr.replace_tyiyn + dr.refund_tyiyn)::bigint as \"amount!\",\n                  case when (select count(*) from branches) > 1 then b.name else '' end as \"branch_name!\",\n                  exists (select 1 from defect_resolutions x where x.reversal_of = dr.id) as \"reversed!\"\n           from defect_resolutions dr\n           join defects d on d.id = dr.defect_id\n           join products p on p.id = d.product_id\n           join branches b on b.id = dr.branch_id\n           where dr.supplier_id = $1 and dr.reversal_of is null and dr.kind <> 'write_off'\n             and (dr.created_at at time zone 'Asia/Bishkek')::date >= $2\n             and (dr.created_at at time zone 'Asia/Bishkek')::date <= coalesce($3, (now() at time zone 'Asia/Bishkek')::date)\n           order by dr.created_at desc limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "container_ml?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "branch_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "654b471157fb216d906dd061961a7703cb3877073557098dca399ef0dfd69d94"
+}

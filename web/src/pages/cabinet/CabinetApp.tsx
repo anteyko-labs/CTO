@@ -1,5 +1,6 @@
 // Кабинет юрлица: вход по ИНН, смена начального пароля, покупки, работники, долг, акт сверки
-// (SPEC-12, ADR-049). Только просмотр — ничего не проводится.
+// (SPEC-12, ADR-049). Только просмотр — ничего не проводится. Тот же вход у поставщика — его
+// разделы в `SupplierCabinet.tsx` (задача 028).
 import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Table, Toaster, toast } from '../../components/ui'
 import { ApiError, get, post, qs } from '../../lib/api'
@@ -12,8 +13,12 @@ import { BLANK, type ActPeriod, type Seller } from '../../lib/debtDocs'
 import { ReconciliationView } from '../../components/ReconciliationButton'
 import { formatDateTime, formatSom, todayBishkek } from '../../lib/format'
 import { useAction, useLoad } from '../../lib/hooks'
+import { SUPPLIER_TABS, SupplierHeader, SupplierTabBody, type SupplierSummary, type SupplierTab } from './SupplierCabinet'
 
 interface Me {
+  /** `supplier` — кабинет поставщика (задача 028). */
+  role?: 'customer' | 'supplier'
+  supplier?: SupplierSummary | null
   name: string
   inn: string
   phone: string
@@ -46,8 +51,8 @@ function LoginForm({ onDone }: { onDone: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
       <Card className="flex w-full max-w-sm flex-col gap-3">
-        <h1 className="text-lg font-semibold">Кабинет клиента Avtodom</h1>
-        <p className="text-sm text-slate-600">Для организаций: покупки ваших работников, долг и акт сверки.</p>
+        <h1 className="text-lg font-semibold">Кабинет Avtodom</h1>
+        <p className="text-sm text-slate-600">Для организаций: клиентам — покупки работников, долг и акт сверки; поставщикам — накладные, оплаты и акт сверки.</p>
         <form
           className="flex flex-col gap-3"
           onSubmit={(e) => {
@@ -280,9 +285,11 @@ export default function CabinetApp() {
     [],
   )
   const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act' | 'messages'>('sales')
+  const [stab, setStab] = useState<SupplierTab>('invoices')
+  const supplier = me.data?.role === 'supplier'
   useEffect(() => {
-    document.title = 'Кабинет клиента — Avtodom'
-  }, [])
+    document.title = supplier ? 'Кабинет поставщика — Avtodom' : 'Кабинет клиента — Avtodom'
+  }, [supplier])
 
   if (me.loading && me.data === null && !me.error) return <Loading />
   if (me.error) return <ErrorBox error={me.error} />
@@ -313,6 +320,24 @@ export default function CabinetApp() {
           </button>
         </div>
       </header>
+      {supplier ? (
+        <main className="mx-auto flex max-w-4xl flex-col gap-4 p-4">
+          <SupplierHeader s={m.supplier} />
+          <div className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-sm sm:grid-cols-4">
+            {SUPPLIER_TABS.map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                className={`min-h-[42px] px-3 py-2 ${stab === k ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                onClick={() => setStab(k)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {stab === 'act' ? <Act me={m} /> : <SupplierTabBody tab={stab} />}
+        </main>
+      ) : (
       <main className="mx-auto flex max-w-4xl flex-col gap-4 p-4">
         <Card className="flex flex-wrap gap-x-8 gap-y-2">
           <div>
@@ -373,6 +398,7 @@ export default function CabinetApp() {
         {tab === 'act' && <Act me={m} />}
         {tab === 'messages' && <Messages />}
       </main>
+      )}
       <Toaster />
     </div>
   )
