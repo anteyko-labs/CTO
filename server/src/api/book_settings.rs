@@ -35,6 +35,9 @@ pub struct OilBookSettings {
     pub auto_book: bool,
     /// После чека «В сервис» касса сама печатает и товарный чек (раньше — только кнопкой).
     pub auto_receipt: bool,
+    /// После любого чека (на вынос, в сервис, без сети) касса сама печатает товарный чек
+    /// (задача 023); по умолчанию — нет.
+    pub auto_receipt_all: bool,
     /// Блок «Масляная книжка» в товарном чеке (ADR-116).
     pub receipt_block: bool,
     /// В чеке книжки и в блоке — ещё фильтры (масляный, воздушный, салонный, топливный); по
@@ -59,6 +62,7 @@ impl Default for OilBookSettings {
         Self {
             auto_book: true,
             auto_receipt: false,
+            auto_receipt_all: false,
             receipt_block: true,
             with_filters: true,
             print_filters_only: false,

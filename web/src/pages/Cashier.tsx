@@ -55,7 +55,7 @@ import {
 } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook, saleCheckOf, saleRecordOf } from '../lib/oilBookPrint'
-import { loadOilBookSettings, OIL_BOOK_DEFAULTS, type OilBookSettings } from '../lib/oilBookSettings'
+import { loadOilBookSettings, OIL_BOOK_DEFAULTS, shouldAutoReceipt, type OilBookSettings } from '../lib/oilBookSettings'
 import { ServicePicker } from '../components/ServicePicker'
 import { PersonPick } from '../components/PersonPick'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -1470,6 +1470,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       void takeFromSnapshot(lines.filter((l) => l.product).map((l) => ({ product_id: l.product?.id ?? '', units: lineUnits(l) })))
       const offlineSale = queued.receipt ?? receipt(queued.temp_no)
       setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
+      // Чек без сети — тоже сам, с временным номером (задача 023, ответ заказчика).
+      if (prefs.auto_receipt_all) printSale(offlineSale, payMode === 'cash' ? change : null, { bookBlock: prefs.receipt_block, discount: cs.print_discount })
       if (parkedId) dropParked(parkedId)
       setParkedId(null)
       reset()
@@ -1481,11 +1483,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setDone({ sale, change: saleChange })
     // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
     const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
-    // Товарный чек сам — по настройке «Масляная книжка и печать» (по умолчанию нет).
-    // Чек, проведённый сам по оплате QR (задача 008), печатается всегда — кассир его не пробивал.
-    const auto = autoPrint.current
+    // Товарный чек сам — по настройкам «Масляная книжка и печать» (по умолчанию нет; задача 023 —
+    // после любого чека). Чек, проведённый сам по оплате QR (задача 008), печатается всегда.
+    const byQr = autoPrint.current
     autoPrint.current = false
-    if ((bookVehicle && prefs.auto_receipt) || auto) printSale(sale, saleChange, { bookBlock: prefs.receipt_block, discount: cs.print_discount })
+    if (shouldAutoReceipt(prefs, { serviceWithVehicle: bookVehicle !== null, byQr })) printSale(sale, saleChange, { bookBlock: prefs.receipt_block, discount: cs.print_discount })
     if (bookVehicle) {
       const client = party?.name ?? null
       void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
