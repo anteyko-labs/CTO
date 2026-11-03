@@ -2878,9 +2878,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
       {/* В режиме кассы мастер, вид замены, клиент и редкое — сверху колонки в своей прокрутке; тип чека,
           «Итого» и оплата закреплены под ними, «Провести чек» — в самом низу. Колонка помещается в экран. */}
-      <div className={`flex flex-col ${touch ? 'gap-3 lg:min-h-0' : 'gap-4 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:self-start'}`}>
+      <div className={`flex flex-col ${touch ? 'gap-3 lg:min-h-0' : 'gap-4'}`}>
         <div
-          className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-hidden' : 'gap-4 lg:min-h-0 lg:flex-1'}`}
+          className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-hidden' : 'gap-4'}`}
           data-testid="pay-column"
         >
         {/* Режим кассы: QR банка — во всю правую колонку, «Провести чек» остаётся внизу. */}
@@ -2899,7 +2899,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           className={`flex flex-col ${
             touch
               ? 'order-2 gap-2.5 rounded-none! border-0! border-b! border-slate-200! p-0! pb-2! shadow-none! lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
-              : 'gap-3 lg:min-h-0 lg:shrink lg:overflow-y-auto lg:overscroll-contain'
+              : 'gap-3'
           }`}
           data-testid="pay-details"
         >
@@ -2996,7 +2996,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Card>
 
         <Card
-          className={`flex flex-col ${touch ? 'order-3 shrink-0 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'shrink-0 gap-3'}`}
+          className={`flex flex-col ${touch ? 'order-3 shrink-0 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'gap-3'}`}
           data-testid="pay-top"
         >
           {touch ? (
