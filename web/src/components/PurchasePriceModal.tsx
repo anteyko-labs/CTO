@@ -11,10 +11,12 @@ import { Button, ErrorBox, Modal, toast } from './ui'
 
 export function PurchasePriceModal({
   product,
+  fix = false,
   onClose,
   onDone,
 }: {
   product: Product
+  fix?: boolean
   onClose: () => void
   onDone: () => void
 }) {
@@ -30,8 +32,8 @@ export function PurchasePriceModal({
       return
     }
     void act.run(async () => {
-      const r = await post<{ lines: number; accrued_tyiyn: number }>(`/stock/${product.id}/purchase-price`, { op_id: opId, price_tyiyn: price })
-      toast(`Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}`)
+      const r = await post<{ lines: number; accrued_tyiyn: number }>(`/stock/${product.id}/purchase-price`, { op_id: opId, price_tyiyn: price, fix })
+      toast(fix ? 'Цена закупки исправлена, остаток переоценён' : `Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}`)
       onDone()
     })
   }
@@ -39,7 +41,9 @@ export function PurchasePriceModal({
     <Modal title={`Цена закупки · ${product.name}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="text-sm text-slate-600">
-          {product.cost_pending
+          {fix
+            ? 'Исправить ошибочную цену закупки: последняя закупка станет этой ценой, а весь текущий остаток переоценится по ней. Проданное раньше не меняется.'
+            : product.cost_pending
             ? 'Товар продали без цены закупки: себестоимость этих строк неизвестна, и 2 % кассиру с них ещё не начислены. Укажите, почём товар закупается, — процент начислится сегодня, прошлые дни не изменятся.'
             : 'Почём товар закупается: по этой цене пойдёт продажа без остатка, а остаток без цены (излишек ревизии) оценится по ней. Цену прихода она не меняет.'}
         </p>

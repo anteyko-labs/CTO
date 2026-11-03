@@ -1568,6 +1568,9 @@ pub struct PurchasePriceReq {
     pub op_id: Uuid,
     /// Цена закупки за штуку, за канистру (масло) или за килограмм (на вес).
     pub price_tyiyn: i64,
+    /// Исправить ошибочную цену: последняя закупка и весь остаток переоцениваются по ней.
+    #[serde(default)]
+    pub fix: bool,
 }
 
 /// Владелец указывает цену закупки товара, проданного без неё (ADR-062): строки чеков получают
@@ -1632,10 +1635,23 @@ pub async fn purchase_price_tx(
     )
     .execute(&mut *conn)
     .await?;
+    if req.fix {
+        sqlx::query(
+            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4
+             where branch_id = $1 and product_id = $2",
+        )
+        .bind(branch_id)
+        .bind(product_id)
+        .bind(per)
+        .bind(req.price_tyiyn)
+        .execute(&mut *conn)
+        .await?;
+    }
     // Остаток без стоимости (излишек ревизии, начальный остаток без закупки) получает цену
     // владельца: переоценка входит в себестоимость дня, как ADR-044 (ADR-128).
+    // Исправление ошибочной цены переоценивает весь остаток.
     let pool = ops::lock_pool(&mut *conn, branch_id, product_id).await?;
-    let revalued = if pool.qty > 0 && pool.value <= 0 {
+    let revalued = if pool.qty > 0 && (pool.value <= 0 || req.fix) {
         let target = crate::domain::money::div_round(
             i128::from(pool.qty) * i128::from(req.price_tyiyn),
             i128::from(per),
@@ -1681,6 +1697,7 @@ pub async fn purchase_price_tx(
             "lines": out.lines,
             "accrued_tyiyn": out.accrued_tyiyn,
             "revalued_tyiyn": revalued,
+            "fix": req.fix,
         }),
     )
     .await?;

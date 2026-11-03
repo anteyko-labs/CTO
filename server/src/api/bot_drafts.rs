@@ -1889,6 +1889,7 @@ async fn goods(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                 req: PurchasePriceReq {
                     op_id,
                     price_tyiyn: price,
+                    fix: false,
                 },
             },
             kind: "purchase_price",

@@ -71,14 +71,15 @@ export function ProductCostBlock({ productId }: { productId: string }) {
         <span className="text-slate-500">Последний приход: </span>
         {lastLine}
       </div>
-      {owner && s.askPrice && !p.archived && (
+      {owner && !p.archived && (
         <Button variant="secondary" className="mt-2 px-2 py-1 text-xs" onClick={() => setPricing(true)}>
-          Указать цену закупки
+          {s.askPrice ? 'Указать цену закупки' : 'Исправить цену закупки'}
         </Button>
       )}
       {pricing && (
         <PurchasePriceModal
           product={p}
+          fix={!s.askPrice}
           onClose={() => setPricing(false)}
           onDone={() => {
             setPricing(false)
