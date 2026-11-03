@@ -73,7 +73,16 @@ export function Field({
  * Чего не хватает для проведения. Показывается рядом с главной кнопкой,
  * пункт можно нажать — фокус перейдёт на поле.
  */
-export function Missing({ items, className = '' }: { items: (string | { label: string; focus?: string })[]; className?: string }) {
+export function Missing({
+  items,
+  className = '',
+  onGo = focusField,
+}: {
+  items: (string | { label: string; focus?: string })[]
+  className?: string
+  /** Переход к полю; касса закрывает окно оплаты, если поле за ним (задача 026). */
+  onGo?: (focus: string) => void
+}) {
   if (items.length === 0) return null
   const list = items.map((it) => (typeof it === 'string' ? { label: it, focus: undefined } : it))
   return (
@@ -83,7 +92,7 @@ export function Missing({ items, className = '' }: { items: (string | { label: s
         <span key={it.label}>
           {i > 0 && ', '}
           {it.focus ? (
-            <button type="button" className="underline decoration-dotted hover:text-amber-900" onClick={() => focusField(it.focus as string)}>
+            <button type="button" className="underline decoration-dotted hover:text-amber-900" onClick={() => onGo(it.focus as string)}>
               {it.label}
             </button>
           ) : (
@@ -266,8 +275,15 @@ export function Modal({
   /** Большое окно: на компьютере почти во всю ширину, на телефоне — весь экран (SPEC-28 §3). */
   full?: boolean
 }) {
+  const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    // Esc закрывает только верхнее окно: два окна друг над другом («Вид замены» над «Оплатой»).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const all = document.querySelectorAll('[role="dialog"]')
+      if (box.current && all.length > 0 && all[all.length - 1] !== box.current) return
+      onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -277,6 +293,7 @@ export function Modal({
       onMouseDown={onClose}
     >
       <div
+        ref={box}
         role="dialog"
         aria-modal="true"
         aria-label={title}

@@ -2281,7 +2281,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </button>
         )
       ) : (
-        <Missing items={blockers} />
+        <Missing items={blockers} onGo={goToMissing} />
       )}
       <Button
         className={touch ? 'min-h-[76px]! w-full flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!' : 'min-h-14! py-3 text-lg!'}
@@ -2887,7 +2887,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </div>
           )}
           {!touch && (
-            <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-base">
+            <div className="grid shrink-0 grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-base">
               {(['takeaway', 'service'] as const).map((t) => (
                 <button
                   key={t}
@@ -2997,6 +2997,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </div>
         {payOpen && (
         <Modal title="Оплата" wide onClose={() => setPayOpen(false)}>
+        {/* Окно — часть кассы: скан в нём идёт в поиск товара, а не в «Получено» (scanner.ts). */}
+        <div data-scan-screen hidden />
         {bankQr.qr && bankQr.qr.status !== 'paid' && (
           <BankQrPanel
             qr={bankQr.qr}
@@ -3504,6 +3506,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 onClick={() => {
                   setOilAsked(true)
                   setOilQuestion(false)
+                  // Замене нужны вид, мастер и машина — поля колонки, окно оплаты их закрывало бы.
+                  setPayOpen(false)
                   changeType('service')
                   toast('Замена масла: выберите вид замены, мастера, клиента и машину')
                 }}

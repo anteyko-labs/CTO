@@ -36,6 +36,10 @@ export interface KeyFacts {
   dialog: DialogPlace
   /** У экрана (или у открытого окна) есть поле поиска товара. */
   picker: boolean
+  /** Окно — часть экрана кассы (окно «Оплата», задача 026, `data-scan-screen`): скан в нём идёт в
+   *  поиск товара экрана, как без окна, — иначе код в «Получено» становился суммой и Enter проводил
+   *  чек. */
+  screenScan?: boolean
 }
 
 export type KeyRoute =
@@ -63,7 +67,8 @@ export const isTyped = (key: string): boolean => key.length === 1 && key !== ' '
 export function routeKey(f: KeyFacts): KeyRoute {
   if (!f.trusted || f.modified || f.composing || f.focus === 'picker') return 'pass'
   const typed = isTyped(f.key)
-  if (f.focus === 'input' && f.dialog !== 'inside' && typed && !f.repeat) return 'hold'
+  const ownDialog = f.dialog === 'inside' && !f.screenScan
+  if (f.focus === 'input' && !ownDialog && typed && !f.repeat) return 'hold'
   if (f.dialog === 'outside') return f.key === 'Enter' || f.key === ' ' ? 'block' : 'pass'
   if (!typed) return 'pass'
   if (f.focus === 'control') return f.picker ? 'picker' : 'blur'
@@ -187,7 +192,10 @@ export function useScanToPicker(touch = false): void {
       const active = document.activeElement
       // Придержанное — только для поля, в котором набирали; сочетание клавиш (Ctrl+Enter) — не скан.
       if (held && (held.field !== active || !e.isTrusted || e.ctrlKey || e.metaKey || e.altKey)) release()
-      const dialog = topDialog()
+      const top = topDialog()
+      // Окно «Оплата» — часть экрана: поиск товара — экрана, скан — как без окна.
+      const screenScan = top !== null && top.contains(active) && top.querySelector('[data-scan-screen]') !== null
+      const dialog = screenScan ? null : top
       const route = routeKey({
         key: e.key,
         trusted: e.isTrusted,
@@ -195,8 +203,9 @@ export function useScanToPicker(touch = false): void {
         composing: e.isComposing,
         repeat: e.repeat,
         focus: touch && active instanceof HTMLSelectElement ? 'control' : focusKind(active),
-        dialog: dialog === null ? 'none' : dialog.contains(active) ? 'inside' : 'outside',
+        dialog: top === null ? 'none' : top.contains(active) ? 'inside' : 'outside',
         picker: scopePicker(dialog) !== null,
+        screenScan,
       })
       if (held || route === 'hold') {
         const field = active as Field

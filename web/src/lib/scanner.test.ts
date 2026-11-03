@@ -105,3 +105,14 @@ describe('скан в строку ввода', () => {
     expect(holdStep(null, 'Tab', t + 5, false)).toEqual({ kind: 'pass', release: '' })
   })
 })
+
+describe('окно «Оплата» — часть экрана кассы (задача 026)', () => {
+  const base = { trusted: true, modified: false, composing: false, repeat: false, picker: true }
+  it('знак в «Получено» в окне оплаты придерживается как возможный скан, в своём окне — нет', () => {
+    expect(routeKey({ ...base, key: '4', focus: 'input', dialog: 'inside', screenScan: true })).toBe('hold')
+    expect(routeKey({ ...base, key: '4', focus: 'input', dialog: 'inside' })).toBe('pass')
+  })
+  it('знак на кнопке способа оплаты — в поиск товара экрана', () => {
+    expect(routeKey({ ...base, key: '4', focus: 'control', dialog: 'inside', screenScan: true })).toBe('picker')
+  })
+})
