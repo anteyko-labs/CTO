@@ -1264,11 +1264,17 @@ pub(crate) struct ReceiptListItem {
     pub(crate) goods: String,
     /// Фото накладной (действующих, ADR-080); у оприходования — 0.
     pub(crate) files: i64,
+    /// Приём аккумуляторов (задача 025): вес в граммах (возврат чека — меньше нуля); у
+    /// накладных и оприходований — null.
+    pub(crate) grams: Option<i64>,
+    /// Цена приёма за кг; у аккумулятора в оплату чека и у накладных — null.
+    pub(crate) price_per_kg_tyiyn: Option<i64>,
 }
 
-/// Что показывать на экране «Приход» (ADR-086): `all` — приходы и оприходования вместе,
-/// `receipt` — только от поставщиков, `stock_in` — только оприходования. Без отбора — только
-/// приходы, как раньше (карточка поставщика, бот).
+/// Что показывать на экране «Приход» (ADR-086): `all` — приходы, оприходования и приём
+/// аккумуляторов вместе, `receipt` — только от поставщиков, `stock_in` — только оприходования,
+/// `battery` — только приём аккумуляторов (задача 025). Без отбора — только приходы, как раньше
+/// (карточка поставщика, бот).
 #[derive(Deserialize, Default)]
 pub struct KindQuery {
     pub kind: Option<String>,
@@ -1281,11 +1287,13 @@ async fn list_receipts(
     Query(k): Query<KindQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Paged<ReceiptListItem>> {
-    let (receipts, stock_ins) = match k.kind.as_deref() {
-        None | Some("receipt") => (true, false),
-        Some("all") => (true, q.supplier_id.is_none()),
-        Some("stock_in") => (false, q.supplier_id.is_none()),
-        Some(_) => return Err(invalid("вид: all, receipt или stock_in")),
+    let own = q.supplier_id.is_none();
+    let (receipts, stock_ins, batteries) = match k.kind.as_deref() {
+        None | Some("receipt") => (true, false, false),
+        Some("all") => (true, own, own),
+        Some("stock_in") => (false, own, false),
+        Some("battery") => (false, false, own),
+        Some(_) => return Err(invalid("вид: all, receipt, stock_in или battery")),
     };
     let mut conn = state.pool.acquire().await?;
     // Накладные — по праву «Приход товара», оприходования — «Оприходование» (как пункты меню,
@@ -1294,7 +1302,8 @@ async fn list_receipts(
     let may_stock_in = crate::auth::has_permission(&mut conn, &user, "stock_in").await?;
     let missing = match k.kind.as_deref() {
         Some("stock_in") => (!may_stock_in).then_some("stock_in"),
-        Some("all") => (!may_receipts && !may_stock_in).then_some("receipts"),
+        // Приём аккумуляторов видит тот, кто видит «Приход» (задача 025).
+        Some("all") | Some("battery") => (!may_receipts && !may_stock_in).then_some("receipts"),
         _ => (!may_receipts).then_some("receipts"),
     };
     if let Some(p) = missing {
@@ -1302,8 +1311,9 @@ async fn list_receipts(
     }
     let (receipts, stock_ins) = (receipts && may_receipts, stock_ins && may_stock_in);
     let mut rows = Vec::new();
-    // Фото бывают только у накладных поставщика: с отбором «с фото» оприходований нет.
+    // Фото бывают только у накладных поставщика: с отбором «с фото» оприходований и приёмов нет.
     let stock_ins = stock_ins && !q.photo;
+    let batteries = batteries && !q.photo;
     let (text, amount) = search_of(q.q.as_deref());
     let needle = q.q.as_deref().map(|t| t.trim().to_lowercase());
     if stock_ins {
@@ -1347,8 +1357,19 @@ async fn list_receipts(
                 debt_left_tyiyn: 0,
                 comment: d.comment,
                 files: 0,
+                grams: None,
+                price_per_kg_tyiyn: None,
             }
         }));
+    }
+    if batteries {
+        let search = crate::api::batteries::Search {
+            from: q.from,
+            to: q.to,
+            text: text.as_deref(),
+            amount,
+        };
+        rows.extend(crate::api::batteries::receipt_rows(&mut conn, user.branch_id, search).await?);
     }
     if receipts {
         rows.extend(receipts_data(&mut conn, &user, q).await?);
@@ -1382,7 +1403,8 @@ pub(crate) async fn receipts_data(
                               and supplier_ledger_live(l)), 0)::bigint as "debt_left_tyiyn!",
                   r.comment, '' as "goods!",
                   (select count(*) from receipt_files f
-                   where f.receipt_id = r.id and f.hidden_at is null) as "files!"
+                   where f.receipt_id = r.id and f.hidden_at is null) as "files!",
+                  null::bigint as "grams?", null::bigint as "price_per_kg_tyiyn?"
            from receipts r
            join users u on u.id = r.user_id
            left join suppliers s on s.id = r.supplier_id

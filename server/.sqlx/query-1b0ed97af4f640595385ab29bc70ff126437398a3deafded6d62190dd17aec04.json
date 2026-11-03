@@ -1,0 +1,123 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select 'battery_tradein' as \"kind!\", s.id, s.number, null::text as \"supplier_name?\",\n                  '' as \"supplier_doc!\", sum(m.value_delta_tyiyn)::bigint as \"total_tyiyn!\",\n                  null::uuid as \"reversal_of?\", false as \"reversed!\",\n                  u.full_name as user_name, min(m.created_at) as \"created_at!\",\n                  0::bigint as \"on_debt_tyiyn!\", 0::bigint as \"debt_left_tyiyn!\", '' as \"comment!\",\n                  '' as \"goods!\", 0::bigint as \"files!\",\n                  sum(m.qty_delta)::bigint as \"grams?\", null::bigint as \"price_per_kg_tyiyn?\"\n           from stock_movements m\n           join sales s on s.id = m.doc_id\n           join users u on u.id = s.user_id\n           where m.branch_id = $1 and m.doc_type in ('battery_tradein', 'battery_tradein_return')\n             and ($2::date is null or m.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($3::date is null or m.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           group by s.id, s.number, u.full_name\n           having $4::text is null or abs(sum(m.value_delta_tyiyn))::bigint = $5::bigint or s.number::text = $4\n                  or 'аккумулятор в оплату чека' ilike '%' || $4 || '%'\n           order by min(m.created_at) desc\n           limit $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "supplier_doc!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "total_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversal_of?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "on_debt_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "debt_left_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "comment!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "goods!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "files!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "grams?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "price_per_kg_tyiyn?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1b0ed97af4f640595385ab29bc70ff126437398a3deafded6d62190dd17aec04"
+}

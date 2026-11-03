@@ -1,0 +1,123 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select 'battery_intake' as \"kind!\", i.id, i.number, null::text as \"supplier_name?\",\n                  '' as \"supplier_doc!\", i.amount_tyiyn as total_tyiyn, null::uuid as \"reversal_of?\",\n                  exists (select 1 from battery_intake_reversals r where r.intake_id = i.id) as \"reversed!\",\n                  u.full_name as user_name, i.created_at,\n                  0::bigint as \"on_debt_tyiyn!\", 0::bigint as \"debt_left_tyiyn!\", i.comment,\n                  '' as \"goods!\", 0::bigint as \"files!\",\n                  i.grams as \"grams?\", i.price_per_kg_tyiyn as \"price_per_kg_tyiyn?\"\n           from battery_intakes i join users u on u.id = i.user_id\n           where i.branch_id = $1\n             and ($2::date is null or i.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($3::date is null or i.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::text is null or i.comment ilike '%' || $4 || '%' or i.amount_tyiyn = $5\n                  or 'приём аккумуляторов' ilike '%' || $4 || '%')\n           order by i.created_at desc\n           limit $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "supplier_doc!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversal_of?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "on_debt_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "debt_left_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "goods!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "files!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "grams?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "price_per_kg_tyiyn?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      null,
+      null,
+      false,
+      null,
+      null,
+      false,
+      false,
+      null,
+      null,
+      false,
+      null,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "1ca7a6d129711db79e17dde2511e26786fecf1304452168c24e3cc160282106e"
+}

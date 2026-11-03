@@ -435,8 +435,9 @@ export interface TopProducts {
 }
 
 export interface ReceiptListItem {
-  /** `receipt` — от поставщика, `stock_in` — оприходование (ADR-086). */
-  kind?: 'receipt' | 'stock_in'
+  /** `receipt` — от поставщика, `stock_in` — оприходование (ADR-086); `battery_intake` — приём
+   *  аккумуляторов за наличные, `battery_tradein` — аккумулятор в оплату чека (id и № — чека; задача 025). */
+  kind?: 'receipt' | 'stock_in' | 'battery_intake' | 'battery_tradein'
   id: string
   number: number
   supplier_name: string | null
@@ -455,6 +456,26 @@ export interface ReceiptListItem {
   goods?: string
   /** Фото накладной (задача 002, П6); у оприходования — 0. */
   files: number
+  /** Вес аккумуляторов в граммах (возврат чека — меньше нуля); у накладных — null. */
+  grams?: number | null
+  /** Цена приёма за кг; у аккумулятора в оплату чека — null. */
+  price_per_kg_tyiyn?: number | null
+}
+
+/** Карточка приёма аккумуляторов (`GET /batteries/intakes/{id}`, задача 025). */
+export interface BatteryIntakeCard {
+  id: string
+  number: number
+  grams: number
+  price_per_kg_tyiyn: number
+  amount_tyiyn: number
+  comment: string
+  user_name: string
+  account_name: string
+  created_at: string
+  reversed_at: string | null
+  reversed_by: string | null
+  reverse_comment: string | null
 }
 
 export interface StockMismatch {

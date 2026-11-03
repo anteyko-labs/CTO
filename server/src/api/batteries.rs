@@ -2,13 +2,15 @@
 
 use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::cash::{self, CashEntry};
+use crate::api::paging::MAX_ROWS;
+use crate::api::receipts::ReceiptListItem;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid};
@@ -20,6 +22,7 @@ pub fn routes() -> Router<AppState> {
         .route("/batteries", routing::get(info))
         .route("/batteries/intake", routing::post(intake))
         .route("/batteries/intakes", routing::get(list_intakes))
+        .route("/batteries/intakes/{id}", routing::get(intake_card))
         .route(
             "/batteries/intakes/{id}/reverse",
             routing::post(reverse_intake),
@@ -561,4 +564,136 @@ async fn reverse_intake(
     let out = reverse_intake_tx(&mut tx, &ctx, id, req).await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+/// Отбор строк приёма для списка «Приход»: период по дате, поиск — текст для `ilike` (уже
+/// без подстановочных знаков) и сумма в тыйынах.
+pub(crate) struct Search<'a> {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub text: Option<&'a str>,
+    pub amount: Option<i64>,
+}
+
+/// Приём аккумуляторов в списке «Приход» (задача 025): приёмы за наличные из кассы и
+/// аккумуляторы в оплату чека — по движениям склада `battery_tradein` (документ — чек; возврат
+/// чека — `battery_tradein_return`, вес и сумма со знаком минус). «Изменить оплату» лом не
+/// двигает — второй строки нет.
+pub(crate) async fn receipt_rows(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    q: Search<'_>,
+) -> AppResult<Vec<ReceiptListItem>> {
+    let mut rows = sqlx::query_as!(
+        ReceiptListItem,
+        r#"select 'battery_intake' as "kind!", i.id, i.number, null::text as "supplier_name?",
+                  '' as "supplier_doc!", i.amount_tyiyn as total_tyiyn, null::uuid as "reversal_of?",
+                  exists (select 1 from battery_intake_reversals r where r.intake_id = i.id) as "reversed!",
+                  u.full_name as user_name, i.created_at,
+                  0::bigint as "on_debt_tyiyn!", 0::bigint as "debt_left_tyiyn!", i.comment,
+                  '' as "goods!", 0::bigint as "files!",
+                  i.grams as "grams?", i.price_per_kg_tyiyn as "price_per_kg_tyiyn?"
+           from battery_intakes i join users u on u.id = i.user_id
+           where i.branch_id = $1
+             and ($2::date is null or i.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')
+             and ($3::date is null or i.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')
+             and ($4::text is null or i.comment ilike '%' || $4 || '%' or i.amount_tyiyn = $5
+                  or 'приём аккумуляторов' ilike '%' || $4 || '%')
+           order by i.created_at desc
+           limit $6"#,
+        branch_id,
+        q.from,
+        q.to,
+        q.text,
+        q.amount,
+        MAX_ROWS
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let tradeins = sqlx::query_as!(
+        ReceiptListItem,
+        r#"select 'battery_tradein' as "kind!", s.id, s.number, null::text as "supplier_name?",
+                  '' as "supplier_doc!", sum(m.value_delta_tyiyn)::bigint as "total_tyiyn!",
+                  null::uuid as "reversal_of?", false as "reversed!",
+                  u.full_name as user_name, min(m.created_at) as "created_at!",
+                  0::bigint as "on_debt_tyiyn!", 0::bigint as "debt_left_tyiyn!", '' as "comment!",
+                  '' as "goods!", 0::bigint as "files!",
+                  sum(m.qty_delta)::bigint as "grams?", null::bigint as "price_per_kg_tyiyn?"
+           from stock_movements m
+           join sales s on s.id = m.doc_id
+           join users u on u.id = s.user_id
+           where m.branch_id = $1 and m.doc_type in ('battery_tradein', 'battery_tradein_return')
+             and ($2::date is null or m.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')
+             and ($3::date is null or m.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')
+           group by s.id, s.number, u.full_name
+           having $4::text is null or abs(sum(m.value_delta_tyiyn))::bigint = $5::bigint or s.number::text = $4
+                  or 'аккумулятор в оплату чека' ilike '%' || $4 || '%'
+           order by min(m.created_at) desc
+           limit $6"#,
+        branch_id,
+        q.from,
+        q.to,
+        q.text,
+        q.amount,
+        MAX_ROWS
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.extend(tradeins);
+    Ok(rows)
+}
+
+#[derive(Serialize)]
+struct IntakeCard {
+    id: Uuid,
+    number: i64,
+    grams: i64,
+    price_per_kg_tyiyn: i64,
+    amount_tyiyn: i64,
+    comment: String,
+    user_name: String,
+    account_name: String,
+    created_at: DateTime<Utc>,
+    reversed_at: Option<DateTime<Utc>>,
+    reversed_by: Option<String>,
+    reverse_comment: Option<String>,
+}
+
+/// Карточка приёма из списка «Приход» (задача 025): кто видит «Приход» или принимает
+/// аккумуляторы; только свой филиал.
+async fn intake_card(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<IntakeCard>> {
+    let mut conn = state.pool.acquire().await?;
+    let mut allowed = false;
+    for p in ["receipts", "stock_in", "battery_intake"] {
+        if crate::auth::has_permission(&mut conn, &user, p).await? {
+            allowed = true;
+            break;
+        }
+    }
+    if !allowed {
+        crate::auth::require_permission(&mut conn, &user, "receipts").await?;
+    }
+    let card = sqlx::query_as!(
+        IntakeCard,
+        r#"select i.id, i.number, i.grams, i.price_per_kg_tyiyn, i.amount_tyiyn, i.comment,
+                  u.full_name as user_name, a.name as account_name, i.created_at,
+                  r.created_at as "reversed_at?", ru.full_name as "reversed_by?",
+                  r.comment as "reverse_comment?"
+           from battery_intakes i
+           join users u on u.id = i.user_id
+           join cash_accounts a on a.id = i.account_id
+           left join battery_intake_reversals r on r.intake_id = i.id
+           left join users ru on ru.id = r.user_id
+           where i.id = $1 and i.branch_id = $2"#,
+        id,
+        user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(card))
 }
