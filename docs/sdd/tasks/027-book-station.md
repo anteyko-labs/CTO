@@ -22,7 +22,7 @@
   задание в очередь, плашка «Книжка ушла на принтер книжки»; станции нет, нет связи или ошибка —
   печать здесь, как раньше, и плашка «Станция книжки не в сети — печать здесь».
 - Список станции: «что» у книжки — «Книжка <номер машины>».
-- Миграция 0103: `size` у `label_jobs`/`label_stations` — ещё `book`; у задания — `book jsonb`
+- Миграция 0104: `size` у `label_jobs`/`label_stations` — ещё `book`; у задания — `book jsonb`
   (есть ровно у `size = book`).
 - `deploy/windows/install-book-station.ps1` (моноблок): политика `PrintPreviewUseSystemDefaultPrinter=0`;
   профиль кассы помнит POS58, профиль станции книжки — POS80; ярлык кассы — с `--kiosk-printing`,
@@ -32,7 +32,7 @@
 - Выбор принтера из программы. Этикетки склада — без изменений.
 
 ## Затронутые файлы
-- server/migrations/0103_book_station.sql; server/src/api/label_jobs.rs; server/src/api/book_settings.rs
+- server/migrations/0104_book_station.sql; server/src/api/label_jobs.rs; server/src/api/book_settings.rs
 - web/src/lib/labelJob.ts, oilBookPrint.ts, oilBookSettings.ts; web/src/pages/LabelStation.tsx, OilBookSettings.tsx
 - deploy/windows/install-book-station.ps1; docs/tier-4/spec-16-oil-book.md
 
