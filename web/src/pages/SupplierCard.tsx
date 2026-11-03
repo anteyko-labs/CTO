@@ -19,6 +19,7 @@ import { SupplierLineMap } from '../components/SupplierLineMap'
 import { SupplierOldDebtModal } from '../components/SupplierOldDebtModal'
 import { FixButton } from '../components/Correction'
 import { ExportButton } from '../components/ExportButton'
+import { CabinetBox } from './ClientCard'
 import { cappedWarning, colsIf, fetchAllPages, listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 
 /** За что последняя цена: канистра масла, килограмм, метр или штука. */
@@ -171,6 +172,9 @@ export default function SupplierCard() {
           </div>
         )}
       </Card>
+
+      {/* Кабинет поставщика (задача 028): логин — ИНН, пароль сбрасывает владелец. */}
+      {owner && s.kind === 'company' && <CabinetBox partyId={s.id} supplier />}
 
       <div className="-mx-1 flex gap-2 overflow-x-auto px-1" role="tablist">
         {(

@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.created_at, r.settle, r.amount_tyiyn,\n                  case when (select count(*) from branches) > 1 then b.name else '' end as \"branch_name!\",\n                  exists (select 1 from supplier_returns x where x.reversal_of = r.id) as \"reversed!\"\n           from supplier_returns r join branches b on b.id = r.branch_id\n           where r.supplier_id = $1 and r.reversal_of is null\n             and (r.created_at at time zone 'Asia/Bishkek')::date >= $2\n             and (r.created_at at time zone 'Asia/Bishkek')::date <= coalesce($3, (now() at time zone 'Asia/Bishkek')::date)\n           order by r.created_at desc limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "settle",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "branch_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "dc5032e4e58497ed6476ec6b81cea0c9cb6888cf65a7285c85631473456292b5"
+}

@@ -1,5 +1,6 @@
 //! Кабинет юрлица: вход по ИНН, смена пароля при первом входе, просмотр своих покупок,
 //! работников, долга и акта сверки (SPEC-12, ADR-049). Только чтение.
+//! Тот же вход у поставщика-юрлица (задача 028, ADR-188): его разделы — `supplier_cabinet.rs`.
 
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::header::SET_COOKIE;
@@ -49,6 +50,8 @@ pub struct Client {
     pub party_id: Uuid,
     pub branch_id: Uuid,
     pub must_change: bool,
+    /// `customer` — юрлицо-клиент, `supplier` — поставщик (задача 028).
+    pub role: String,
 }
 
 impl FromRequestParts<AppState> for Client {
@@ -60,7 +63,7 @@ impl FromRequestParts<AppState> for Client {
     ) -> Result<Self, Self::Rejection> {
         let token = auth::cookie_value(parts, CLIENT_COOKIE).ok_or(AppError::Unauthorized)?;
         let r = sqlx::query!(
-            r#"select s.party_id, p.branch_id, a.must_change
+            r#"select s.party_id, p.branch_id, a.must_change, p.role
                from client_sessions s
                join parties p on p.id = s.party_id
                join party_accounts a on a.party_id = s.party_id
@@ -74,15 +77,34 @@ impl FromRequestParts<AppState> for Client {
             party_id: r.party_id,
             branch_id: r.branch_id,
             must_change: r.must_change,
+            role: r.role,
         })
     }
 }
 
 impl Client {
     /// Данные — только после смены начального пароля.
-    fn ready(&self) -> AppResult<()> {
+    pub fn ready(&self) -> AppResult<()> {
         if self.must_change {
             return Err(AppError::Validation("сначала смените пароль".into()));
+        }
+        Ok(())
+    }
+
+    /// Разделы клиента (покупки, работники, машины, сообщения) поставщику закрыты.
+    fn customer(&self) -> AppResult<()> {
+        self.ready()?;
+        if self.role != "customer" {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
+    }
+
+    /// Разделы поставщика (накладные, деньги, возвраты, файлы) клиенту закрыты.
+    pub fn supplier(&self) -> AppResult<()> {
+        self.ready()?;
+        if self.role != "supplier" {
+            return Err(AppError::Forbidden);
         }
         Ok(())
     }
@@ -140,8 +162,9 @@ async fn login(
     let party = sqlx::query!(
         r#"select p.id, p.branch_id, p.name, a.password_hash as "hash?", a.must_change as "must_change?"
            from parties p left join party_accounts a on a.party_id = p.id
-           where p.inn = $1 and p.kind = 'company' and p.role = 'customer' and p.active
-           order by p.created_at limit 1"#,
+           where p.inn = $1 and p.kind = 'company' and p.role in ('customer', 'supplier') and p.active
+           -- Один ИНН — один кабинет: если он есть у клиента, вход — клиента (задача 028).
+           order by p.role = 'customer' desc, p.created_at limit 1"#,
         inn
     )
     .fetch_optional(&state.pool)
@@ -295,6 +318,10 @@ async fn change_password(
 
 #[derive(Serialize)]
 struct MeOut {
+    /// `customer` или `supplier` (задача 028): экран показывает разделы своей роли.
+    role: String,
+    /// Поставщику — наш долг и аванс по филиалам и итог; клиенту — пусто.
+    supplier: Option<Value>,
     name: String,
     inn: String,
     phone: String,
@@ -330,7 +357,16 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
         .and_then(|v| v.get("act_period"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let supplier = if client.role == "supplier" && !client.must_change {
+        Some(json!(
+            crate::api::supplier_cabinet::summary(&mut conn, client.party_id).await?
+        ))
+    } else {
+        None
+    };
     Ok(Json(MeOut {
+        role: client.role.clone(),
+        supplier,
         name: p.name,
         inn: p.inn,
         phone: p.phone,
@@ -386,7 +422,7 @@ async fn sales(
     client: Client,
     Query(q): Query<PeriodQuery>,
 ) -> AppResult<Json<Vec<SaleOut>>> {
-    client.ready()?;
+    client.customer()?;
     let mut conn = state.pool.acquire().await?;
     let heads = sqlx::query!(
         r#"select s.id, s.number, s.kind, s.business_date, s.created_at, s.total_tyiyn,
@@ -471,7 +507,7 @@ async fn contacts(
     State(state): State<AppState>,
     client: Client,
 ) -> AppResult<Json<Vec<ContactOut>>> {
-    client.ready()?;
+    client.customer()?;
     let rows = sqlx::query_as!(
         ContactOut,
         r#"select c.full_name, c.phone, c.position,
@@ -492,22 +528,39 @@ async fn contacts(
     Ok(Json(rows))
 }
 
+#[derive(Deserialize)]
+struct ReconQuery {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    /// Поставщику: акт филиала (долг поставщику у каждого филиала свой, SPEC-33 §2); нет — филиал,
+    /// где его завели.
+    branch_id: Option<Uuid>,
+}
+
 async fn reconciliation(
     State(state): State<AppState>,
     client: Client,
-    Query(q): Query<PeriodQuery>,
+    Query(q): Query<ReconQuery>,
 ) -> AppResult<Json<Value>> {
     client.ready()?;
     let mut conn = state.pool.acquire().await?;
-    let act =
-        reconciliation_data(&mut conn, client.branch_id, client.party_id, q.from, q.to).await?;
+    let branch = match q.branch_id {
+        Some(b) if client.role == "supplier" => {
+            sqlx::query_scalar!("select id from branches where id = $1", b)
+                .fetch_optional(&mut *conn)
+                .await?
+                .ok_or(AppError::NotFound)?
+        }
+        _ => client.branch_id,
+    };
+    let act = reconciliation_data(&mut conn, branch, client.party_id, q.from, q.to).await?;
     Ok(Json(json!(act)))
 }
 
 /// Лента «Сообщения»: что точка писала фирме об оплатах и долге (задача 002, П7, П7б) —
 /// последние 50.
 async fn messages(State(state): State<AppState>, client: Client) -> AppResult<Json<Vec<Value>>> {
-    client.ready()?;
+    client.customer()?;
     let mut conn = state.pool.acquire().await?;
     Ok(Json(
         crate::api::client_messages::cabinet_feed(&mut conn, client.party_id, 50).await?,
@@ -516,7 +569,7 @@ async fn messages(State(state): State<AppState>, client: Client) -> AppResult<Js
 
 /// Машины фирмы: когда меняли масло, что залили и когда следующая замена (SPEC-16).
 async fn oil_book(State(state): State<AppState>, client: Client) -> AppResult<Json<Value>> {
-    client.ready()?;
+    client.customer()?;
     let mut conn = state.pool.acquire().await?;
     let mut books = crate::api::oil_book::books(&mut conn, Some(client.party_id), None).await?;
     crate::api::oil_book::hide_deleted_notes(&mut books);
@@ -527,8 +580,12 @@ async fn oil_book(State(state): State<AppState>, client: Client) -> AppResult<Js
 
 #[derive(Serialize)]
 struct CabinetState {
-    /// Кабинет есть у юрлица-клиента с ИНН: ИНН — это логин.
+    /// Кабинет есть у юрлица-клиента или поставщика-юрлица с ИНН: ИНН — это логин.
     available: bool,
+    /// Почему кабинета нет, если ИНН есть (у поставщика — ИНН занят кабинетом клиента).
+    reason: Option<String>,
+    /// «Не присылать сообщения» — о закупах клиенту, о накладных поставщику.
+    no_messages: bool,
     login: String,
     has_account: bool,
     must_change: bool,
@@ -541,7 +598,8 @@ async fn cabinet_state(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<CabinetState>> {
     let r = sqlx::query!(
-        r#"select p.kind, p.role, p.inn, a.must_change as "must_change?", a.last_login_at
+        r#"select p.kind, p.role, p.inn, p.no_purchase_messages, a.must_change as "must_change?",
+                  a.last_login_at
            from parties p left join party_accounts a on a.party_id = p.id
            where p.id = $1"#,
         id
@@ -549,8 +607,12 @@ async fn cabinet_state(
     .fetch_optional(&state.pool)
     .await?
     .ok_or(AppError::NotFound)?;
+    let mut conn = state.pool.acquire().await?;
+    let reason = blocked(&mut conn, id, &r.kind, &r.role, &r.inn).await?;
     Ok(Json(CabinetState {
-        available: r.kind == "company" && r.role == "customer" && !r.inn.trim().is_empty(),
+        available: reason.is_none(),
+        reason: reason.filter(|_| !r.inn.trim().is_empty() && r.kind == "company"),
+        no_messages: r.no_purchase_messages,
         login: r.inn,
         has_account: r.must_change.is_some(),
         must_change: r.must_change.unwrap_or(true),
@@ -572,9 +634,17 @@ async fn cabinet_reset(
         .fetch_optional(&state.pool)
         .await?
         .ok_or(AppError::NotFound)?;
-    if kind.kind != "company" || kind.role != "customer" || kind.inn.trim().is_empty() {
-        return Err(invalid("кабинет есть только у юрлица-клиента с ИНН"));
+    let mut conn = state.pool.acquire().await?;
+    if let Some(why) = blocked(&mut conn, id, &kind.kind, &kind.role, &kind.inn).await? {
+        return Err(
+            if kind.role == "supplier" && kind.kind == "company" && !kind.inn.trim().is_empty() {
+                AppError::Conflict(why)
+            } else {
+                invalid(why)
+            },
+        );
     }
+    drop(conn);
     let hash = hash_password(DEFAULT_PASSWORD.into()).await?;
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
@@ -600,4 +670,32 @@ async fn cabinet_reset(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+const CLIENT_TAKEN: &str = "ИНН занят кабинетом клиента";
+
+/// Почему у контрагента нет кабинета; `None` — кабинет можно выдать. Поставщику — только если ИНН
+/// не занят клиентом-юрлицом: один ИНН — один вход (задача 028).
+async fn blocked(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    kind: &str,
+    role: &str,
+    inn: &str,
+) -> AppResult<Option<String>> {
+    if kind != "company" || inn.trim().is_empty() {
+        return Ok(Some("кабинет есть только у юрлица с ИНН".into()));
+    }
+    if role == "customer" {
+        return Ok(None);
+    }
+    let taken = sqlx::query_scalar!(
+        r#"select exists (select 1 from parties where inn = $1 and kind = 'company'
+                           and role = 'customer' and active and id <> $2) as "taken!""#,
+        inn,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(taken.then(|| CLIENT_TAKEN.to_string()))
 }

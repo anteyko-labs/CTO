@@ -25,6 +25,9 @@ import type { Party, PartyCard, PartyTimelineItem, TopProducts } from '../lib/ty
 
 interface CabinetState {
   available: boolean
+  /** Почему кабинета нет при ИНН: у поставщика — ИНН занят кабинетом клиента (задача 028). */
+  reason?: string | null
+  no_messages?: boolean
   login: string
   has_account: boolean
   must_change: boolean
@@ -68,23 +71,28 @@ function CopyAddress({ url, label = 'Адрес кабинета' }: { url: stri
   )
 }
 
-/** Кабинет юрлица: логин — ИНН, пароль сбрасывает только владелец (ADR-049). */
-function CabinetBox({ partyId }: { partyId: string }) {
+/** Кабинет юрлица: логин — ИНН, пароль сбрасывает только владелец (ADR-049). Тот же блок — в
+ *  карточке поставщика (задача 028), там же флажок «Не присылать сообщения о накладных». */
+export function CabinetBox({ partyId, supplier = false }: { partyId: string; supplier?: boolean }) {
   const st = useLoad(() => get<CabinetState>(`/parties/${partyId}/cabinet`), [partyId])
   const act = useAction()
   const d = st.data
+  const title = supplier ? 'Кабинет поставщика' : 'Кабинет клиента'
   if (!d) return null
   if (!d.available)
     return (
-      <Card className="text-sm text-slate-600">
-        Кабинет клиента: у фирмы нет ИНН — впишите его в карточке, и ИНН станет логином для входа.
+      <Card className="text-sm text-slate-600" data-testid="cabinet-box">
+        {title}:{' '}
+        {d.reason
+          ? `${d.reason} — один ИНН входит только в один кабинет.`
+          : 'у фирмы нет ИНН — впишите его в карточке, и ИНН станет логином для входа.'}
       </Card>
     )
   const url = `${window.location.origin}/cabinet`
   return (
-    <Card className="flex flex-wrap items-center justify-between gap-3 text-sm">
+    <Card className="flex flex-wrap items-center justify-between gap-3 text-sm" data-testid="cabinet-box">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="font-medium">Кабинет клиента</div>
+        <div className="font-medium">{title}</div>
         <CopyAddress url={url} />
         <div className="text-slate-600">
           Логин {d.login} ·{' '}
@@ -92,9 +100,27 @@ function CabinetBox({ partyId }: { partyId: string }) {
             ? 'ещё не входили, начальный пароль avtodom2026'
             : d.must_change
               ? 'пароль сброшен — при входе попросит сменить'
-              : 'клиент сменил пароль'}
+              : supplier
+                ? 'поставщик сменил пароль'
+                : 'клиент сменил пароль'}
           {d.last_login_at && ` · последний вход ${formatDateTime(d.last_login_at)}`}
         </div>
+        {supplier && (
+          <label className="flex items-center gap-2 text-slate-600">
+            <input
+              type="checkbox"
+              checked={!!d.no_messages}
+              disabled={act.busy}
+              onChange={() =>
+                void act.run(async () => {
+                  await patch(`/parties/${partyId}`, { no_purchase_messages: !d.no_messages })
+                  st.reload()
+                })
+              }
+            />
+            Не присылать сообщения о накладных в Телеграм
+          </label>
+        )}
         <ErrorBox error={act.error ?? st.error} />
       </div>
       <Button

@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.supplier_doc, r.created_at, r.total_tyiyn,\n                  (r.created_at at time zone 'Asia/Bishkek')::date as \"day!\",\n                  case when (select count(*) from branches) > 1 then b.name else '' end as \"branch_name!\",\n                  exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\",\n                  d.debt as \"debt?\", d.paid as \"paid?\"\n           from receipts r\n           join branches b on b.id = r.branch_id\n           left join lateral (\n             select -l.amount_tyiyn as debt,\n                    coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                              where s.debit_id = l.id), 0)::bigint as paid\n             from party_ledger l\n             where l.doc_type = 'receipt' and l.doc_id = r.id and l.amount_tyiyn < 0\n               and l.reversal_of is null\n             order by l.created_at limit 1) d on true\n           where r.supplier_id = $1 and r.reversal_of is null\n             and (r.created_at at time zone 'Asia/Bishkek')::date >= $2\n             and (r.created_at at time zone 'Asia/Bishkek')::date <= coalesce($3, (now() at time zone 'Asia/Bishkek')::date)\n           order by r.created_at desc limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 6,
+        "name": "branch_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "debt?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "paid?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "49a8715bf8fb060fdf4024f3ccfbed835977933b504a2e1586358c48130daa33"
+}

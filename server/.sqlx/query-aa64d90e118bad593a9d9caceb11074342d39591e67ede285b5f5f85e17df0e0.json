@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select branch_id, number from receipts\n               where id = $1 and supplier_id = $2 and reversal_of is null for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "aa64d90e118bad593a9d9caceb11074342d39591e67ede285b5f5f85e17df0e0"
+}

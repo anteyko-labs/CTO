@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.branch_id, r.number, r.supplier_doc, r.total_tyiyn, r.reversal_of,\n                  p.id as party_id, coalesce(o.number, r.number) as \"shown!\",\n                  coalesce(o.supplier_doc, r.supplier_doc) as \"doc!\",\n                  coalesce((select -l.amount_tyiyn from party_ledger l\n                            where l.doc_type = 'receipt' and l.doc_id = r.id and l.amount_tyiyn < 0\n                              and l.reversal_of is null limit 1), 0)::bigint as \"debt!\"\n           from receipts r\n           join parties p on p.id = r.supplier_id\n           left join receipts o on o.id = r.reversal_of\n           where p.role = 'supplier' and p.active and not p.no_purchase_messages\n             and r.created_at > $1 and r.created_at > now() - interval '2 days'\n             and not exists (select 1 from client_message_keys k where k.key = 'invoice:' || r.id::text)\n             -- Об отмене пишем, только если о самой накладной уже писали.\n             and (r.reversal_of is null\n                  or exists (select 1 from client_message_keys k where k.key = 'invoice:' || r.reversal_of::text))\n           order by r.created_at\n           limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "shown!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "doc!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "debt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "adfa79b72d0f6423ae7c93d48950a2dd5bb38f5cd42ad2a25842434fb127a8bd"
+}

@@ -47,6 +47,9 @@ pub struct FileOut {
     pub content_type: String,
     pub size_bytes: i32,
     pub user_name: String,
+    /// `staff` — приложила точка, `supplier` — поставщик из кабинета (задача 028).
+    #[serde(default)]
+    pub source: String,
     pub created_at: DateTime<Utc>,
     /// Скрыт владельцем: когда, кем и почему. Администратору скрытые не показываются.
     pub hidden_at: Option<DateTime<Utc>>,
@@ -76,10 +79,11 @@ async fn files_of(
 ) -> AppResult<Vec<FileOut>> {
     let rows = sqlx::query_as!(
         FileOut,
-        r#"select f.id, f.receipt_id, f.name, f.content_type, f.size_bytes, u.full_name as user_name,
+        r#"select f.id, f.receipt_id, f.name, f.content_type, f.size_bytes,
+                  coalesce(u.full_name, 'от поставщика') as "user_name!", f.source,
                   f.created_at, f.hidden_at, h.full_name as "hidden_by?", f.hidden_reason
            from receipt_files f
-           join users u on u.id = f.user_id
+           left join users u on u.id = f.user_id
            left join users h on h.id = f.hidden_by
            where f.receipt_id = $1 and f.branch_id = $2 and ($3 or f.hidden_at is null)
            order by f.created_at, f.id"#,
