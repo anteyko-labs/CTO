@@ -33,6 +33,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/cash/transfers", routing::post(post_transfer))
         .route(
+            "/cash/accounts/{id}/fee-refund",
+            routing::post(post_fee_refund),
+        )
+        .route(
             "/cash/transfers/{id}/reverse",
             routing::post(reverse_transfer),
         )
@@ -131,8 +135,8 @@ pub(crate) async fn accounts_list(
 }
 
 /// Новый филиал получает свои кассы при первом обращении: касса, счёт и два сейфа (ADR-037).
-/// «Касса» — касса смены, «Счёт» — счёт по умолчанию для карты и перевода со ставкой 0,5 %
-/// (ADR-022, ADR-077).
+/// «Касса» — касса смены, «Счёт» — счёт по умолчанию для карты со ставкой 0,5 % (ADR-022,
+/// ADR-077), «Сейф владельца» — для «QR владельцу», без комиссии (ADR-189).
 pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     let have = sqlx::query_scalar!(
         r#"select count(*) as "n!" from cash_accounts where branch_id = $1"#,
@@ -153,7 +157,7 @@ pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
         sqlx::query!(
             r#"insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default,
                                           default_card, default_transfer)
-               values ($1, $2, $3, $4, $5, $6, $7, $7)
+               values ($1, $2, $3, $4, $5, $6, $7, $8)
                on conflict do nothing"#,
             new_id(),
             branch_id,
@@ -161,7 +165,8 @@ pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
             kind,
             owner_only,
             is_default,
-            bank
+            bank,
+            kind == "safe" && owner_only
         )
         .execute(&mut *conn)
         .await?;
@@ -233,6 +238,7 @@ pub const SALE_NEEDS_SHIFT: &str = "Смена не открыта: открой
 /// Безналичный счёт по умолчанию для способа оплаты: карта — отмеченный «по умолчанию для
 /// карты», перевод — «по умолчанию для перевода» (ADR-077), «По счёту» — «по умолчанию для
 /// «По счёту»», а без такой отметки — счёт карты (ADR-095). Без отметки — первый действующий.
+/// Для перевода отметка может стоять и на сейфе владельца (ADR-189).
 pub async fn bank_account(
     conn: &mut PgConnection,
     branch_id: Uuid,
@@ -240,7 +246,8 @@ pub async fn bank_account(
 ) -> AppResult<Option<Uuid>> {
     ensure_accounts(conn, branch_id).await?;
     Ok(sqlx::query_scalar!(
-        r#"select id from cash_accounts where branch_id = $1 and kind = 'bank' and active
+        r#"select id from cash_accounts where branch_id = $1 and active
+             and (kind = 'bank' or ($2 = 'transfer' and default_transfer))
            order by (case $2 when 'transfer' then default_transfer
                              when 'invoice' then default_invoice
                              else default_card end) desc,
@@ -270,6 +277,10 @@ pub async fn sale_bank_account(
     let Some(id) = requested else {
         return Ok(default);
     };
+    // Счёт по умолчанию годится всегда: кассир не выбирает сейф владельца, но и не теряет его (ADR-189).
+    if id == default {
+        return Ok(id);
+    }
     let acc = sqlx::query!(
         "select name, kind, owner_only, active from cash_accounts where id = $1 and branch_id = $2",
         id,
@@ -2373,6 +2384,112 @@ fn unique_name(e: sqlx::Error) -> AppError {
     }
 }
 
+#[derive(Deserialize)]
+struct FeeRefundReq {
+    op_id: Uuid,
+    /// Учётный день, за который банк комиссию не брал.
+    day: NaiveDate,
+    amount_tyiyn: i64,
+    #[serde(default)]
+    comment: String,
+}
+
+/// Возврат ошибочно списанной комиссии банка за день (задача 029, ADR-189): движение на счёт и
+/// минусовая запись `bank_fee_adjustments` — прибыль сходится, чеки не меняются (I4). Не больше,
+/// чем списано за этот день; только владелец.
+async fn post_fee_refund(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<FeeRefundReq>,
+) -> AppResult<Json<Value>> {
+    const KIND: &str = "cash.fee_refund";
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if req.amount_tyiyn <= 0 {
+        return Err(invalid("сумма возврата должна быть больше нуля"));
+    }
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let branch_id = ctx.user.branch_id;
+    let kind = sqlx::query_scalar!(
+        "select kind from cash_accounts where id = $1 and branch_id = $2 for update",
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if kind != "bank" {
+        return Err(invalid("комиссия банка — только у безналичного счёта"));
+    }
+    let charged = sqlx::query_scalar!(
+        r#"select coalesce(-sum(amount_tyiyn), 0)::bigint as "v!" from cash_movements
+           where account_id = $1 and kind = 'bank_fee'
+             and (created_at at time zone 'Asia/Bishkek')::date = $2"#,
+        id,
+        req.day
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if req.amount_tyiyn > charged {
+        return Err(invalid(format!(
+            "за этот день списано только {}",
+            crate::domain::money::format_som(charged.max(0))
+        )));
+    }
+    let doc = new_id();
+    let comment = match req.comment.trim() {
+        "" => format!("Возврат комиссии банка за {}", req.day.format("%d.%m.%Y")),
+        c => c.to_string(),
+    };
+    let (movement_id, _) = add_movement_id(
+        &mut tx,
+        &ctx,
+        CashEntry {
+            account_id: id,
+            kind: "bank_fee",
+            amount: req.amount_tyiyn,
+            doc_type: "bank_fee_adjust",
+            doc_id: Some(doc),
+            comment: &comment,
+        },
+    )
+    .await?;
+    sqlx::query!(
+        r#"insert into bank_fee_adjustments (id, branch_id, account_id, op_day, amount_tyiyn,
+                                             bank_fee_tyiyn, our_fee_tyiyn, movement_id, user_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+        doc,
+        branch_id,
+        id,
+        req.day,
+        -req.amount_tyiyn,
+        charged - req.amount_tyiyn,
+        charged,
+        movement_id,
+        ctx.user.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let out = json!({ "id": doc, "day": req.day, "amount_tyiyn": req.amount_tyiyn });
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "bank_fee.refund",
+        "bank_fee_adjustment",
+        Some(doc),
+        json!({ "day": req.day, "amount": req.amount_tyiyn, "account_id": id }),
+    )
+    .await?;
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
 async fn create_account(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -2625,14 +2742,20 @@ pub async fn update_account_tx(
         owner_only,
         "карты",
     )?;
-    let make_transfer = default_mark(
-        req.default_transfer,
-        before.default_transfer,
-        &before.kind,
-        active,
-        owner_only,
-        "перевода",
-    )?;
+    // «QR владельцу» можно отметить и на действующем сейфе владельца (ADR-189).
+    let safe_mark = before.kind == "safe" && owner_only && active;
+    let make_transfer = if safe_mark && req.default_transfer == Some(true) {
+        !before.default_transfer
+    } else {
+        default_mark(
+            req.default_transfer,
+            before.default_transfer,
+            &before.kind,
+            active,
+            owner_only,
+            "перевода",
+        )?
+    };
     // «По счёту»: отметку можно и снять — тогда деньги ложатся на счёт карты (ADR-095).
     let invoice_mark = match req.default_invoice {
         Some(true) if !before.default_invoice => Some(default_mark(
@@ -2648,7 +2771,12 @@ pub async fn update_account_tx(
     };
     let invoice_after = invoice_mark.unwrap_or(before.default_invoice);
     let pay_default = before.default_card || before.default_transfer || invoice_after;
-    if (till || pay_default) && owner_only {
+    if before.kind == "safe" && before.default_transfer && !owner_only {
+        return Err(invalid(
+            "сейф для «QR владельцу» — только «только владелец»: сначала отметьте другой счёт",
+        ));
+    }
+    if (till || pay_default) && owner_only && before.kind != "safe" {
         return Err(invalid(
             "с кассой смены и счетами по умолчанию для способов оплаты работает администратор: «только владелец» для них нельзя",
         ));

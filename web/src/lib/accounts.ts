@@ -37,7 +37,7 @@ export function accountNote(a: Pick<CashAccount, 'kind' | 'is_default'> & Defaul
     if (marks.length === 0) return ''
     return `по умолчанию для ${marks.length > 1 ? `${marks.slice(0, -1).join(', ')} и ${marks[marks.length - 1]}` : marks[0]}`
   }
-  if (a.kind === 'safe') return 'сейф'
+  if (a.kind === 'safe') return a.default_transfer ? 'сейф, по умолчанию для QR владельцу' : 'сейф'
   return ''
 }
 
@@ -60,7 +60,12 @@ export function bankChoices<T extends Pick<CashAccount, 'id' | 'kind'> & Default
   method: NoncashMethod = 'card',
 ): T[] {
   const rank = (a: T): number => (isDefaultFor(a, method) ? 2 : method === 'invoice' && a.default_card ? 1 : 0)
-  return accounts.filter((a) => isBank(a) && a.active !== false).sort((x, y) => rank(y) - rank(x))
+  // Счёт «QR владельцу» может быть сейфом владельца (ADR-189). Администратор его не видит: выбора нет,
+  // счёт ставит сервер.
+  if (method === 'transfer' && !accounts.some((a) => a.default_transfer && a.active !== false)) return []
+  return accounts
+    .filter((a) => (isBank(a) || (method === 'transfer' && a.default_transfer)) && a.active !== false)
+    .sort((x, y) => rank(y) - rank(x))
 }
 
 /** Счёт по умолчанию для способа оплаты (или первый действующий); нет банков — ''. */
@@ -132,7 +137,7 @@ export function payCaption(
   bank?: Pick<CashAccount, 'name'> & { fee_rate_bp?: number },
 ): string {
   if (method === 'cash') return '→ Касса · наличные'
-  if (!bank) return '→ счёт по умолчанию'
+  if (!bank) return method === 'transfer' ? '→ владельцу · без комиссии' : '→ счёт по умолчанию'
   const fee = method === 'invoice' ? 0 : (bank.fee_rate_bp ?? 0)
   return `→ ${bank.name} · ${fee > 0 ? `комиссия ${feeShort(fee)}` : 'без комиссии'}`
 }

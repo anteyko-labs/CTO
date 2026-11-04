@@ -742,7 +742,8 @@ async fn bank_accounts(
         r#"select id, name, default_card, default_transfer, default_invoice,
                   account_fee_on(id, $3) as "fee_rate_bp!"
            from cash_accounts
-           where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)
+           where branch_id = $1 and (kind = 'bank' or default_transfer) and active
+             and (not owner_only or $2 or default_transfer)
            order by default_card desc, default_transfer desc, name"#,
         user.branch_id,
         user.is_owner(),
@@ -977,14 +978,16 @@ async fn pay_account(
             .ok_or_else(|| invalid("нет безналичного счёта: заведите его в «Обзоре счетов»"));
     };
     let a = sqlx::query!(
-        "select name, kind, owner_only, active from cash_accounts where id = $1 and branch_id = $2",
+        "select name, kind, owner_only, active, default_transfer from cash_accounts where id = $1 and branch_id = $2",
         id,
         user.branch_id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("выбранный счёт не найден"))?;
-    if a.kind != "bank" || (a.owner_only && !user.is_owner()) {
+    // Сейф владельца — только как счёт «QR владельцу» (ADR-189).
+    let owner_qr = method == "transfer" && a.default_transfer;
+    if !owner_qr && (a.kind != "bank" || (a.owner_only && !user.is_owner())) {
         return Err(invalid(format!("«{}» — не безналичный счёт", a.name)));
     }
     if !a.active {
@@ -1676,7 +1679,8 @@ async fn bank_limits(
                   coalesce((select sum(f.amount_tyiyn) from pay_fixes f
                             where f.kind = 'shift' and f.shift_id = $4 and f.account_id = a.id), 0)::bigint as "moved!"
            from cash_accounts a
-           where a.branch_id = $1 and a.kind = 'bank' and a.active and (not a.owner_only or $5)
+           where a.branch_id = $1 and (a.kind = 'bank' or a.default_transfer) and a.active
+             and (not a.owner_only or $5 or a.default_transfer)
            order by a.default_card desc, a.default_transfer desc, a.name"#,
         user.branch_id,
         shift.opened_at,
@@ -2792,7 +2796,7 @@ pub(crate) async fn after_close(
              on (m.doc_type = 'sale' and (m.doc_id = f.reversal_sale_id or m.doc_id = f.new_sale_id))
              or (m.doc_type = 'pay_fix' and m.doc_id = f.id)
            join cash_accounts a on a.id = m.account_id
-           where f.branch_id = $1 and f.counted_shift_id = $2 and a.kind = 'bank'
+           where f.branch_id = $1 and f.counted_shift_id = $2 and (a.kind = 'bank' or (a.kind = 'safe' and a.owner_only))
            group by m.account_id, a.name"#,
         branch_id,
         shift.id

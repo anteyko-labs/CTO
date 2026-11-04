@@ -6412,7 +6412,7 @@ async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
     .await;
     assert_eq!(again["debt"]["status"], "partial");
     assert_eq!(again["debt"]["left_tyiyn"], 70_000);
-    assert_eq!(again["debt"]["payments"][0]["source"], "Счёт");
+    assert_eq!(again["debt"]["payments"][0]["source"], "Сейф владельца");
     let (status, _, inv) = call(
         &app,
         "GET",
@@ -6456,6 +6456,17 @@ async fn bank_screen_income_report_and_dashboard_period(pool: PgPool) {
     // сводка за прошлый день — с прибылью за этот день; администратору «Счёт» закрыт (SPEC-27 §6).
     let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
+    // Экран «Счёт» считает перевод на банке: отметка на него, как в панели (ADR-189).
+    let (_, bank0, _) = accounts_of(&app, &owner).await;
+    let (st, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{bank0}"),
+        Some(&owner),
+        Some(json!({ "default_transfer": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
     open_shift(&app, &owner, &cashier).await;
@@ -7608,7 +7619,7 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
         .unwrap()
         .clone();
     assert_eq!(old_bank["default_card"], false);
-    assert_eq!(old_bank["default_transfer"], true);
+    assert_eq!(old_bank["default_transfer"], false);
     // Отметку «по умолчанию» получает только безналичный счёт.
     assert_eq!(
         req(
@@ -7654,8 +7665,12 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    // Прежний счёт — по умолчанию для перевода: в архив не убрать.
-    assert_eq!(archive(&bank).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    // Сейф владельца — по умолчанию для перевода: в архив не убрать.
+    let safe_mark = owner_safe(&app, &owner).await;
+    assert_eq!(
+        archive(&safe_mark).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     // Итоги истории за период сходятся с остатком: на конец = сумма движений.
     let (s, _, sum) = req(
         &owner,
@@ -7752,7 +7767,15 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
     assert_eq!(sold["payments"][0]["account_name"], "Оптима");
     assert_eq!(balance_of(&pool, &optima).await, 99_500);
     assert_eq!(balance_of(&pool, &bank).await, 0);
-    // Перевод без выбора — на счёт по умолчанию для перевода, «Счёт».
+    // Перевод без выбора — на счёт по умолчанию для перевода: отметку можно вернуть на «Счёт».
+    let (s, _, _) = req(
+        &owner,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{bank}"),
+        Some(json!({ "default_transfer": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
     let (s, _, _) = req(
         &admin,
         "POST",
@@ -13170,4 +13193,128 @@ async fn allow_negative(pool: &PgPool) {
     .execute(pool)
     .await
     .unwrap();
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn owner_qr_lands_in_owner_safe_without_fee_and_fee_refund(pool: PgPool) {
+    // Задача 029, ADR-189: «QR владельцу» — в сейф владельца без комиссии, карта — на банк с
+    // комиссией; кассир сейф не видит; ошибочную комиссию владелец возвращает отдельной записью.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
+    let item = product(&app, &owner, "Фильтр", 100_000, 0).await;
+    let safe = owner_safe(&app, &owner).await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": safe,
+                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 0 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, bank, _) = accounts_of(&app, &owner).await;
+    let safe_before = balance_of(&pool, &safe).await;
+    let sale = |pays: Value| {
+        json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 100_000 }],
+                "payments": pays })
+    };
+    // Кассир без выбора счёта: сейф +сумма, банк без движений, комиссии нет.
+    let (s, _, done) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(
+            json!([{ "method": "transfer", "amount_tyiyn": 100_000 }]),
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    assert_eq!(done["payments"][0]["account_id"], json!(safe));
+    assert_eq!(balance_of(&pool, &safe).await, safe_before + 100_000);
+    assert_eq!(balance_of(&pool, &bank).await, 0);
+    // Смешанная: комиссия только с части карты (0,5 % от 50 000).
+    let (s, _, mixed) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(json!([
+            { "method": "transfer", "amount_tyiyn": 50_000 },
+            { "method": "card", "amount_tyiyn": 50_000 }
+        ]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{mixed}");
+    assert_eq!(balance_of(&pool, &safe).await, safe_before + 150_000);
+    assert_eq!(balance_of(&pool, &bank).await, 49_750);
+    // Кассиру сейф и его остаток не отдаются.
+    let (_, _, list) = call(&app, "GET", "/api/v1/cash/accounts", Some(&admin), None).await;
+    assert!(
+        !list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == json!(safe)),
+        "{list}"
+    );
+    // Отметки: на сейфе магазина и кассе — нельзя.
+    let accounts = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None)
+        .await
+        .2;
+    for name in ["Сейф магазина", "Касса"] {
+        let id = accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (s, _, _) = call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{id}"),
+            Some(&owner),
+            Some(json!({ "default_transfer": true })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{name}");
+    }
+    // Возврат комиссии: 250 тыйын; повтор не задваивает, больше списанного — 422, кассиру — 403.
+    let day: String = sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date::text")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let uri = format!("/api/v1/cash/accounts/{bank}/fee-refund");
+    let op = Uuid::now_v7();
+    let body = json!({ "op_id": op, "day": day, "amount_tyiyn": 250 });
+    let (s, _, _) = call(&app, "POST", &uri, Some(&admin), Some(body.clone())).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    for _ in 0..2 {
+        let (s, _, r) = call(&app, "POST", &uri, Some(&owner), Some(body.clone())).await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    assert_eq!(balance_of(&pool, &bank).await, 50_000);
+    let adjusted: i64 =
+        sqlx::query_scalar("select sum(amount_tyiyn)::bigint from bank_fee_adjustments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(adjusted, -250);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &uri,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "day": day, "amount_tyiyn": 1 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }

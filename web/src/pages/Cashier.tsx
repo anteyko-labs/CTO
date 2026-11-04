@@ -104,7 +104,7 @@ type BankChoice = Pick<CashAccount, 'id' | 'name' | 'kind' | 'default_card' | 'd
  * связи — из снимка кассы. */
 async function loadBanks(): Promise<BankChoice[]> {
   try {
-    return bankChoices(await get<CashAccount[]>('/cash/accounts'))
+    return (await get<CashAccount[]>('/cash/accounts')).filter((a) => a.active !== false && (a.kind === 'bank' || a.default_transfer))
   } catch {
     return ((await readSnapshot())?.bank_accounts ?? []).map((b) => ({ ...b, kind: 'bank' as const }))
   }
@@ -3362,7 +3362,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
           {bankList.length > 1 && noncashMethods.length > 0 && (
             <div className="flex flex-col gap-2 text-sm" data-testid="pay-bank">
-              {noncashMethods.map((m) => (
+              {noncashMethods.filter((m) => bankChoices(bankList, m).length > 0).map((m) => (
                 <div key={m} className="flex flex-wrap items-center gap-2" data-testid={`pay-bank-${m}`}>
                   <span className="text-slate-600">{noncashMethods.length > 1 ? `Банк (${PAYMENT_LABELS[m]}):` : 'Банк:'}</span>
                   {bankChoices(bankList, m).map((b) => (

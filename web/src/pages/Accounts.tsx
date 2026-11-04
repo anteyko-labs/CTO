@@ -12,6 +12,7 @@ import { cappedWarning, exportTitle, fetchAllPages, listSheet, periodText, total
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
+import { FeeRefund } from '../components/FeeRefund'
 import { accountNote, accountTotals, accountType, isBank, isTill, payAccounts } from '../lib/accounts'
 import { get, getPage, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -363,6 +364,9 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
                 )}
               </>
             )}
+            {form.id && form.kind === 'safe' && form.owner_only && form.active && !current?.default_transfer && (
+              <Checkbox label="По умолчанию для QR владельцу" checked={form.default_transfer} onChange={(v) => setForm({ ...form, default_transfer: v })} />
+            )}
             {form.id && !till && !payDefault && (
               <Checkbox label="В архиве (только с нулевым остатком)" checked={!form.active} onChange={(v) => setForm({ ...form, active: !v })} />
             )}
@@ -503,6 +507,7 @@ function AccountHistory({ account, owner, onClose }: { account: CashAccount; own
             Подробно по безналу: картой, QR, комиссия банка →
           </Link>
         )}
+        {owner && isBank(account) && <FeeRefund account={account} onDone={moves.reload} />}
         {moves.loading && !moves.data ? (
           <Loading />
         ) : (moves.data?.total ?? 0) === 0 ? (

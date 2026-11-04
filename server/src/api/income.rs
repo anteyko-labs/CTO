@@ -314,7 +314,7 @@ async fn shift_split(
                                   where l.id = m.doc_id and pt.role = 'customer') as debt_back
              from cash_movements m
              join cash_accounts a on a.id = m.account_id
-             where a.branch_id = $1 and a.kind = 'bank'
+             where a.branch_id = $1 and (a.kind = 'bank' or (a.kind = 'safe' and a.owner_only))
                and m.created_at >= $2 and m.created_at <= coalesce($3, now())
                and m.kind in ('sale', 'sale_return', 'debt_repayment', 'bank_fee', 'reversal', 'cash_to_bank')
                -- Изменение для уже пересчитанных наличных — в отчёте той смены (SPEC-37 §4).
@@ -332,7 +332,7 @@ async fn shift_split(
                   count(m.kind) filter (where m.kind <> 'reversal' or m.debt_back) as "moves!"
            from cash_accounts a
            left join m on m.account_id = a.id
-           where a.branch_id = $1 and a.kind = 'bank'
+           where a.branch_id = $1 and (a.kind = 'bank' or (a.kind = 'safe' and a.owner_only))
            group by a.id, a.name, a.active, a.owner_only, a.default_card
            having (a.active and not a.owner_only) or count(m.kind) filter (where m.kind <> 'reversal' or m.debt_back) > 0
            order by a.default_card desc, a.name"#,

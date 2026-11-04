@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default,\n                                          default_card, default_transfer)\n               values ($1, $2, $3, $4, $5, $6, $7, $8)\n               on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9526dad5bb16730c95cb3464fe5f2e0962a5788b4d201ab7fbbc2de365cda7ae"
+}

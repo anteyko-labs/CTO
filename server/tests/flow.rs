@@ -9974,7 +9974,7 @@ mod point_feedback_stock {
         assert_eq!(hist.len(), 2);
         assert!(
             hist.iter()
-                .all(|p| p.user_name == "owner" && p.source == "Счёт")
+                .all(|p| p.user_name == "owner" && p.source == "Сейф владельца")
         );
         let amounts: Vec<_> = hist
             .iter()
@@ -10431,13 +10431,13 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
         "{text}"
     );
     assert!(
-        text.contains("— Сейф владельца: 0 с (наличный, только владелец)"),
+        text.contains(
+            "— Сейф владельца: 0 с (наличный, по умолчанию для перевода, только владелец)"
+        ),
         "{text}"
     );
     assert!(
-        text.contains(
-            "— Счёт: 0 с (безналичный, по умолчанию для карты, по умолчанию для перевода, комиссия 0,50 %)"
-        ),
+        text.contains("— Счёт: 0 с (безналичный, по умолчанию для карты, комиссия 0,50 %)"),
         "{text}"
     );
     assert!(

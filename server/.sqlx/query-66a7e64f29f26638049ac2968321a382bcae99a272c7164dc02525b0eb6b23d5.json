@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(-sum(amount_tyiyn), 0)::bigint as \"v!\" from cash_movements\n           where account_id = $1 and kind = 'bank_fee'\n             and (created_at at time zone 'Asia/Bishkek')::date = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "66a7e64f29f26638049ac2968321a382bcae99a272c7164dc02525b0eb6b23d5"
+}

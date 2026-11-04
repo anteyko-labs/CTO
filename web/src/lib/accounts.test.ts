@@ -137,3 +137,18 @@ describe('подпись под кнопками оплаты (SPEC-29 §25)', (
     expect(PAYMENT_LABELS.invoice).toBe('По счёту')
   })
 })
+
+describe('QR владельцу на сейфе (ADR-189)', () => {
+  const safe = { id: 's', name: 'Сейф владельца', kind: 'safe' as const, default_transfer: true }
+  const bank = { id: 'b', name: 'Счёт', kind: 'bank' as const, default_card: true }
+
+  it('владельцу — сейф первым, для карты сейфа нет', () => {
+    expect(defaultBankId([bank, safe], 'transfer')).toBe('s')
+    expect(bankChoices([bank, safe], 'card').map((a) => a.id)).toEqual(['b'])
+  })
+
+  it('кассир сейф не видит: счёта нет, ставит сервер, подпись без названия', () => {
+    expect(defaultBankId([bank], 'transfer')).toBe('')
+    expect(payCaption('transfer')).toBe('→ владельцу · без комиссии')
+  })
+})

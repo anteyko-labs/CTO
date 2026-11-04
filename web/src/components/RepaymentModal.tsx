@@ -80,10 +80,8 @@ export function RepaymentModal({
   // ADR-077), наличные у владельца — любая касса.
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const [accountPick, setAccountPick] = useState('')
-  const accountOptions = (accounts.data ?? []).filter((a) =>
-    method !== 'cash' ? bankChoices([a]).length > 0 : method === 'cash' && !isBank(a) && (owner || isTill(a)),
-  )
-  const accountOrdered = method !== 'cash' ? bankChoices(accountOptions, method) : accountOptions
+  const accountOptions = (accounts.data ?? []).filter((a) => method === 'cash' && !isBank(a) && (owner || isTill(a)))
+  const accountOrdered = method !== 'cash' ? bankChoices(accounts.data ?? [], method) : accountOptions
   const accountId = accountOrdered.some((a) => a.id === accountPick) ? accountPick : (accountOrdered[0]?.id ?? '')
   const [comment, setComment] = useState('')
   const [done, setDone] = useState<{ paid: number; before: number; after: number; invoiceBefore?: number; invoiceAfter?: number } | null>(null)

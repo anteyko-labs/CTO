@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, default_card, default_transfer, default_invoice,\n                  account_fee_on(id, $3) as \"fee_rate_bp!\"\n           from cash_accounts\n           where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)\n           order by default_card desc, default_transfer desc, name",
+  "query": "select id, name, default_card, default_transfer, default_invoice,\n                  account_fee_on(id, $3) as \"fee_rate_bp!\"\n           from cash_accounts\n           where branch_id = $1 and (kind = 'bank' or default_transfer) and active\n             and (not owner_only or $2 or default_transfer)\n           order by default_card desc, default_transfer desc, name",
   "describe": {
     "columns": [
       {
@@ -50,5 +50,5 @@
       null
     ]
   },
-  "hash": "c13c4bcc5209fc5200228bf02384a4fb66916f271f949bc05e99cf478f5f04d9"
+  "hash": "0e27c786844b7c511532cbc8d96541c89d77d06e0ae361fc67d4cf59cdedb5ad"
 }
