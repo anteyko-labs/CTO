@@ -71,7 +71,7 @@ test('список товаров: итоги по отбору, сортиро�
   await page.goto('/categories')
   await page.getByRole('button', { name: `Новый товар в категории ${category}` }).click()
   await expect(page.getByRole('heading', { name: 'Новый товар' })).toBeVisible()
-  await expect(page.getByLabel('Категория')).toHaveValue(cat.id)
+  await expect(page.locator('#product-category')).toHaveValue(cat.id)
 })
 
 test('приход: цена продажи и прошлая закупка; частичная оплата накладной', async ({ page }) => {
