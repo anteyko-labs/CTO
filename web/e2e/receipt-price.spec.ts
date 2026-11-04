@@ -2,7 +2,7 @@
 // сумма. Наценка и цена продажи связаны; новая цена ставится товару при проведении прихода,
 // владелец видит смену цены в уведомлениях. «Чаще берут» / «Больше приносят» (SPEC-28 §4).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -27,6 +27,7 @@ async function apiPost<T>(request: APIRequestContext, path: string, data: unknow
 
 test('приход: наценка и цена продажи связаны, новая цена ставится товару', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Наценка ${RUN}`, kind: 'other' })
   const name = `Ремень ${RUN}`
   const p = await apiPost<{ id: string; barcodes: string[] }>(page.request, '/products', {

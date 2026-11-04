@@ -1,7 +1,7 @@
 // Доработки по проверке на точке в браузере (SPEC-27 §4–5): список товаров с итогами, «+ Товар»
 // из категории, цена продажи и прошлая закупка в приходе, частичная оплата накладной.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -35,6 +35,7 @@ async function product(request: APIRequestContext, categoryId: string, name: str
 
 test('список товаров: итоги по отбору, сортировка и «+ Товар» из категории', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const category = `Свечи ${RUN}`
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: category, kind: 'other' })
   const a = await product(page.request, cat.id, `Свеча А ${RUN}`, 15_000)
@@ -76,6 +77,7 @@ test('список товаров: итоги по отбору, сортиро�
 
 test('приход: цена продажи и прошлая закупка; частичная оплата накладной', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const supplierName = `Автоснаб ${RUN}`
   const supplier = await apiPost<{ id: string }>(page.request, '/suppliers', { name: supplierName })
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Колодки ${RUN}`, kind: 'other' })

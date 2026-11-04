@@ -14,7 +14,7 @@ export async function ownerSafe(request: APIRequestContext): Promise<string> {
 /** Черновик прихода и оприходования свой у входа (ADR-190): у тестов один владелец, форма начинается с чистого листа. */
 export async function discardEntryDrafts(request: APIRequestContext): Promise<void> {
   for (const kind of ['receipt', 'stock_in']) {
-    const res = await request.post(`/api/v1/entry-drafts/${kind}/discard`)
+    const res = await request.post(`/api/v1/entry-drafts/${kind}/discard`, { headers: { 'X-Device-Id': '00000000-0000-4000-8000-00000000e2d0' } })
     expect(res.ok(), await res.text()).toBeTruthy()
   }
 }

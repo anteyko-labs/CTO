@@ -5,6 +5,7 @@
 // ASSISTANT_API_URL=http://127.0.0.1:<порт>. Без них распознавание выключено — проверка пропускается.
 import http from 'node:http'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { discardEntryDrafts } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -78,6 +79,7 @@ async function apiGet<T>(request: APIRequestContext, path: string): Promise<T> {
 
 test('накладная по фото открывает заполненный приход, фото — у накладной', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
   test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
 
@@ -174,6 +176,7 @@ test('накладная по фото открывает заполненный
 
 test('накладная по фото: 18 л масла не делятся на канистры — строка в литрах с ценой литра', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
   test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
   const oils = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла литрами фото ${RUN}`, kind: 'oil' })
@@ -217,6 +220,7 @@ test('накладная по фото: 18 л масла не делятся н�
 // накладной в списке приходов и фото на весь экран.
 test('ещё фото, варианты товара, запомненный выбор и поиск накладной', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
   test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Фото-два ${RUN}`, kind: 'other' })
@@ -340,6 +344,7 @@ test('ещё фото, варианты товара, запомненный в�
 // (литры → «за л», вторая цена считается сама); после сохранения строка прихода получает её.
 test('новый товар из строки накладной: цена прихода и единица — из накладной', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
   test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
   const oils = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла новые фото ${RUN}`, kind: 'oil' })

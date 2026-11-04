@@ -2,6 +2,7 @@
 // программы, часть оплаты сразу и фото накладной; оприходование без поставщика; возврат
 // поставщику; товар не из программы в ревизии.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { discardEntryDrafts } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -43,6 +44,7 @@ async function product(request: APIRequestContext, category: string, name: strin
 
 test('приход: подсказка из старой программы, ввод с клавиатуры, часть оплаты сразу, фото накладной', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const catName = `Свечи ${RUN}`
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: catName, kind: 'other' })
   const supplier = await apiPost<{ id: string; name: string }>(page.request, '/suppliers', { name: `Поставщик свечей ${RUN}` })
@@ -122,6 +124,7 @@ test('приход: подсказка из старой программы, в�
 
 test('оприходование без поставщика: из строки товара — экран прихода, комментарий; сторно', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Найдено ${RUN}`, kind: 'other' })
   const name = `Хомут ${RUN}`
   const p = await product(page.request, cat.id, name, `49${RUN}303`, 10_000)
@@ -160,6 +163,7 @@ test('оприходование без поставщика: из строки 
 
 test('возврат поставщику в счёт долга: товар со склада, долг меньше, в карточке «Вернули»', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Возврат ${RUN}`, kind: 'other' })
   const supplier = await apiPost<{ id: string }>(page.request, '/suppliers', { name: `Возвратный ${RUN}` })
   const code = `50${RUN}404`
@@ -199,6 +203,7 @@ test('возврат поставщику в счёт долга: товар с�
 
 test('ревизия и товары — один экран; в ревизию вписывают товар, которого нет в программе', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const catName = `Антифризы ${RUN}`
   await apiPost(page.request, '/categories', { name: catName, kind: 'other' })
   await page.goto('/intake')

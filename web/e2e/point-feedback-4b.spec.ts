@@ -3,7 +3,7 @@
 // режим кассы 1366×768 — «Оплатить» закреплена, «Не хватает» одной строкой в окне оплаты.
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
 import { ensureShift, openPay, pickMaster } from './cashier'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -60,6 +60,7 @@ async function adminWith(page: Page, browser: Browser, permissions: string[]) {
 
 test('клиент по имени: единственная машина встаёт сама; удаление отложенного — с подтверждением', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const party = await apiPost<{ id: string }>(page.request, '/parties', { kind: 'person', first_name: 'Машинов', last_name: `Одна${RUN}` })
   const car = await apiPost<{ id: string }>(page.request, `/parties/${party.id}/vehicles`, { plate: `01KG${RUN.slice(-3)}AAA` })
   const item = `Щётка ${RUN}`
@@ -91,6 +92,7 @@ test.describe('режим кассы 1366×768', () => {
 
   test('вид замены отметками, оплата закреплена, «Не хватает» одной строкой', async ({ page }) => {
     await login(page)
+    await discardEntryDrafts(page.request)
     const item = `Масло-тест ${RUN}`
     await goods(page.request, item, 250_000)
     const kinds = [`Замена А ${RUN}`, `Замена Б ${RUN}`]
@@ -199,6 +201,7 @@ test.describe('режим кассы 1366×768', () => {
 
 test('данные клиента в сервисе: владелец выключает обязательность, мастер нужен всегда (задача 032)', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const item = `Товар-032 ${RUN}`
   const kind = `Замена-032 ${RUN}`
   const master = `Мастер-032 ${RUN}`
@@ -258,6 +261,7 @@ test('данные клиента в сервисе: владелец выклю
 
 test('права: без «Прихода» и «Оприходования» — только «Нет права»; карточка товара без «Товаров» — только чтение', async ({ page, browser }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   // Без ключа распознавания владелец видит, как включить «Заполнить по фото».
   await page.goto('/receipts/new')
   // В CI сервер запущен с подставным ключом — тогда кнопка активна и подсказки нет.

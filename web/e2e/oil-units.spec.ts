@@ -2,6 +2,7 @@
 // +1 канистра, «Должно быть» в виде «8 кан. + 2,5 л», вязкость бейджем, поиском и отбором; приход
 // масла литрами по цене литра и его «Исправить»; весовой товар — в кг в ревизии и в приходе.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { discardEntryDrafts } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -67,6 +68,7 @@ const cancelRevision = async (page: Page) => {
 
 test('ревизия масла: «кан. + л», скан канистры, «Должно быть» канистрами, вязкость', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const catName = `Масла ревизии ${RUN}`
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: catName, kind: 'oil' })
   const codeA = `31${RUN}01`
@@ -123,6 +125,7 @@ test('ревизия масла: «кан. + л», скан канистры, «
 
 test('вес в ревизии и в приходе — в кг: правка показанного числа не умножает на 1000', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const info = await apiGet<{ product_id: string; sale_per_kg_tyiyn: number }>(page.request, '/batteries')
   const scrap = await apiGet<{ id: string; name: string; category_id: string; barcodes: string[] }>(page.request, `/products/${info.product_id}`)
   const cats = await apiGet<{ id: string; name: string }[]>(page.request, '/categories')
@@ -166,6 +169,7 @@ test('вес в ревизии и в приходе — в кг: правка п
 
 test('ревизия: две правки строки подряд — сохраняется последняя, даже если первая дошла до сервера позже', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const info = await apiGet<{ product_id: string }>(page.request, '/batteries')
   const scrap = await apiGet<{ id: string; category_id: string }>(page.request, `/products/${info.product_id}`)
   const cats = await apiGet<{ id: string; name: string }[]>(page.request, '/categories')
@@ -198,6 +202,7 @@ test('ревизия: две правки строки подряд — сохр
 
 test('приход масла литрами: 18 л по 450 с = 8 100 с, остаток +18 л; «Исправить» — в литрах', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла прихода ${RUN}`, kind: 'oil' })
   const code = `32${RUN}01`
   const p = await oil(page.request, cat.id, `Масло литрами ${RUN}`, code, 4000)
@@ -252,6 +257,7 @@ test('приход масла литрами: 18 л по 450 с = 8 100 с, ос
 
 test('оприходование масла — по умолчанию литрами, цена за литр', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла оприходования ${RUN}`, kind: 'oil' })
   const code = `33${RUN}01`
   const p = await oil(page.request, cat.id, `Масло оприход ${RUN}`, code, 0)
@@ -274,6 +280,7 @@ test('оприходование масла — по умолчанию литр
 // просмотр накладной — «за л»; «Настройки → Склад» — режим новой строки.
 test('приход канистрами: цена за литр видна и вводится; настройка «за литр» открывает строку литрами', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла цены литра ${RUN}`, kind: 'oil' })
   const code = `36${RUN}01`
   const p = await oil(page.request, cat.id, `Масло цена литра ${RUN}`, code, 4000)
@@ -326,6 +333,7 @@ test('приход канистрами: цена за литр видна и в
 
 test('«Сканер товаров» в пересчёте: масло — «кан. + л», итог в ревизии', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла сканера ${RUN}`, kind: 'oil' })
   const code = `34${RUN}01`
   const p = await oil(page.request, cat.id, `Масло сканер ${RUN}`, code, 8000)
@@ -354,6 +362,7 @@ test('«Сканер товаров» в пересчёте: масло — «к
 // цена канистры (ADR-074), наценка — к ней.
 test('приход и оприходование: продажа масла за литр — цена канистры считается сама', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла продажи литра ${RUN}`, kind: 'oil' })
   const code = `37${RUN}01`
   const p = await oil(page.request, cat.id, `Масло продажа литра ${RUN}`, code, 4000)

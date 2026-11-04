@@ -3,6 +3,7 @@
 // карточке — средняя за канистру и за литр, стоимость остатка, наценка, «Последний приход»;
 // администратору — только «Последний приход» (I13, ADR-040); товар без закупки — «Указать цену закупки».
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
+import { discardEntryDrafts } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -48,6 +49,7 @@ const openCard = async (page: Page, name: string) => {
 
 test('новый товар в приходе: цена прихода за литр уходит в строку литрами', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла карточки ${RUN}`, kind: 'oil' })
   const name = `Масло карточка ${RUN} 4L`
   await page.goto('/receipts/new')
@@ -78,6 +80,7 @@ test('новый товар в приходе: цена прихода за ли
 
 test('себестоимость в карточке: владельцу — средняя и остаток, администратору — только последний приход', async ({ page, browser }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла себес ${RUN}`, kind: 'oil' })
   const name = `Масло себес ${RUN}`
   const p = await apiPost<{ id: string }>(page.request, '/products', {
@@ -127,6 +130,7 @@ test('себестоимость в карточке: владельцу — с�
 
 test('товар без закупки: «Указать цену закупки» из карточки, за литр', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла без цены ${RUN}`, kind: 'oil' })
   const name = `Масло без цены ${RUN}`
   await apiPost(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, container_ml: 4000, sale_price_tyiyn: 200_000 })

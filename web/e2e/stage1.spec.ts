@@ -1,6 +1,6 @@
 // Главный путь этапа 1 в браузере: товар → приход → продажа → возврат → остатки, и права администратора.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 import { openPay, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
