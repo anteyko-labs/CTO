@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into entry_drafts (id, branch_id, user_id, kind, op_id, seq, body)\n         values ($1, $2, $3, $4, $5, $6, $7)\n         on conflict (branch_id, user_id, kind) do update\n           set op_id = excluded.op_id, seq = excluded.seq, body = excluded.body, updated_at = now()\n           where entry_drafts.seq < excluded.seq",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Int8",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b821c5f97a882059d4e169fbe6549d22b133a3de61caaacd8c3507b1fd9571ea"
+}

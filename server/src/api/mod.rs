@@ -30,6 +30,7 @@ pub mod corrections;
 pub mod cross_pick;
 pub mod defects;
 pub mod deliveries;
+pub mod entry_drafts;
 pub mod expenses;
 pub mod favorites;
 pub mod fees;
@@ -119,6 +120,7 @@ pub fn routes() -> Router<AppState> {
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())
+        .merge(entry_drafts::routes())
         .merge(receipt_drafts::routes())
         .merge(receipt_files::routes())
         .merge(reports::routes())

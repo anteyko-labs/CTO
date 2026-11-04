@@ -19,7 +19,8 @@ import type { DraftList } from '../lib/receiptDrafts'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { get, qs } from '../lib/api'
-import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
+import type { EntryDraft } from '../lib/entryDraft'
+import { formatDateTime, formatSom, plural, shiftDate, todayBishkek } from '../lib/format'
 import { batteryText, isBattery, receiptHref, receiptKindText, receiptsQuery } from '../lib/receiptSearch'
 import { qtyText } from '../lib/units'
 import type { BatteryIntakeCard, ReceiptListItem } from '../lib/types'
@@ -70,6 +71,16 @@ export default function Receipts() {
   const newReceipt = () => navigate(kind === 'stock_in' || !can('receipts') ? '/receipts/new?kind=stock_in' : '/receipts/new')
   // Накладные по фото — с правом «Приход» (ADR-097, ADR-098).
   const drafts = useLoad(() => (can('receipts') ? get<DraftList>('/receipt-drafts') : Promise.resolve(null)), [])
+  // Незавершённые документы этого входа (задача 030).
+  const entries = useLoad(
+    () =>
+      Promise.all(
+        (['stock_in', 'receipt'] as const).map((k) =>
+          can(k === 'stock_in' ? 'stock_in' : 'receipts') ? get<EntryDraft | null>(`/entry-drafts/${k}`) : Promise.resolve(null),
+        ),
+      ),
+    [],
+  )
   // «Ждут приёмки» на планшете — с суммами, право «Приход» (SPEC-39 §2).
   const acceptances = useLoad(() => (can('receipts') ? get<AcceptanceList>('/acceptances?status=waiting') : Promise.resolve(null)), [])
   /** Отметки строки: вид, сторно, оплата накладной, исправления. */
@@ -144,7 +155,20 @@ export default function Receipts() {
         }
       />
       <div className="mb-4 flex flex-col gap-2">
-        <ErrorBox error={drafts.error ?? acceptances.error} />
+        <ErrorBox error={drafts.error ?? acceptances.error ?? entries.error} />
+        {entries.data?.map(
+          (d) =>
+            d && (
+              <div key={d.kind} className="flex flex-wrap items-center gap-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="entry-draft-banner">
+                <span>
+                  {d.kind === 'stock_in' ? 'Незавершённое оприходование' : 'Незавершённый приход'}: {d.body.lines.length} {plural(d.body.lines.length, ['строка', 'строки', 'строк'])}
+                </span>
+                <Button variant="secondary" onClick={() => navigate(d.kind === 'stock_in' ? '/receipts/new?kind=stock_in' : '/receipts/new')}>
+                  Продолжить
+                </Button>
+              </div>
+            ),
+        )}
         <AcceptancesWaitingBlock
           list={acceptances.data}
           onChanged={() => {

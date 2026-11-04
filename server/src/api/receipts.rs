@@ -765,6 +765,7 @@ pub async fn post_receipt_tx(
         _ => {}
     }
     let out = load_receipt(conn, branch_id, id).await?;
+    crate::api::entry_drafts::clear_posted(conn, ctx, req.op_id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }

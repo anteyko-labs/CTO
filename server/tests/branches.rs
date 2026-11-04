@@ -350,6 +350,14 @@ async fn fill_branch(w: &World, branch: Uuid, admin: &str, tag: &str) -> String 
     )
     .await;
     api.ok(
+        "PUT",
+        "/api/v1/entry-drafts/stock_in",
+        admin,
+        None,
+        json!({ "op_id": op(), "seq": 1, "body": { "comment": tag } }),
+    )
+    .await;
+    api.ok(
         "POST",
         "/api/v1/stock-ins",
         admin,

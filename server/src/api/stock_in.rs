@@ -450,6 +450,7 @@ pub async fn post_tx(conn: &mut PgConnection, ctx: &Ctx, req: StockInReq) -> App
     )
     .await?;
     let out = load_one(conn, branch_id, id).await?;
+    crate::api::entry_drafts::clear_posted(conn, ctx, op_id).await?;
     ops::finish_op(conn, ctx, op_id, KIND, &out).await?;
     Ok(out)
 }

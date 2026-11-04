@@ -121,8 +121,8 @@ test('приход: цена продажи и прошлая закупка; ч
   await page.getByRole('tab', { name: 'Платежи' }).click()
   const pay = page.getByRole('row', { name: new RegExp(`№ ${receipt.number}`) })
   await expect(pay).toContainText(money('400 с'))
-  // Перевод — со счёта по умолчанию для перевода («Счёт» или личный счёт владельца, ADR-077).
-  await expect(pay).toContainText(/[Сс]чёт/)
+  // QR владельцу — из счёта по умолчанию: сейф владельца (ADR-189).
+  await expect(pay).toContainText('Сейф владельца')
 
   // В накладной — оплачено и осталось, платёж в истории.
   await pay.getByRole('link', { name: `№ ${receipt.number}` }).click()

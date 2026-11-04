@@ -100,3 +100,74 @@ test('«Приход» → «Оприходование»: две строки, 
   await expect(row).toContainText('сторнировано')
   expect(await apiGet<unknown[]>(page.request, '/stock/verify')).toEqual([])
 })
+
+test('Незавершённое оприходование не теряется: другой раздел, закрытая вкладка, проведение', async ({ page, context }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Черновик ${RUN}`, kind: 'other' })
+  const code = `55${RUN}909`
+  const name = `Гайка ЧР ${RUN}`
+  await apiPost(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, barcodes: [code], sale_price_tyiyn: 10_000 })
+
+  await page.goto('/receipts/new?kind=stock_in')
+  await page.locator('#receipt-picker').fill(code)
+  await page.locator('#receipt-picker').press('Enter')
+  await page.locator('#line-1-count').fill('7')
+  await page.locator('#receipt-comment').fill(`черновик ${RUN}`)
+  await expect(page.getByTestId('entry-draft-status')).toHaveText('Сохранено')
+
+  // Другой раздел и возврат: плашка в «Приходе» и строки на месте.
+  await page.getByRole('link', { name: 'Приход', exact: true }).click()
+  const banner = page.getByTestId('entry-draft-banner')
+  await expect(banner).toContainText('Незавершённое оприходование: 1 строка')
+  await banner.getByRole('button', { name: 'Продолжить' }).click()
+  await expect(page.getByTestId('entry-draft-continued')).toContainText('строк: 1')
+  await expect(page.locator('#line-1-count')).toHaveValue('7')
+
+  // Правка и сразу закрытие вкладки: новая вкладка видит правку.
+  await page.locator('#line-1-count').fill('9')
+  await page.close()
+  const next = await context.newPage()
+  await next.goto('/receipts/new?kind=stock_in')
+  await expect(next.locator('#line-1-count')).toHaveValue('9')
+  await expect(next.locator('#receipt-comment')).toHaveValue(`черновик ${RUN}`)
+
+  // «Начать заново» — с подтверждением.
+  next.once('dialog', (d) => void d.accept())
+  await next.getByRole('button', { name: 'Начать заново' }).click()
+  await expect(next.locator('#line-1-count')).toHaveCount(0)
+  await expect.poll(() => apiGet(next.request, '/entry-drafts/stock_in')).toBeNull()
+
+  // Проведение убирает черновик.
+  await next.locator('#receipt-picker').fill(code)
+  await next.locator('#receipt-picker').press('Enter')
+  await next.locator('#line-1-count').fill('2')
+  await next.locator('#line-1-price').fill('30')
+  await next.locator('#receipt-comment').fill(`проведено ${RUN}`)
+  await expect(next.getByTestId('entry-draft-status')).toHaveText('Сохранено')
+  await next.getByRole('button', { name: 'Провести оприходование' }).click()
+  await expect(next.getByRole('heading', { name: /^Оприходование № \d+$/ })).toBeVisible()
+  expect(await apiGet(next.request, '/entry-drafts/stock_in')).toBeNull()
+  await next.getByRole('button', { name: 'К списку' }).click()
+  await expect(next.getByTestId('entry-draft-banner')).toHaveCount(0)
+})
+
+test('Незавершённый приход: поставщик, номер и способ оплаты возвращаются', async ({ page }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Черновик П ${RUN}`, kind: 'other' })
+  const code = `56${RUN}919`
+  await apiPost(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name: `Болт ЧР ${RUN}`, barcodes: [code], sale_price_tyiyn: 10_000 })
+  const sup = await apiPost<{ id: string }>(page.request, '/suppliers', { op_id: crypto.randomUUID(), name: `Поставщик ЧР ${RUN}` })
+
+  await page.goto('/receipts/new')
+  await page.locator('#receipt-supplier').selectOption(sup.id)
+  await page.locator('#receipt-picker').fill(code)
+  await page.locator('#receipt-picker').press('Enter')
+  await page.locator('#line-1-count').fill('4')
+  await expect(page.getByTestId('entry-draft-status')).toHaveText('Сохранено')
+  await page.reload()
+  await expect(page.locator('#line-1-count')).toHaveValue('4')
+  await expect(page.locator('#receipt-supplier')).toHaveValue(sup.id)
+  page.once('dialog', (d) => void d.accept())
+  await page.getByRole('button', { name: 'Начать заново' }).click()
+  await expect.poll(() => apiGet(page.request, '/entry-drafts/receipt')).toBeNull()
+})

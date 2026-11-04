@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from operations where op_id = $1) as \"posted!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "posted!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a2bb481dfd197024b544f5440923464e946e59c832113b94f4c5c506ad037035"
+}

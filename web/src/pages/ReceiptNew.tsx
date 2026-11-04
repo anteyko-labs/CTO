@@ -10,7 +10,8 @@
 // с суммой строк; при проведении фото прикрепляется к накладной. «Ещё фото» дописывает строки в тот же
 // приход (тот же товар — «сложить?»), у строки «похож» и при нескольких точных совпадениях — варианты
 // товара на выбор; выбор запоминается для поставщика (задача 002, П2–П3).
-import { useEffect, useState, type KeyboardEvent } from 'react'
+// Незавершённый документ сохраняется сам и продолжается при возврате (задача 030, ADR-190).
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
 import { LabelListModal, type LabelListItem } from '../components/LabelListModal'
@@ -35,8 +36,22 @@ import {
 } from '../lib/receiptDrafts'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Missing, Notice, PageHeader, Table, toast } from '../components/ui'
 import { accountLabel } from '../lib/accounts'
-import { get, newOpId, post, randomId } from '../lib/api'
+import { get, newOpId, noServerAnswer, post, randomId } from '../lib/api'
 import { postCorrection } from '../lib/corrections'
+import {
+  clearLocalDraft,
+  createEntrySaver,
+  entryEmpty,
+  entrySaveText,
+  entryStorageKey,
+  pickDraft,
+  readLocalDraft,
+  resolveLines,
+  type EntryDraft,
+  type EntryDraftBody,
+  type EntrySaveStatus,
+  type EntrySaver,
+} from '../lib/entryDraft'
 import type { ReceiptFixState } from '../lib/receiptFix'
 import { formatLiters, formatSom, litersInput, parseSom, somInput } from '../lib/format'
 import {
@@ -140,7 +155,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
 function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
-  const [opId] = useState(newOpId)
+  const [opId, setOpId] = useState(newOpId)
   // Приход и оприходование — отдельные права администратора (ADR-097): виден только разрешённый вид.
   const can = useCan()
   const [kind, setKind] = useState<ReceiptKind>(fix?.kind ?? (params.get('kind') === 'stock_in' || !can('receipts') ? 'stock_in' : 'receipt'))
@@ -377,9 +392,12 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
 
   // «+ Оприходовать» у товара: экран открывается оприходованием с этим товаром в первой строке.
   const prefill = fix ? null : params.get('product')
+  // Строка товара из адреса ложится поверх черновика, когда он уже прочитан (задача 030).
+  const entryReadyRef = useRef(!(!fix && !params.get('draft')))
+  const [prefillGate, setPrefillGate] = useState(false)
   useEffect(() => {
     // Ждём настройку склада: строка масла открывается в режиме по умолчанию (ADR-150).
-    if (!prefill || !oilModesLoaded) return
+    if (!prefill || !oilModesLoaded || !entryReadyRef.current) return
     let alive = true
     void get<Product>(`/products/${prefill}`)
       .then((p) => {
@@ -391,11 +409,32 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     }
     // Только при открытии экрана: товар из адреса добавляется один раз.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefill, oilModesLoaded])
+  }, [prefill, oilModesLoaded, prefillGate])
 
   /** Смена вида: строки остаются как есть — у масла свой режим «кан. | л» (SPEC-36 §13). */
   const switchKind = (k: ReceiptKind) => {
-    if (k !== kind) setKind(k)
+    if (k === kind) return
+    if (!autosave) {
+      setKind(k)
+      return
+    }
+    // Есть черновик другого вида — открыть его, этот остаётся сохранённым. Нет — строки переходят
+    // с формой, а черновик прежнего вида снимается, чтобы документ не задвоился (задача 030).
+    const from = kind
+    setEntryReady(false)
+    void saver
+      .flush()
+      .then(() => loadEntry(k))
+      .then(async (found) => {
+        if (!found) {
+          await saver.discard(from, () => post(`/entry-drafts/${from}/discard`))
+          setContinued(null)
+        }
+        lastBody.current = ''
+        setKind(k)
+        setEntryReady(true)
+      })
+      .catch((e: unknown) => setDraftError(e instanceof Error ? e.message : String(e)))
   }
 
   const [labelList, setLabelList] = useState<LabelListItem[] | null>(null)
@@ -410,6 +449,155 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
 
   const updateLine = (key: string, patch: Partial<Line>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
+
+  // Незавершённый документ (задача 030): форма сама уходит в черновик; исправление проведённого и
+  // накладная по фото черновика не ведут — у них уже есть исходный документ.
+  const autosave = !fix && !draftParam && !draft
+  const [saveStatus, setSaveStatus] = useState<EntrySaveStatus>('idle')
+  const [continued, setContinued] = useState<{ count: number; removed: string[] } | null>(null)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const lastBody = useRef('')
+  const posting = useRef(false)
+  const loadedFromServer = useRef(false)
+  const saverRef = useRef<EntrySaver | null>(null)
+  const startFresh = () => {
+    setOpId(newOpId())
+    setSupplierId('')
+    setSupplierDoc('')
+    setComment('')
+    setPayMode('paid')
+    setPartText('')
+    setPaidFrom('')
+    setLines([])
+    setContinued(null)
+    lastBody.current = ''
+  }
+  saverRef.current ??= createEntrySaver({
+    storageKey: (k) => entryStorageKey(me.id, k),
+    onStatus: setSaveStatus,
+    onPosted: () => {
+      if (posting.current) return
+      toast('Этот документ уже проведён — начат новый')
+      startFresh()
+    },
+  })
+  const saver = saverRef.current
+
+  /** Черновик вида с сервера или с устройства; `true` — форма заполнена им. */
+  const loadEntry = async (k: ReceiptKind): Promise<boolean> => {
+    const key = entryStorageKey(me.id, k)
+    const local = readLocalDraft(key)
+    let server: EntryDraft | null = null
+    try {
+      server = await get<EntryDraft | null>(`/entry-drafts/${k}`)
+    } catch (e) {
+      if (!local || !noServerAnswer(e)) throw e
+    }
+    const found = pickDraft(server, local)
+    if (found !== local) clearLocalDraft(key)
+    if (!found) return false
+    const b = found.body
+    const { lines: rows, removed } = await resolveLines(b.lines, (id) => get<Product>(`/products/${id}`))
+    loadedFromServer.current = found === server
+    setOpId(found.op_id)
+    setSupplierId(b.supplierId)
+    setSupplierDoc(b.supplierDoc)
+    setComment(b.comment)
+    setPayMode(b.payMode)
+    setPartText(b.partText)
+    setPaidFrom(b.paidFrom)
+    setLines(
+      rows.map(({ line: l, product }) => ({
+        key: randomId(),
+        product,
+        count: l.count,
+        ...(l.mode ? { mode: l.mode } : {}),
+        price: l.price,
+        markup: l.markup,
+        salePrice: l.salePrice,
+      })),
+    )
+    rows.forEach(({ product }) => loadLast(product))
+    setContinued({ count: rows.length, removed })
+    return true
+  }
+
+  // Открытие экрана: сначала черновик, потом товар из адреса и автосохранение. Не прочитался —
+  // форму не сохраняем: пустая запись не должна затереть черновик.
+  const [entryReady, setEntryReady] = useState(!autosave)
+  useEffect(() => {
+    if (entryReady) return
+    let alive = true
+    loadEntry(kind)
+      .then(() => {
+        if (!alive) return
+        setEntryReady(true)
+        entryReadyRef.current = true
+        setPrefillGate(true)
+      })
+      .catch((e: unknown) => {
+        if (alive) setDraftError(e instanceof Error ? e.message : String(e))
+      })
+    return () => {
+      alive = false
+    }
+    // Только при открытии экрана.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const draftBody: EntryDraftBody = {
+    supplierId,
+    supplierDoc,
+    comment,
+    payMode,
+    partText,
+    paidFrom,
+    lines: lines.map((l) => ({
+      product_id: l.product.id,
+      name: l.product.name,
+      count: l.count,
+      ...(l.mode ? { mode: l.mode } : {}),
+      price: l.price,
+      markup: l.markup,
+      salePrice: l.salePrice,
+    })),
+  }
+  const draftText = JSON.stringify(draftBody)
+  useEffect(() => {
+    if (!autosave || !entryReady || draftText === lastBody.current) return
+    const had = lastBody.current !== ''
+    if (entryEmpty(draftBody)) {
+      lastBody.current = ''
+      if (had) void saver.discard(kind, () => post(`/entry-drafts/${kind}/discard`))
+      return
+    }
+    lastBody.current = draftText
+    // Только что прочитанный с сервера черновик не пишем заново. Копия устройства — пишем: сервер её не получил.
+    if (loadedFromServer.current) {
+      loadedFromServer.current = false
+      return
+    }
+    saver.change(kind, opId, draftBody)
+    // Сравнение идёт по тексту формы.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftText, autosave, entryReady, kind, opId])
+
+  // Уход с экрана — запись сразу; закрытие вкладки — запрос, который браузер не оборвёт.
+  useEffect(() => {
+    const onHide = () => saver.closing()
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('pagehide', onHide)
+      void saver.flush()
+    }
+  }, [saver])
+
+  /** «Начать заново»: черновик убирается, форма пуста. */
+  const restart = () => {
+    if (!window.confirm('Начать заново? Незавершённый документ будет удалён.')) return
+    void saver.discard(kind, () => post(`/entry-drafts/${kind}/discard`))
+    startFresh()
+  }
 
   const calcs = lines.map(calcOf)
   let total: number | null = 0
@@ -532,6 +720,9 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         lines: built.body,
         ...(draft ? { draft_id: draft.id } : {}),
       })
+      // Приёмка — другой документ: черновик прихода больше не нужен.
+      await saver.discard('receipt', () => post('/entry-drafts/receipt/discard'))
+      saver.finish('receipt')
       toast('Отправлено на приёмку: кассир примет товар на планшете')
       navigate('/receipts')
     })
@@ -546,6 +737,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       return
     }
     void save.run(async () => {
+      posting.current = true
       const doc = {
         supplier_id: supplierId || null,
         payment: onDebt ? 'debt' : 'paid',
@@ -560,6 +752,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       const r = fix
         ? { id: (await postCorrection({ op_id: opId, kind: 'receipt', original_id: fix.originalId, comment: fixComment.trim(), doc })).new_id }
         : await post<Receipt>('/receipts', { op_id: opId, ...doc, ...(draft ? { draft_id: draft.id } : {}) })
+      saver.finish('receipt')
       // Фото — после проведения: накладная уже есть, не загрузившееся можно прикрепить в ней.
       if (photos.length) {
         const failed = await uploadPhotos(r.id, photos)
@@ -588,10 +781,12 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       })
     }
     void save.run(async () => {
+      posting.current = true
       const doc = { comment: comment.trim(), lines: body }
       const id = fix
         ? (await postCorrection({ op_id: opId, kind: 'stock_in', original_id: fix.originalId, comment: fixComment.trim(), doc })).new_id
         : (await post<StockIn>('/stock-ins', { op_id: opId, ...doc })).id
+      saver.finish('stock_in')
       navigate(`/stock-ins/${id}${print && copies.length ? '?labels=1' : ''}`)
     })
   }
@@ -637,7 +832,21 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         {!fix && !draft && (
           <ReceiptDraftsBlock items={drafts.data?.items ?? []} onOpen={openDraft} onChanged={drafts.reload} />
         )}
-        <ErrorBox error={draftAction.error ?? drafts.error} />
+        <ErrorBox error={draftAction.error ?? drafts.error ?? (draftError && `Не удалось открыть незавершённый документ: ${draftError}. Обновите страницу: введённое сейчас не сохранится.`)} />
+        {continued && autosave && (
+          <div className="flex flex-wrap items-center gap-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="entry-draft-continued">
+            <span>Продолжено незавершённое, строк: {continued.count}.</span>
+            {continued.removed.length > 0 && <span data-testid="entry-draft-removed">Убрано: {continued.removed.join(', ')} — товара больше нет.</span>}
+            <Button variant="secondary" onClick={restart}>
+              Начать заново
+            </Button>
+          </div>
+        )}
+        {autosave && saveStatus !== 'idle' && (
+          <div className={`text-xs ${saveStatus === 'saved' || saveStatus === 'saving' ? 'text-slate-500' : 'text-amber-700'}`} data-testid="entry-draft-status">
+            {entrySaveText[saveStatus]}
+          </div>
+        )}
         {!fix && (
           <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Вид прихода">
             {(

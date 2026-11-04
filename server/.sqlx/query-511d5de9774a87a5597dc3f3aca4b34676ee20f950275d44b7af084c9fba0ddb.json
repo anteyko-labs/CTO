@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from entry_drafts where branch_id = $1 and user_id = $2 and kind = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "511d5de9774a87a5597dc3f3aca4b34676ee20f950275d44b7af084c9fba0ddb"
+}
