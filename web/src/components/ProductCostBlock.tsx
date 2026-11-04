@@ -2,25 +2,31 @@
 // и за литр (за шт, за кг), стоимость остатка, наценка и «Указать цену закупки»; администратору сервер
 // этих полей не отдаёт (I13) — у него только «Последний приход» (ADR-040). Данные — свежим
 // GET /products/{id}, откуда бы карточку ни открыли; только показ, остаток не меняется (I6).
+// Кнопка цены закупки — владельцу и администратору с правом (задача 031, ADR-192).
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { get } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDate } from '../lib/format'
 import { useLoad } from '../lib/hooks'
+import { can } from '../lib/permissions'
 import { costSummary, priceWithLiter } from '../lib/purchasePrice'
 import type { LastReceipt, Product } from '../lib/types'
 import { PurchasePriceModal } from './PurchasePriceModal'
 import { Button } from './ui'
 
 export function ProductCostBlock({ productId }: { productId: string }) {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
+  const mayPrice = can(user, 'purchase_price')
   const card = useLoad(() => get<Product>(`/products/${productId}`), [productId])
   const last = useLoad(() => get<LastReceipt | null>(`/products/${productId}/last-receipt`), [productId])
   const [pricing, setPricing] = useState(false)
   const p = card.data
   if (!p) return null
   const s = costSummary(p)
+  // Администратору стоимость остатка не приходит (I13): «указать» — только если цены ещё нет.
+  const askPrice = owner ? s.askPrice : p.last_purchase_price_tyiyn == null || Boolean(p.cost_pending)
   const r = last.data
   const lastLine = r ? (
     <>
@@ -71,15 +77,15 @@ export function ProductCostBlock({ productId }: { productId: string }) {
         <span className="text-slate-500">Последний приход: </span>
         {lastLine}
       </div>
-      {owner && !p.archived && (
+      {mayPrice && !p.archived && (
         <Button variant="secondary" className="mt-2 px-2 py-1 text-xs" onClick={() => setPricing(true)}>
-          {s.askPrice ? 'Указать цену закупки' : 'Исправить цену закупки'}
+          {askPrice ? 'Указать цену закупки' : 'Исправить цену закупки'}
         </Button>
       )}
       {pricing && (
         <PurchasePriceModal
           product={p}
-          fix={!s.askPrice}
+          fix={!askPrice}
           onClose={() => setPricing(false)}
           onDone={() => {
             setPricing(false)

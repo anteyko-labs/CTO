@@ -1,7 +1,8 @@
-// «Указать цену закупки» владельцем (ADR-062, ADR-128): товар продан без цены или остаток без
+// «Указать цену закупки» владельцем или администратором с правом (ADR-062, ADR-128, ADR-192): товар продан без цены или остаток без
 // стоимости. Из «Товаров» и из блока «Себестоимость» карточки (задача 003, Н7). Масло — «за кан. | за л».
 import { useState } from 'react'
 import { newOpId, post } from '../lib/api'
+import { useUser } from '../lib/auth'
 import { formatSom } from '../lib/format'
 import { useAction } from '../lib/hooks'
 import { costPer, entryUnitPrice, type PriceEntry, type PricePer } from '../lib/purchasePrice'
@@ -24,6 +25,7 @@ export function PurchasePriceModal({
   const [entry, setEntry] = useState<PriceEntry>({ text: '', per: 'can' })
   const [shown, setShown] = useState<PricePer>('can')
   const act = useAction()
+  const owner = useUser().role === 'owner'
   const tare = product.unit === 'ml' && product.container_ml ? product.container_ml : null
   const save = () => {
     const price = entryUnitPrice(entry, tare)
@@ -33,7 +35,7 @@ export function PurchasePriceModal({
     }
     void act.run(async () => {
       const r = await post<{ lines: number; accrued_tyiyn: number }>(`/stock/${product.id}/purchase-price`, { op_id: opId, price_tyiyn: price, fix })
-      toast(fix ? 'Цена закупки исправлена, остаток переоценён' : `Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}`)
+      toast(fix ? 'Цена закупки исправлена, остаток переоценён' : owner ? `Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}` : `Цена закупки указана: строк чеков ${r.lines}`)
       onDone()
     })
   }

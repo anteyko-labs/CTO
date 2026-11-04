@@ -40,6 +40,7 @@ export type Permission =
   | 'services'
   | 'prices'
   | 'products_archive'
+  | 'purchase_price'
   | 'payroll_view_all'
 
 /** Филиал (SPEC-33). */

@@ -1590,3 +1590,92 @@ async fn allow_negative(pool: &PgPool) {
     .await
     .unwrap();
 }
+
+/// Задача 031, ADR-192: цена закупки — выдаваемое право, остаток переоценивается, только свой филиал.
+#[sqlx::test(migrations = "./migrations")]
+async fn purchase_price_is_a_grantable_permission_of_own_branch(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let item = Uuid::parse_str(&w.item).unwrap();
+    let stock_of = |branch: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (i64, i64)>(
+                "select stock_qty, stock_value_tyiyn from branch_products where branch_id = $1 and product_id = $2",
+            )
+            .bind(branch)
+            .bind(item)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    for branch in [w.a, w.b] {
+        sqlx::query(
+            "update branch_products set stock_qty = 10, stock_value_tyiyn = 100000,
+                    last_cost_qty = 1, last_cost_tyiyn = 10000
+             where branch_id = $1 and product_id = $2",
+        )
+        .bind(branch)
+        .bind(item)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let uri = format!("/api/v1/stock/{}/purchase-price", w.item);
+    let body = |price: i64| json!({ "op_id": op(), "price_tyiyn": price, "fix": true });
+    let revoke = sqlx::query(
+        "delete from user_permissions where permission = 'purchase_price'
+         and user_id = (select id from users where login = 'admin_b')",
+    );
+    let grant = sqlx::query(
+        "insert into user_permissions (user_id, branch_id, permission)
+         select id, branch_id, 'purchase_price' from users where login = 'admin_b'",
+    );
+
+    // С правом: заголовок чужого филиала не помогает, переоценён остаток только своего.
+    let out = w
+        .api
+        .ok("POST", &uri, &w.admin_b, Some(w.a), body(12_000))
+        .await;
+    assert_eq!(out["accrued_tyiyn"], 0);
+    assert_eq!(stock_of(w.a).await, (10, 100_000));
+    assert_eq!(stock_of(w.b).await, (10, 120_000));
+
+    // Себестоимость администратору не отдаётся (I13).
+    let card = w
+        .api
+        .get(&format!("/api/v1/products/{}", w.item), &w.admin_b, None)
+        .await;
+    assert!(card["avg_cost_tyiyn"].is_null());
+    assert!(card["stock_value_tyiyn"].is_null());
+
+    // Владельцу филиала — уведомление «было → стало».
+    let feed = w
+        .api
+        .get("/api/v1/notifications", &w.owner, Some(w.b))
+        .await;
+    let note = feed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["action"] == "stock.purchase_price")
+        .expect("уведомление о цене закупки")
+        .to_string();
+    assert!(note.contains("было") && note.contains("стало"), "{note}");
+
+    // Сняли право — 403, остаток прежний; выдали снова — работает.
+    revoke.execute(&pool).await.unwrap();
+    let (s, e) = w
+        .api
+        .call("POST", &uri, &w.admin_b, None, Some(body(13_000)))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(
+        e["error"]["message"],
+        "Нет права: Менять цену закупки товара"
+    );
+    assert_eq!(stock_of(w.b).await, (10, 120_000));
+    grant.execute(&pool).await.unwrap();
+    w.api.ok("POST", &uri, &w.admin_b, None, body(13_000)).await;
+    assert_eq!(stock_of(w.b).await, (10, 130_000));
+}

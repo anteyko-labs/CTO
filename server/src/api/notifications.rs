@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 81] = [
+pub(crate) const WATCHED: [&str; 82] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -107,6 +107,8 @@ pub(crate) const WATCHED: [&str; 81] = [
     "product.barcode",
     // Администратор отвязал свой Телеграм сам (ADR-172).
     "telegram.admin_unlink",
+    // Цена закупки в карточке товара: владелец или администратор с правом (задача 031).
+    "stock.purchase_price",
 ];
 
 #[derive(Serialize)]
@@ -646,6 +648,15 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .map(|d| format!(", накладная {d}"))
                     .unwrap_or_default(),
                 comment(data)
+            ),
+        ),
+        "stock.purchase_price" => (
+            "Изменена цена закупки товара".into(),
+            format!(
+                "{}: было {}, стало {}",
+                text("name"),
+                money(num("old_price_tyiyn")),
+                money(num("price_tyiyn"))
             ),
         ),
         "product.barcode" => (

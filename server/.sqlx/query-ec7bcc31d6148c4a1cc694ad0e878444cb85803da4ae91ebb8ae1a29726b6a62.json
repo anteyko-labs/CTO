@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select last_cost_qty, last_cost_tyiyn from branch_products where branch_id = $1 and product_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "last_cost_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_cost_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ec7bcc31d6148c4a1cc694ad0e878444cb85803da4ae91ebb8ae1a29726b6a62"
+}

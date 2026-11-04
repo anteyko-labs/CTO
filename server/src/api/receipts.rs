@@ -1584,8 +1584,12 @@ async fn purchase_price(
     Json(req): Json<PurchasePriceReq>,
 ) -> AppResult<Json<crate::api::payroll::CostResolved>> {
     let mut tx = state.pool.begin().await?;
-    let out = purchase_price_tx(&mut tx, &ctx, product_id, req).await?;
+    let mut out = purchase_price_tx(&mut tx, &ctx, product_id, req).await?;
     tx.commit().await?;
+    // Начисление считается из себестоимости: администратору сумму не отдаём (I13, ADR-192).
+    if !ctx.user.is_owner() {
+        out.accrued_tyiyn = 0;
+    }
     Ok(Json(out))
 }
 
@@ -1598,7 +1602,7 @@ pub async fn purchase_price_tx(
     req: PurchasePriceReq,
 ) -> AppResult<crate::api::payroll::CostResolved> {
     const KIND: &str = "stock.purchase_price";
-    ctx.user.require_owner()?;
+    crate::auth::require_permission(&mut *conn, &ctx.user, "purchase_price").await?;
     if req.price_tyiyn <= 0 {
         return Err(invalid("цена закупки больше нуля"));
     }
@@ -1620,6 +1624,21 @@ pub async fn purchase_price_tx(
     // Те же единицы, что у цены последнего прихода в карточке: штука, канистра, кг, м (ADR-178).
     let per = crate::api::catalog::price_unit(&p.unit, p.container_ml);
     ops::lock_pool(&mut *conn, branch_id, product_id).await?;
+    // Прежняя цена — за те же единицы, для уведомления владельцу (задача 031).
+    let old_price = sqlx::query!(
+        "select last_cost_qty, last_cost_tyiyn from branch_products where branch_id = $1 and product_id = $2",
+        branch_id,
+        product_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .filter(|r| r.last_cost_qty > 0)
+    .and_then(|r| {
+        crate::domain::money::div_round(
+            i128::from(r.last_cost_tyiyn) * i128::from(per),
+            i128::from(r.last_cost_qty),
+        )
+    });
     // Закупок не было — цена владельца становится «последней закупочной»: следующие продажи
     // при нехватке остатка возьмут себестоимость по ней (SPEC-03). Цену прихода не перебиваем.
     // Цена владельца хранится и отдельно: сторно закупки без других закупок вернёт её (ADR-092).
@@ -1694,6 +1713,7 @@ pub async fn purchase_price_tx(
         json!({
             "name": p.name,
             "price_tyiyn": req.price_tyiyn,
+            "old_price_tyiyn": old_price,
             "per": per,
             "lines": out.lines,
             "accrued_tyiyn": out.accrued_tyiyn,

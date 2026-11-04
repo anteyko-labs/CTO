@@ -11676,6 +11676,12 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
             ),
         ),
         (
+            "purchase_price",
+            "POST",
+            format!("/api/v1/stock/{item}/purchase-price"),
+            Box::new(move || json!({ "op_id": op(), "price_tyiyn": 30_000 })),
+        ),
+        (
             "products_archive",
             "PATCH",
             format!("/api/v1/products/{spare}"),
