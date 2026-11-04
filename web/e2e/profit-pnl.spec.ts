@@ -78,18 +78,18 @@ test('прибыль и убытки: раскрытие до документо
   await expect(art.getByRole('treeitem').filter({ hasText: `Ошибка ${RUN}` })).toHaveCount(2)
   await expect(art.getByRole('treeitem').filter({ hasText: `Ошибка ${RUN}` }).getByText('сторно', { exact: true })).toBeVisible()
 
-  // Зарплата работникам → работник → выдано списком.
+  // Зарплата работникам → работник → выплаты списком, начисленное справочно (ADR-193).
   await page.getByTestId('pnl-opex.salary').getByRole('button').first().click()
   const person = page.getByTestId(`pnl-opex.staff.${emp.id}`)
   await expect(person).toContainText(worker)
   await person.getByRole('button').first().click()
-  await expect(person.getByTestId(`pnl-opex.staff.${emp.id}.bonus`)).toContainText('Бонус / доп. доход')
-  const paid = person.getByTestId(`pnl-opex.staff.${emp.id}.paid`)
-  await paid.getByRole('button').first().click()
-  await expect(paid.getByRole('treeitem').first()).toContainText('Сейф владельца')
+  const accrued = person.getByTestId(`pnl-opex.staff.${emp.id}.accrued`)
+  await accrued.getByRole('button').first().click()
+  await expect(accrued.getByTestId(`pnl-opex.staff.${emp.id}.bonus`)).toContainText('Бонус / доп. доход')
+  await expect(person.getByRole('treeitem').filter({ hasText: 'Сейф владельца' }).first()).toBeVisible()
 
-  // «Не входит в прибыль»: выдано работникам.
-  await expect(page.getByTestId('pnl-money')).toContainText('Выдано работникам')
+  // Выплата — в зарплате, в «Не входит в прибыль» её нет.
+  await expect(page.getByText('Выдано работникам')).toHaveCount(0)
 
   // «Скачать» — .xlsx с листами; первый — «Прибыль и убытки», расход и выплата в файле.
   const download = page.waitForEvent('download')
@@ -139,6 +139,48 @@ test('прибыль и убытки: раскрытие до документо
   const denied = await a.request.get('/api/v1/reports/profit?detail=1')
   expect(denied.status()).toBe(403)
   await ctx.close()
+})
+
+test('зарплата по выплате: начисление прибыль не меняет, «Выплатить» меняет; часы периода', async ({ page }) => {
+  await login(page, OWNER, OWNER_PASSWORD)
+  await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false, expenses_bonus_accruals: true })
+  const safe = await ownerSafe(page.request)
+  const net = async () => (await api<{ totals: { net_tyiyn: number } }>(page, 'get', '/reports/profit')).totals.net_tyiyn
+  const worker = `Мастер ${RUN}`
+  const emp = await api<{ id: string }>(page, 'post', '/employees', { full_name: worker, is_master: true })
+  const before = await net()
+  await api(page, 'post', '/payroll/accruals', { op_id: crypto.randomUUID(), employee_id: emp.id, kind: 'bonus', amount_tyiyn: 70_000, comment: 'доп доход' })
+  expect(await net()).toBe(before)
+  await api(page, 'post', '/payouts', { op_id: crypto.randomUUID(), employee_id: emp.id, amount_tyiyn: 70_000, source: 'account', account_id: safe })
+  expect(await net()).toBe(before - 70_000)
+
+  // Часы периода: выплата только что — вне отбора «до начала этой минуты», подпись с часами.
+  await page.goto('/profit')
+  await page.getByRole('button', { name: 'Сегодня' }).click()
+  const salaryRow = page.getByTestId('pnl-opex.salary')
+  await page.getByTestId('pnl-opex').getByRole('button').first().click()
+  await expect(salaryRow).toBeVisible()
+  await page.getByLabel('С часа').fill('00:00')
+  await page.getByLabel('По час').fill('00:01')
+  await expect(page.getByText('с 00:00 до 00:01')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Сегодня' })).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.getByTestId(`pnl-opex.staff.${emp.id}`)).toHaveCount(0)
+  await page.getByRole('button', { name: 'Сегодня' }).click()
+  await expect(page.getByRole('button', { name: 'Сегодня' })).toHaveAttribute('aria-pressed', 'true')
+
+  // Настройка: по начислению — как раньше.
+  await page.goto('/settings/profit-report')
+  await page.getByTestId('profit-settings-payroll').getByRole('radio', { name: /По начислению/ }).check()
+  await expect(page.getByText('Зарплата в прибыли: по начислению')).toBeVisible()
+  try {
+    const accrualNet = await net()
+    await api(page, 'post', '/payroll/accruals', { op_id: crypto.randomUUID(), employee_id: emp.id, kind: 'bonus', amount_tyiyn: 5_000, comment: 'ещё' })
+    expect(await net()).toBe(accrualNet - 5_000)
+    await api(page, 'post', '/payouts', { op_id: crypto.randomUUID(), employee_id: emp.id, amount_tyiyn: 5_000, source: 'account', account_id: safe })
+    expect(await net()).toBe(accrualNet - 5_000)
+  } finally {
+    await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false, expenses_bonus_accruals: true, payroll_basis: 'payout' })
+  }
 })
 
 test('настройки отчёта: поле «Кому» обязательное — расход без него не записать', async ({ page }) => {

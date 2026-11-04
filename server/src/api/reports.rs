@@ -2,7 +2,7 @@
 
 use axum::extract::{Query, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -34,10 +34,13 @@ pub struct Totals {
     #[serde(default)]
     pub revaluation_tyiyn: i64,
     pub gross_tyiyn: i64,
+    /// Зарплата в прибыли: выплаты или начисления — по настройке `payroll_basis` (ADR-193).
     pub payroll_tyiyn: i64,
-    /// В том числе оклады за месяц (начисления вида `monthly_salary`) — расшифровка строки
-    /// «Зарплата сотрудникам», в чистую прибыль отдельно не входит.
+    /// В том числе оклады (выплаты и начисления вида «оклад») — расшифровка строки «Зарплата
+    /// сотрудникам», в чистую прибыль отдельно не входит.
     pub salary_tyiyn: i64,
+    /// Как считана `payroll_tyiyn`: `payout` или `accrual` (ADR-193).
+    pub payroll_basis: &'static str,
     pub bank_fee_tyiyn: i64,
     pub expenses_tyiyn: i64,
     /// Оплачено баллами за вычетом возвращённых — скидка клиентам (SPEC-19).
@@ -113,13 +116,16 @@ pub(crate) struct ProfitOut {
     pub(crate) staff: Vec<crate::api::payroll::StaffPay>,
     /// По часам — только когда период один день.
     pub(crate) hours: Vec<HourRow>,
+    /// Отбор по часам, если он задан: раскрытие берёт его отсюда.
+    #[serde(skip)]
+    pub(crate) window: TimeWindow,
 }
 
 /// Предупреждения SPEC-08 «Достоверность» (ADR-092): прибыль периода может быть неполной или
 /// поменяться после просмотра.
 /// - `late_offline` — чеки без связи, проведённые позже своего учётного дня;
 /// - `salary_not_accrued` — месяц периода закончился, а оклад начислен не всем, у кого есть
-///   правило оклада в этом месяце;
+///   правило оклада в этом месяце; только при учёте зарплаты по начислению (ADR-193);
 /// - `fee_rate_unset` — оплаты картой пришли на счёт, у которого в день чека не было ставки
 ///   комиссии банка (перевод «QR владельцу» обычно без комиссии — его не считаем).
 pub(crate) async fn reliability_warnings(
@@ -154,53 +160,55 @@ pub(crate) async fn reliability_warnings(
             crate::domain::qty::plural(late.n, "чек", "чека", "чеков")
         ));
     }
-    let salary = sqlx::query!(
-        // По закончившимся периодам каждого работника: период с его дня расчёта по день до
-        // него, отнесён к месяцу, в котором закончился (задача 003 Н11); при дне 1 — месяц.
-        r#"with months as (
-             select m::date as m
-             from generate_series(date_trunc('month', $2::date), date_trunc('month', $3::date),
-                                  interval '1 month') m
-           ), periods as (
-             select mo.m, e.id as employee_id,
-                    case when e.salary_day = 1 then mo.m
-                         else (mo.m - interval '1 month' + make_interval(days => e.salary_day - 1))::date
-                    end as start,
-                    case when e.salary_day = 1 then (mo.m + interval '1 month - 1 day')::date
-                         else (mo.m + make_interval(days => e.salary_day - 2))::date
-                    end as stop
-             from months mo join employees e on e.branch_id = $1 and e.active
-           ), due as (
-             select distinct p.m, p.employee_id, p.start, p.stop
-             from periods p
-             join employee_pay_rules r on r.branch_id = $1 and r.employee_id = p.employee_id
-               and r.kind = 'monthly_salary'
-               and r.active_from <= p.stop and (r.active_to is null or r.active_to > p.start)
-             where p.stop < (now() at time zone 'Asia/Bishkek')::date
-           )
-           select d.m as "month!", count(*) as "due!",
-                  count(*) filter (where not exists (
-                    select 1 from payroll_accruals a
-                    where a.branch_id = $1 and a.employee_id = d.employee_id
-                      and a.kind = 'monthly_salary' and a.reversal_of is null
-                      and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= d.stop
-                      and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= d.start
-                      and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)
-                  )) as "missing!"
-           from due d group by d.m order by d.m"#,
-        branch_id,
-        from,
-        to
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    for m in salary.into_iter().filter(|m| m.missing > 0) {
-        out.push(format!(
-            "оклад за {} начислен не всем ({} из {}): прибыль месяца ещё не полная",
-            m.month.format("%m.%Y"),
-            m.due - m.missing,
-            m.due
-        ));
+    if crate::api::pnl::payroll_basis(&mut *conn, branch_id).await? == crate::api::pnl::ACCRUAL {
+        let salary = sqlx::query!(
+            // По закончившимся периодам каждого работника: период с его дня расчёта по день до
+            // него, отнесён к месяцу, в котором закончился (задача 003 Н11); при дне 1 — месяц.
+            r#"with months as (
+                 select m::date as m
+                 from generate_series(date_trunc('month', $2::date), date_trunc('month', $3::date),
+                                      interval '1 month') m
+               ), periods as (
+                 select mo.m, e.id as employee_id,
+                        case when e.salary_day = 1 then mo.m
+                             else (mo.m - interval '1 month' + make_interval(days => e.salary_day - 1))::date
+                        end as start,
+                        case when e.salary_day = 1 then (mo.m + interval '1 month - 1 day')::date
+                             else (mo.m + make_interval(days => e.salary_day - 2))::date
+                        end as stop
+                 from months mo join employees e on e.branch_id = $1 and e.active
+               ), due as (
+                 select distinct p.m, p.employee_id, p.start, p.stop
+                 from periods p
+                 join employee_pay_rules r on r.branch_id = $1 and r.employee_id = p.employee_id
+                   and r.kind = 'monthly_salary'
+                   and r.active_from <= p.stop and (r.active_to is null or r.active_to > p.start)
+                 where p.stop < (now() at time zone 'Asia/Bishkek')::date
+               )
+               select d.m as "month!", count(*) as "due!",
+                      count(*) filter (where not exists (
+                        select 1 from payroll_accruals a
+                        where a.branch_id = $1 and a.employee_id = d.employee_id
+                          and a.kind = 'monthly_salary' and a.reversal_of is null
+                          and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= d.stop
+                          and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= d.start
+                          and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)
+                      )) as "missing!"
+               from due d group by d.m order by d.m"#,
+            branch_id,
+            from,
+            to
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        for m in salary.into_iter().filter(|m| m.missing > 0) {
+            out.push(format!(
+                "оклад за {} начислен не всем ({} из {}): прибыль месяца ещё не полная",
+                m.month.format("%m.%Y"),
+                m.due - m.missing,
+                m.due
+            ));
+        }
     }
     let no_rate = sqlx::query_scalar!(
         r#"select distinct a.name from sale_payments p
@@ -235,6 +243,17 @@ pub(crate) async fn reliability_warnings(
 struct Period {
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    /// Часы периода (Бишкек), только в «Прибыли и убытках» (задача 033).
+    from_time: Option<NaiveTime>,
+    to_time: Option<NaiveTime>,
+}
+
+/// Отбор по часам внутри периода (задача 033, ADR-193): пустой — весь период по дням, как было.
+/// Конец не включается. Применяет SQL-функция `pnl_in_window`.
+#[derive(Clone, Copy, Default)]
+pub struct TimeWindow {
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
 }
 
 /// `detail=1` — раскрытие строк «Прибыли и убытков» до документов (задача 003 Н12).
@@ -272,6 +291,38 @@ pub(crate) async fn resolve_period(
     Ok((from, to))
 }
 
+/// Часы периода → отбор. Без часов — пустой; только начало — до конца последнего дня, только
+/// конец — с начала первого.
+async fn resolve_window(
+    conn: &mut PgConnection,
+    from: NaiveDate,
+    to: NaiveDate,
+    from_time: Option<NaiveTime>,
+    to_time: Option<NaiveTime>,
+) -> AppResult<TimeWindow> {
+    if from_time.is_none() && to_time.is_none() {
+        return Ok(TimeWindow::default());
+    }
+    let w = sqlx::query!(
+        r#"select (($1::date + coalesce($2::time, time '00:00')) at time zone 'Asia/Bishkek') as "start!",
+                  ((case when $4::time is null then ($3::date + 1)::timestamp
+                         else $3::date + $4::time end) at time zone 'Asia/Bishkek') as "stop!""#,
+        from,
+        from_time,
+        to,
+        to_time
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if w.start >= w.stop {
+        return Err(invalid("начало периода позже конца"));
+    }
+    Ok(TimeWindow {
+        start: Some(w.start),
+        end: Some(w.stop),
+    })
+}
+
 /// Деньги за период: выручка, себестоимость, оплата труда, комиссия и расходы.
 /// Открыт для проверок: ответ бота на вопрос сверяется с этим расчётом (SPEC-21).
 pub async fn totals_for(
@@ -280,16 +331,31 @@ pub async fn totals_for(
     from: NaiveDate,
     to: NaiveDate,
 ) -> AppResult<Totals> {
+    totals_in(conn, branch_id, from, to, TimeWindow::default()).await
+}
+
+/// То же с отбором по часам.
+async fn totals_in(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+    w: TimeWindow,
+) -> AppResult<Totals> {
+    let basis = crate::api::pnl::payroll_basis(&mut *conn, branch_id).await?;
     let lines = sqlx::query!(
         r#"select
              coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as "goods!",
              coalesce(sum(l.amount_tyiyn) filter (where l.kind = 'service'), 0)::bigint as "services!",
              coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!"
            from sale_lines l join sales s on s.id = l.sale_id
-           where s.branch_id = $1 and s.business_date between $2 and $3"#,
+           where s.branch_id = $1 and s.business_date between $2 and $3
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -297,30 +363,47 @@ pub async fn totals_for(
     let revaluation = sqlx::query_scalar!(
         r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
            where branch_id = $1 and doc_type in ('revaluation', 'revision')
-             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(created_at, $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
     let count = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from sales
-           where branch_id = $1 and business_date between $2 and $3 and kind = 'sale'"#,
+        r#"select count(*) as "n!" from sales s
+           where s.branch_id = $1 and s.business_date between $2 and $3 and s.kind = 'sale'
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
     let pay = sqlx::query!(
-        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "all!",
-                  coalesce(sum(amount_tyiyn) filter (where kind = 'monthly_salary'), 0)::bigint as "salary!"
-           from payroll_accruals
-           where branch_id = $1 and business_date between $2 and $3"#,
+        // Зарплата — выплатами или начислениями, по настройке (ADR-193).
+        r#"select coalesce(sum(x.v), 0)::bigint as "all!",
+                  coalesce(sum(x.v) filter (where x.salary), 0)::bigint as "salary!"
+           from (select a.amount_tyiyn as v, a.kind = 'monthly_salary' as salary
+                 from payroll_accruals a
+                 where a.branch_id = $1 and a.business_date between $2 and $3 and $6::text = 'accrual'
+                   and public.pnl_in_window(a.business_date, a.created_at, $4, $5)
+                 union all
+                 select p.amount_tyiyn, p.purpose = 'salary'
+                 from payouts p
+                 where p.branch_id = $1 and p.pay_date between $2 and $3 and $6::text = 'payout'
+                   and public.pnl_in_window(p.pay_date, p.created_at, $4, $5)) x"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end,
+        basis
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -329,53 +412,68 @@ pub async fn totals_for(
     // выписке банка в день операции (SPEC-31).
     let fee = sqlx::query_scalar!(
         r#"select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
-                             where s.branch_id = $1 and s.business_date between $2 and $3), 0)
+                             where s.branch_id = $1 and s.business_date between $2 and $3
+                               and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)), 0)
                  + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
                              where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
-                               and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)
+                               and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                               and public.pnl_in_window(m.created_at, $4, $5)), 0)
                  + coalesce((select sum(a.amount_tyiyn) from bank_fee_adjustments a
-                             where a.branch_id = $1 and a.op_day between $2 and $3), 0)
+                             where a.branch_id = $1 and a.op_day between $2 and $3
+                               and public.pnl_in_window(a.op_day, null, $4, $5)), 0)
                  -- Комиссия переноса из наличных в QR — учётным днём смены (SPEC-37 §4).
                  + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
                              join pay_fixes f on f.id = m.doc_id join shifts sh on sh.id = f.shift_id
                              where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'pay_fix'
-                               and sh.business_date between $2 and $3), 0)
+                               and sh.business_date between $2 and $3
+                               and public.pnl_in_window(sh.business_date, m.created_at, $4, $5)), 0)
                  )::bigint as "v!""#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
     let expenses = sqlx::query_scalar!(
         r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from expenses
-           where branch_id = $1 and expense_date between $2 and $3"#,
+           where branch_id = $1 and expense_date between $2 and $3
+             and public.pnl_in_window(expense_date, created_at, $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
     let bonus = sqlx::query_scalar!(
         r#"select coalesce(sum(p.amount_tyiyn), 0)::bigint as "v!" from sale_payments p join sales s on s.id = p.sale_id
-           where s.branch_id = $1 and s.business_date between $2 and $3 and p.method = 'bonus'"#,
+           where s.branch_id = $1 and s.business_date between $2 and $3 and p.method = 'bonus'
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
     // Недостача и излишек кассы — по учётному дню смены: и пересчёт при открытии, и при
-    // закрытии. Удержание с кассира идёт в оплату труда, поэтому удержанная недостача прибыль
-    // не меняет, а прощённая уменьшает её (ADR-065).
+    // закрытии. При учёте по начислению удержание с кассира идёт в оплату труда (ADR-065), при
+    // учёте по выплате прибыль вернётся, когда выплата выйдет меньше на удержание (ADR-193).
     let cash_diff = sqlx::query_scalar!(
         r#"select coalesce(sum(m.amount_tyiyn), 0)::bigint as "v!"
            from cash_movements m join shifts s on s.id = m.doc_id
            where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
-             and s.business_date between $2 and $3"#,
+             and s.business_date between $2 and $3
+             and public.pnl_in_window(s.business_date, m.created_at, $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -384,20 +482,26 @@ pub async fn totals_for(
         r#"select coalesce(sum(writeoff_tyiyn), 0)::bigint as "writeoff!",
                   coalesce(sum(diff_tyiyn), 0)::bigint as "diff!"
            from defect_resolutions
-           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(created_at, $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
     // Возврат поставщику (SPEC-29 §9) — по дню документа; сторно входит со своим знаком.
     let return_diff = sqlx::query_scalar!(
         r#"select coalesce(sum(diff_tyiyn), 0)::bigint as "v!" from supplier_returns
-           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(created_at, $4, $5)"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -408,6 +512,7 @@ pub async fn totals_for(
         revaluation,
         payroll,
         salary: pay.salary,
+        basis,
         fee,
         expenses,
         bonus,
@@ -427,6 +532,7 @@ struct Parts {
     revaluation: i64,
     payroll: i64,
     salary: i64,
+    basis: &'static str,
     fee: i64,
     expenses: i64,
     bonus: i64,
@@ -451,6 +557,7 @@ fn assemble(p: Parts) -> Totals {
         gross_tyiyn: gross,
         payroll_tyiyn: p.payroll,
         salary_tyiyn: p.salary,
+        payroll_basis: p.basis,
         bank_fee_tyiyn: p.fee,
         expenses_tyiyn: p.expenses,
         bonus_tyiyn: p.bonus,
@@ -475,8 +582,8 @@ fn assemble(p: Parts) -> Totals {
 }
 
 /// Прибыль за время смены (SPEC-36 §9, ADR-120): та же формула, что у дня, но всё — по времени
-/// записи от открытия смены до закрытия (у открытой — до сейчас). Оклад за месяц не входит: он
-/// начисляется в конце месяца. Недостача и излишек — пересчёты этой смены. Поправки комиссии по
+/// записи от открытия смены до закрытия (у открытой — до сейчас). Оклад не входит: он за период, а
+/// не за смену; зарплата — выплатами или начислениями, по настройке (ADR-193). Недостача и излишек — пересчёты этой смены. Поправки комиссии по
 /// выписке банка (SPEC-31) — к дню операции, а не к смене: в смену не входят.
 pub async fn totals_between(
     conn: &mut PgConnection,
@@ -485,6 +592,7 @@ pub async fn totals_between(
     start: DateTime<Utc>,
     end: Option<DateTime<Utc>>,
 ) -> AppResult<Totals> {
+    let basis = crate::api::pnl::payroll_basis(&mut *conn, branch_id).await?;
     let lines = sqlx::query!(
         r#"select
              coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as "goods!",
@@ -511,13 +619,19 @@ pub async fn totals_between(
     .fetch_one(&mut *conn)
     .await?;
     let payroll = sqlx::query_scalar!(
-        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from payroll_accruals
-           where branch_id = $1 and kind <> 'monthly_salary'
-             and created_at >= $2 and created_at <= coalesce($3, now())
-             and not public.pay_fix_counted_accrual(id, doc_type, doc_id)"#,
+        r#"select coalesce(sum(x.v), 0)::bigint as "v!"
+           from (select a.amount_tyiyn as v from payroll_accruals a
+                 where a.branch_id = $1 and a.kind <> 'monthly_salary' and $4::text = 'accrual'
+                   and a.created_at >= $2 and a.created_at <= coalesce($3, now())
+                   and not public.pay_fix_counted_accrual(a.id, a.doc_type, a.doc_id)
+                 union all
+                 select p.amount_tyiyn from payouts p
+                 where p.branch_id = $1 and p.purpose <> 'salary' and $4::text = 'payout'
+                   and p.created_at >= $2 and p.created_at <= coalesce($3, now())) x"#,
         branch_id,
         start,
-        end
+        end,
+        basis
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -596,6 +710,7 @@ pub async fn totals_between(
         revaluation,
         payroll,
         salary: 0,
+        basis,
         fee,
         expenses,
         bonus,
@@ -610,12 +725,14 @@ pub async fn totals_between(
 /// Прибыль изменений после пересчёта смены (SPEC-37 §4): изменения оплаты и переносы, поправившие
 /// пересчёт этой смены. Их документы в прибыль смены по времени не входят (там — как при
 /// пересчёте); здесь — их сумма: валовая сторно и нового чека (ноль — себестоимость та же),
-/// начисления, комиссия, баллы, поправки пересчёта и удержания.
+/// начисления (только при учёте по начислению, ADR-193), комиссия, баллы, поправки пересчёта и
+/// удержания.
 pub async fn fixes_totals(
     conn: &mut PgConnection,
     branch_id: Uuid,
     shift_id: Uuid,
 ) -> AppResult<Totals> {
+    let basis = crate::api::pnl::payroll_basis(&mut *conn, branch_id).await?;
     let lines = sqlx::query!(
         r#"with x as (select unnest(array[f.reversal_sale_id, f.new_sale_id]) as sale_id
                       from pay_fixes f
@@ -661,8 +778,13 @@ pub async fn fixes_totals(
         services: lines.services,
         cost: lines.cost,
         revaluation: 0,
-        payroll: money.payroll,
+        payroll: if basis == crate::api::pnl::ACCRUAL {
+            money.payroll
+        } else {
+            0
+        },
         salary: 0,
+        basis,
         fee: money.fee,
         expenses: 0,
         bonus: money.bonus,
@@ -680,15 +802,19 @@ pub(crate) async fn articles_for(
     branch_id: Uuid,
     from: NaiveDate,
     to: NaiveDate,
+    w: TimeWindow,
 ) -> AppResult<Vec<ArticleRow>> {
     Ok(sqlx::query!(
         r#"select a.name as "name!", coalesce(sum(e.amount_tyiyn), 0)::bigint as "amount!"
            from expenses e join expense_articles a on a.id = e.article_id
            where e.branch_id = $1 and e.expense_date between $2 and $3
+             and public.pnl_in_window(e.expense_date, e.created_at, $4, $5)
            group by a.name having coalesce(sum(e.amount_tyiyn), 0) <> 0 order by 2 desc"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -707,6 +833,7 @@ pub(crate) async fn categories_for(
     branch_id: Uuid,
     from: NaiveDate,
     to: NaiveDate,
+    w: TimeWindow,
 ) -> AppResult<Vec<CategoryRow>> {
     Ok(sqlx::query!(
         r#"select c.name as "name!",
@@ -717,10 +844,13 @@ pub(crate) async fn categories_for(
            join products p on p.id = l.product_id
            join categories c on c.id = p.category_id
            where s.branch_id = $1 and s.business_date between $2 and $3
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)
            group by c.name order by 2 desc"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -742,16 +872,17 @@ async fn profit(
     Query(d): Query<DetailQuery>,
 ) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
-    let (from, to) = (q.from, q.to);
+    let (from, to, from_time, to_time) = (q.from, q.to, q.from_time, q.to_time);
     let detail = matches!(d.detail.as_deref(), Some("1" | "true"));
     Ok(Json(
         branches::report(&mut conn, &user, &scope, |c, u| {
             Box::pin(async move {
-                let out = profit_data(&mut *c, &u, from, to).await?;
+                let out = profit_in(&mut *c, &u, from, to, from_time, to_time).await?;
                 let mut v = branches::to_json(&out)?;
                 // Без `detail` ответ прежний: бот, сводка и смена его не ждут.
                 if detail && let Some(obj) = v.as_object_mut() {
-                    let more = crate::api::pnl::detail(&mut *c, &u, out.from, out.to).await?;
+                    let more =
+                        crate::api::pnl::detail(&mut *c, &u, out.from, out.to, out.window).await?;
                     obj.insert("detail".into(), branches::to_json(&more)?);
                 }
                 Ok(v)
@@ -768,14 +899,28 @@ pub(crate) async fn profit_data(
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
 ) -> AppResult<ProfitOut> {
+    profit_in(conn, user, from, to, None, None).await
+}
+
+/// То же с часами периода (задача 033).
+async fn profit_in(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    from_time: Option<NaiveTime>,
+    to_time: Option<NaiveTime>,
+) -> AppResult<ProfitOut> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
     let (from, to) = resolve_period(&mut *conn, from, to).await?;
+    let w = resolve_window(&mut *conn, from, to, from_time, to_time).await?;
     let branch_id = user.branch_id;
-    let totals = totals_for(&mut *conn, branch_id, from, to).await?;
+    let totals = totals_in(&mut *conn, branch_id, from, to, w).await?;
+    let basis = totals.payroll_basis;
 
-    let categories = categories_for(&mut *conn, branch_id, from, to).await?;
+    let categories = categories_for(&mut *conn, branch_id, from, to, w).await?;
 
     let days = sqlx::query!(
         // Каждый источник — одна сводка по дням периода, а не запрос на каждый день (ADR-094).
@@ -784,44 +929,59 @@ pub(crate) async fn profit_data(
                          sum(l.amount_tyiyn - l.cost_tyiyn) as gross
                   from sale_lines l join sales s on s.id = l.sale_id
                   where s.branch_id = $1 and s.business_date between $2 and $3
+                    and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)
                   group by 1),
            rv as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, sum(m.value_delta_tyiyn) as v
                   from stock_movements m
                   where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')
                     and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                    and public.pnl_in_window(m.created_at, $4, $5)
                   group by 1),
-           pa as (select a.business_date as day, sum(a.amount_tyiyn) as v from payroll_accruals a
-                  where a.branch_id = $1 and a.business_date between $2 and $3
+           pa as (select x.day, sum(x.v) as v
+                  from (select a.business_date as day, a.amount_tyiyn as v from payroll_accruals a
+                        where a.branch_id = $1 and a.business_date between $2 and $3 and $6::text = 'accrual'
+                          and public.pnl_in_window(a.business_date, a.created_at, $4, $5)
+                        union all
+                        select p.pay_date, p.amount_tyiyn from payouts p
+                        where p.branch_id = $1 and p.pay_date between $2 and $3 and $6::text = 'payout'
+                          and public.pnl_in_window(p.pay_date, p.created_at, $4, $5)) x
                   group by 1),
            ex as (select e.expense_date as day, sum(e.amount_tyiyn) as v from expenses e
                   where e.branch_id = $1 and e.expense_date between $2 and $3
+                    and public.pnl_in_window(e.expense_date, e.created_at, $4, $5)
                   group by 1),
            sp as (select s.business_date as day, sum(p.fee_tyiyn) as fee,
                          sum(p.amount_tyiyn) filter (where p.method = 'bonus') as bonus
                   from sale_payments p join sales s on s.id = p.sale_id
                   where s.branch_id = $1 and s.business_date between $2 and $3
+                    and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)
                   group by 1),
            bf as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, -sum(m.amount_tyiyn) as v
                   from cash_movements m
                   where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
                     and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                    and public.pnl_in_window(m.created_at, $4, $5)
                   group by 1),
            fa as (select a.op_day as day, sum(a.amount_tyiyn) as v from bank_fee_adjustments a
                   where a.branch_id = $1 and a.op_day between $2 and $3
+                    and public.pnl_in_window(a.op_day, null, $4, $5)
                   group by 1),
            cd as (select s.business_date as day, sum(m.amount_tyiyn) as v
                   from cash_movements m join shifts s on s.id = m.doc_id
                   where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
                     and s.business_date between $2 and $3
+                    and public.pnl_in_window(s.business_date, m.created_at, $4, $5)
                   group by 1),
            dr as (select (x.created_at at time zone 'Asia/Bishkek')::date as day,
                          sum(x.writeoff_tyiyn) as writeoff, sum(x.diff_tyiyn) as diff
                   from defect_resolutions x
                   where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                    and public.pnl_in_window(x.created_at, $4, $5)
                   group by 1),
            sr as (select (x.created_at at time zone 'Asia/Bishkek')::date as day, sum(x.diff_tyiyn) as v
                   from supplier_returns x
                   where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                    and public.pnl_in_window(x.created_at, $4, $5)
                   group by 1)
            select d.day as "day!",
              coalesce(sl.revenue, 0)::bigint as "revenue!",
@@ -848,7 +1008,10 @@ pub(crate) async fn profit_data(
            order by d.day desc"#,
         branch_id,
         from,
-        to
+        to,
+        w.start,
+        w.end,
+        basis
     )
     .fetch_all(&mut *conn)
     .await?
@@ -878,7 +1041,7 @@ pub(crate) async fn profit_data(
     })
     .collect();
 
-    let articles = articles_for(&mut *conn, branch_id, from, to).await?;
+    let articles = articles_for(&mut *conn, branch_id, from, to, w).await?;
 
     let mut warnings = Vec::new();
     let review = sqlx::query_scalar!(
@@ -929,9 +1092,12 @@ pub(crate) async fn profit_data(
                       count(distinct s.id) filter (where s.kind = 'sale') as "count!"
                from sales s join sale_lines l on l.sale_id = s.id
                where s.branch_id = $1 and s.business_date = $2
+                 and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $3, $4)
                group by 1 order by 1"#,
             branch_id,
-            from
+            from,
+            w.start,
+            w.end
         )
         .fetch_all(&mut *conn)
         .await?
@@ -956,6 +1122,7 @@ pub(crate) async fn profit_data(
         warnings,
         staff,
         hours,
+        window: w,
     })
 }
 

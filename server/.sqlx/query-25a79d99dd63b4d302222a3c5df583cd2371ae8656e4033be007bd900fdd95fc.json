@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select x.id, d.number, (x.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  p.name as product, x.kind, x.writeoff_tyiyn, x.diff_tyiyn, x.reversal_of,\n                  u.full_name as user_name\n           from defect_resolutions x\n           join defects d on d.id = x.defect_id\n           join products p on p.id = d.product_id\n           join users u on u.id = x.user_id\n           where x.branch_id = $1\n             and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n             and (x.writeoff_tyiyn <> 0 or x.diff_tyiyn <> 0)\n           order by x.created_at",
+  "query": "select x.id, d.number, (x.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  p.name as product, x.kind, x.writeoff_tyiyn, x.diff_tyiyn, x.reversal_of,\n                  u.full_name as user_name, x.created_at\n           from defect_resolutions x\n           join defects d on d.id = x.defect_id\n           join products p on p.id = d.product_id\n           join users u on u.id = x.user_id\n           where x.branch_id = $1\n             and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n             and public.pnl_in_window(x.created_at, $4, $5)\n             and (x.writeoff_tyiyn <> 0 or x.diff_tyiyn <> 0)\n           order by x.created_at",
   "describe": {
     "columns": [
       {
@@ -47,13 +47,20 @@
         "ordinal": 8,
         "name": "user_name",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
         "Date",
-        "Date"
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -65,8 +72,9 @@
       false,
       false,
       true,
+      false,
       false
     ]
   },
-  "hash": "99816929a9b4fecb173b597e54ca06d8c4f2994ac30ccfc1d5b8e951118874d1"
+  "hash": "25a79d99dd63b4d302222a3c5df583cd2371ae8656e4033be007bd900fdd95fc"
 }

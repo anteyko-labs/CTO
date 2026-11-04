@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.business_date, e.full_name as \"cashier?\",\n                  coalesce(sum(m.amount_tyiyn), 0)::bigint as \"amount!\",\n                  max(m.created_at) as \"created_at!\"\n           from cash_movements m\n           join shifts s on s.id = m.doc_id\n           left join employees e on e.id = s.cashier_employee_id\n           where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'\n             and s.business_date between $2 and $3\n             and public.pnl_in_window(s.business_date, m.created_at, $4, $5)\n           group by s.id, s.number, s.business_date, e.full_name\n           having coalesce(sum(m.amount_tyiyn), 0) <> 0\n           order by s.business_date, s.number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "cashier?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "906365abf0fa93f784231765d8a35511258943d649ae0b6bc5b192344115ba98"
+}

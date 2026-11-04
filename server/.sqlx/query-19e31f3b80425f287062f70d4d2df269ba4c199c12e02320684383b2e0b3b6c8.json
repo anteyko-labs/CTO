@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(-s.total_tyiyn), 0)::bigint as \"v!\" from sales s\n           where s.branch_id = $1 and s.business_date between $2 and $3 and s.kind = 'return'\n             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "19e31f3b80425f287062f70d4d2df269ba4c199c12e02320684383b2e0b3b6c8"
+}

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (($1::date + coalesce($2::time, time '00:00')) at time zone 'Asia/Bishkek') as \"start!\",\n                  ((case when $4::time is null then ($3::date + 1)::timestamp\n                         else $3::date + $4::time end) at time zone 'Asia/Bishkek') as \"stop!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "start!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "stop!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date",
+        "Time",
+        "Date",
+        "Time"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "fa300ec904e096778c76015d1ea862be59125a365022d86572ac1b7990704407"
+}

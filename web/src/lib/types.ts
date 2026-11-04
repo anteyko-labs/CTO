@@ -1025,6 +1025,8 @@ export interface ProfitTotals {
   payroll_tyiyn: number
   /** В том числе оклады за месяц — расшифровка оплаты труда. */
   salary_tyiyn?: number
+  /** Как считана зарплата в прибыли: по выплате или по начислению (ADR-193). */
+  payroll_basis?: 'payout' | 'accrual'
   bank_fee_tyiyn: number
   expenses_tyiyn: number
   bonus_tyiyn: number
@@ -1076,7 +1078,7 @@ export interface ProfitDetail {
   returns_tyiyn: number
   revision_tyiyn: number
   revaluation_only_tyiyn: number
-  revisions: { id: string; number: number | null; date: string; user_name: string | null; amount_tyiyn: number; branch: string }[]
+  revisions: { id: string; number: number | null; date: string; user_name: string | null; amount_tyiyn: number; created_at?: string; branch: string }[]
   revaluations: { id: string; date: string; product_id: string | null; name: string; amount_tyiyn: number }[]
   expenses: {
     id: string
@@ -1110,7 +1112,7 @@ export interface ProfitDetail {
     branch: string
   }[]
   fees: { id: string | null; name: string; amount_tyiyn: number; branch: string }[]
-  cash_diffs: { id: string; number: number; date: string; cashier: string | null; amount_tyiyn: number; branch: string }[]
+  cash_diffs: { id: string; number: number; date: string; cashier: string | null; amount_tyiyn: number; created_at?: string; branch: string }[]
   defects: {
     id: string
     number: number
@@ -1121,9 +1123,10 @@ export interface ProfitDetail {
     diff_tyiyn: number
     reversal_of: string | null
     user_name: string
+    created_at?: string
     branch: string
   }[]
-  supplier_returns: { id: string; number: number; date: string; supplier: string | null; diff_tyiyn: number; reversal_of: string | null; user_name: string; branch: string }[]
+  supplier_returns: { id: string; number: number; date: string; supplier: string | null; diff_tyiyn: number; reversal_of: string | null; user_name: string; created_at?: string; branch: string }[]
   not_in_profit: {
     id: string
     kind: 'supplier_payment' | 'cash_out' | 'transfer_out'
@@ -1159,6 +1162,8 @@ export interface ProfitSettings {
   show_reversals: boolean
   /** «Расходы»: начисленные бонусы отдельной строкой и «начислено, не выдано» (по умолчанию да). */
   expenses_bonus_accruals?: boolean
+  /** Зарплата в прибыли: когда выплатили (по умолчанию) или при начислении (ADR-193). */
+  payroll_basis?: 'payout' | 'accrual'
 }
 
 /** Строка «Расходов» — все траты, кроме оплаты поставщикам (`GET /expenses/all`, задача 003 Н12б). */

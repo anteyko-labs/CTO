@@ -1073,14 +1073,15 @@ pub(crate) async fn income_data(
     let methods = methods_for(&mut *conn, branch_id, from, to).await?;
     let totals = crate::api::reports::totals_for(&mut *conn, branch_id, from, to).await?;
     let accounts = account_flows(&mut *conn, user, from, to).await?;
-    let categories = crate::api::reports::categories_for(&mut *conn, branch_id, from, to)
-        .await?
-        .into_iter()
-        .map(|c| CategoryRevenue {
-            name: c.name,
-            revenue_tyiyn: c.revenue_tyiyn,
-        })
-        .collect();
+    let categories =
+        crate::api::reports::categories_for(&mut *conn, branch_id, from, to, Default::default())
+            .await?
+            .into_iter()
+            .map(|c| CategoryRevenue {
+                name: c.name,
+                revenue_tyiyn: c.revenue_tyiyn,
+            })
+            .collect();
     let products = crate::api::reports::top_products_data(
         &mut *conn,
         user,

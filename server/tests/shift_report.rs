@@ -1017,8 +1017,10 @@ async fn shift_net_profit_and_noncash_by_account(pool: PgPool) {
     assert_eq!(amount_of(&v1["profit"], "cash_diff"), -1_000);
     assert_eq!(amount_of(&v1["profit"], "expenses"), -3_000);
     assert_eq!(amount_of(&v1["profit"], "bank_fee"), -fee1);
-    // Недостачу удержали с кассира: начисление −1 000 с компенсирует её в прибыли (ADR-065).
+    // Зарплата в прибыли смены — выплаты её времени; здесь их нет, удержание недостачу не гасит
+    // (ADR-193).
     let payroll1 = amount_of(&v1["profit"], "payroll");
+    assert_eq!(payroll1, 0);
     let gross1 = v1["gross_tyiyn"].as_i64().unwrap();
     assert_eq!(gross1, 150_000 - 3_000);
     assert_eq!(

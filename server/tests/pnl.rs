@@ -465,8 +465,10 @@ async fn profit_detail_ties_out_to_totals(pool: PgPool) {
     assert_eq!(first["payee"], "Хозмаг");
     assert_eq!(first["user_name"], "Админ");
     assert_eq!(first["account_name"], "Касса");
-    // Зарплата работникам: начислено по видам = оплата труда, выдано — списком.
-    assert_eq!(sum(&full["staff"], "total_tyiyn"), num(&t["payroll_tyiyn"]));
+    // Зарплата работникам: выплаты списком = оплата труда, начислено по видам — справочно.
+    assert_eq!(sum(&d["payouts"], "amount_tyiyn"), num(&t["payroll_tyiyn"]));
+    assert_eq!(num(&t["payroll_tyiyn"]), 15_000);
+    assert_eq!(t["payroll_basis"], "payout");
     let roma = full["staff"]
         .as_array()
         .unwrap()
@@ -516,7 +518,7 @@ async fn profit_detail_ties_out_to_totals(pool: PgPool) {
         assert!(kinds.contains(&k), "{k}: {kinds:?}");
     }
 
-    // Выплата, изъятие и перевод прибыль не меняют — она по начислению (ADR-023).
+    // Выплата уменьшает прибыль (ADR-193); изъятие и перевод — нет, они выше.
     let net = num(&t["net_tyiyn"]);
     ok(
         &app,
@@ -530,7 +532,8 @@ async fn profit_detail_ties_out_to_totals(pool: PgPool) {
     )
     .await;
     let again = ok(&app, "GET", "/api/v1/reports/profit?detail=1", &owner, None).await;
-    assert_eq!(num(&again["totals"]["net_tyiyn"]), net);
+    assert_eq!(num(&again["totals"]["net_tyiyn"]), net - 5_000);
+    assert_eq!(num(&again["days"][0]["net_tyiyn"]), net - 5_000);
     assert_eq!(again["detail"]["payouts"].as_array().unwrap().len(), 2);
 
     // Раскрытие и настройки — только владелец (инвариант 13), и с любыми правами.
@@ -608,7 +611,7 @@ async fn expense_payee_is_stored_reversed_and_set_up_by_owner(pool: PgPool) {
     assert_eq!(
         settings,
         json!({ "default_period": "month", "expense_payee": "optional", "show_reversals": false,
-                "expenses_bonus_accruals": true })
+                "expenses_bonus_accruals": true, "payroll_basis": "payout" })
     );
     let form = ok(&app, "GET", "/api/v1/expenses/payees", &admin, None).await;
     assert_eq!(form["mode"], "optional");
@@ -783,4 +786,400 @@ async fn expense_payees_follow_expense_rights(pool: PgPool) {
     .unwrap();
     let (s, _, _) = call(&app, "GET", "/api/v1/expenses/payees", Some(&admin), None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// Работник-мастер для проверок зарплаты; бонус `accrued`, если не ноль.
+async fn worker(app: &Router, owner: &str, accrued: i64) -> String {
+    let id = ok(
+        app,
+        "POST",
+        "/api/v1/employees",
+        owner,
+        Some(json!({ "full_name": "Мастер", "is_master": true })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    if accrued != 0 {
+        ok(
+            app,
+            "POST",
+            "/api/v1/payroll/accruals",
+            owner,
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "employee_id": id, "kind": "bonus",
+                         "amount_tyiyn": accrued, "comment": "доп доход" }),
+            ),
+        )
+        .await;
+    }
+    id
+}
+
+async fn set_basis(app: &Router, owner: &str, basis: &str) {
+    ok(
+        app,
+        "PUT",
+        "/api/v1/settings/profit-report",
+        owner,
+        Some(
+            json!({ "default_period": "month", "expense_payee": "optional",
+                     "show_reversals": false, "payroll_basis": basis }),
+        ),
+    )
+    .await;
+}
+
+async fn net(app: &Router, owner: &str) -> i64 {
+    ok(app, "GET", "/api/v1/reports/profit", owner, None).await["totals"]["net_tyiyn"]
+        .as_i64()
+        .unwrap()
+}
+
+/// Задача 033, ADR-193: начисление прибыль не меняет, выплата — меняет, сторно возвращает.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn payroll_enters_profit_when_paid(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let safe = account(&app, &owner, |a| a["name"] == "Сейф владельца").await;
+    let start = net(&app, &owner).await;
+
+    let id = worker(&app, &owner, 200_000).await;
+    assert_eq!(net(&app, &owner).await, start, "начисление без выплаты");
+    let report = ok(&app, "GET", "/api/v1/reports/profit", &owner, None).await;
+    assert_eq!(report["totals"]["payroll_tyiyn"], 0);
+    assert_eq!(report["staff"][0]["total_tyiyn"], 200_000);
+
+    let paid = ok(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": id, "amount_tyiyn": 60_000,
+                     "source": "account", "account_id": safe }),
+        ),
+    )
+    .await;
+    assert_eq!(net(&app, &owner).await, start - 60_000);
+    // Аванс — тоже расход при выдаче.
+    ok(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": id, "amount_tyiyn": 10_000,
+                     "source": "account", "account_id": safe, "advance": true }),
+        ),
+    )
+    .await;
+    let full = ok(&app, "GET", "/api/v1/reports/profit?detail=1", &owner, None).await;
+    assert_eq!(full["totals"]["payroll_tyiyn"], 70_000);
+    assert_eq!(full["days"][0]["payroll_tyiyn"], 70_000);
+    assert_eq!(full["totals"]["net_tyiyn"], start - 70_000);
+    assert_eq!(sum(&full["detail"]["payouts"], "amount_tyiyn"), 70_000);
+    assert_eq!(full["staff"][0]["total_tyiyn"], 200_000);
+
+    // Сторно выплаты возвращает прибыль.
+    ok(
+        &app,
+        "POST",
+        &format!("/api/v1/payouts/{}/reverse", paid["id"].as_str().unwrap()),
+        &owner,
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(net(&app, &owner).await, start - 10_000);
+
+    // Настройка «по начислению» — прежний расчёт: важно начисленное, а не выданное; журнал пишется.
+    set_basis(&app, &owner, "accrual").await;
+    let accrual = ok(&app, "GET", "/api/v1/reports/profit", &owner, None).await;
+    assert_eq!(accrual["totals"]["payroll_basis"], "accrual");
+    assert_eq!(accrual["totals"]["payroll_tyiyn"], 200_000);
+    assert_eq!(accrual["totals"]["net_tyiyn"], start - 200_000);
+    let logged: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'settings.profit_report'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(logged, 1);
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/profit-report",
+        Some(&owner),
+        Some(json!({ "payroll_basis": "сразу" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Удержанная недостача: минус сразу, выплата меньше на удержание; когда всё выдано, оба учёта
+/// сходятся (ADR-193, уточняет ADR-065).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn withheld_shortage_comes_back_with_a_smaller_payout(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let safe = account(&app, &owner, |a| a["name"] == "Сейф владельца").await;
+    let cashier = ok(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        &owner,
+        Some(json!({ "full_name": "Кассир", "is_cashier": true, "pin": "1234" })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &app,
+        "POST",
+        "/api/v1/payroll/accruals",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": cashier, "kind": "bonus",
+                     "amount_tyiyn": 150_000, "comment": "доп доход" }),
+        ),
+    )
+    .await;
+    let shift = ok(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        &admin,
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &app,
+        "POST",
+        "/api/v1/cash/movements",
+        &admin,
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 500_000, "comment": "размен" })),
+    )
+    .await;
+    let start = net(&app, &owner).await;
+    ok(
+        &app,
+        "POST",
+        &format!("/api/v1/shifts/{shift}/close"),
+        &admin,
+        Some(json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": 400_000, "comment": "не нашли" })),
+    )
+    .await;
+    assert_eq!(
+        net(&app, &owner).await,
+        start - 100_000,
+        "недостача — сразу"
+    );
+
+    // К выплате осталось 500 с: 1 500 начислено, 1 000 удержано.
+    ok(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": cashier, "amount_tyiyn": 50_000,
+                     "source": "account", "account_id": safe }),
+        ),
+    )
+    .await;
+    let paid_basis = net(&app, &owner).await;
+    assert_eq!(paid_basis, start - 150_000);
+    set_basis(&app, &owner, "accrual").await;
+    assert_eq!(
+        net(&app, &owner).await,
+        paid_basis,
+        "всё выдано — учёты сходятся"
+    );
+}
+
+/// Часы периода (задача 033, ADR-193): документ — по времени проведения, задним числом — только
+/// если отбор покрывает его день целиком; без часов — прежний ответ.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn profit_period_by_hours(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let safe = account(&app, &owner, |a| a["name"] == "Сейф владельца").await;
+    let (today, yesterday, minute): (String, String, String) = sqlx::query_as(
+        r#"select (now() at time zone 'Asia/Bishkek')::date::text,
+                  ((now() at time zone 'Asia/Bishkek')::date - 1)::text,
+                  to_char(now() at time zone 'Asia/Bishkek', 'HH24:MI')"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    if minute == "00:00" || minute == "23:59" {
+        return; // Минута на границе суток: окна «до» и «после» не построить.
+    }
+    let household = article(&app, &owner, "Хозтовары").await;
+    ok(
+        &app,
+        "POST",
+        "/api/v1/expenses",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 12_000,
+                     "account_id": safe }),
+        ),
+    )
+    .await;
+    let id = worker(&app, &owner, 100_000).await;
+    ok(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": id, "amount_tyiyn": 30_000,
+                     "source": "account", "account_id": safe }),
+        ),
+    )
+    .await;
+    // Выплата задним числом: у неё нет времени во вчерашнем дне.
+    ok(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": id, "amount_tyiyn": 7_000,
+                     "source": "account", "account_id": safe, "pay_date": yesterday }),
+        ),
+    )
+    .await;
+    let report = |q: String| {
+        let (app, owner) = (app.clone(), owner.clone());
+        async move {
+            ok(
+                &app,
+                "GET",
+                &format!("/api/v1/reports/profit?detail=1&{q}"),
+                &owner,
+                None,
+            )
+            .await
+        }
+    };
+    let totals = |v: &Value| {
+        (
+            v["totals"]["expenses_tyiyn"].as_i64().unwrap(),
+            v["totals"]["payroll_tyiyn"].as_i64().unwrap(),
+        )
+    };
+
+    // После начала этой минуты — документы теста; раскрытие и «По дням» — те же числа.
+    let after = report(format!("from={today}&to={today}&from_time={minute}")).await;
+    assert_eq!(totals(&after), (12_000, 30_000), "{}", after["totals"]);
+    assert_eq!(sum(&after["detail"]["expenses"], "amount_tyiyn"), 12_000);
+    assert_eq!(sum(&after["detail"]["payouts"], "amount_tyiyn"), 30_000);
+    assert_eq!(after["days"][0]["net_tyiyn"], after["totals"]["net_tyiyn"]);
+    assert_eq!(after["articles"][0]["amount_tyiyn"], 12_000);
+    // Конец не включается: до начала этой минуты — ничего.
+    let before = report(format!("from={today}&to={today}&to_time={minute}")).await;
+    assert_eq!(totals(&before), (0, 0), "{}", before["totals"]);
+    assert_eq!(before["detail"]["expenses"], json!([]));
+    assert_eq!(before["articles"], json!([]));
+
+    // Задним числом: день покрыт целиком — входит, срезан часами — нет.
+    let whole = report(format!("from={yesterday}&to={today}&from_time=00:00")).await;
+    assert_eq!(totals(&whole), (12_000, 37_000), "{}", whole["totals"]);
+    let cut = report(format!("from={yesterday}&to={today}&from_time=00:01")).await;
+    assert_eq!(totals(&cut), (12_000, 30_000), "{}", cut["totals"]);
+
+    // Без часов — весь период по дням, как раньше.
+    let plain = report(format!("from={yesterday}&to={today}")).await;
+    assert_eq!(totals(&plain), (12_000, 37_000));
+    assert_eq!(plain["days"], whole["days"]);
+
+    // Начало позже конца — 422; время строкой не по формату — отказ.
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/reports/profit?from={today}&to={today}&from_time=14:00&to_time=09:00"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/reports/profit?from={today}&to={today}&from_time=утром"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert!(s.is_client_error());
+}
+
+/// Отчёт смены: зарплата — выплаты, проведённые за смену; начисление не входит (ADR-193).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn shift_report_counts_payouts_of_its_time(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let safe = account(&app, &owner, |a| a["name"] == "Сейф владельца").await;
+    let cashier = ok(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        &owner,
+        Some(json!({ "full_name": "Кассир", "is_cashier": true, "pin": "1234" })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let shift = ok(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        &admin,
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id = worker(&app, &owner, 100_000).await;
+    let uri = format!("/api/v1/shifts/{shift}/report");
+    let line = |report: &Value| {
+        report["revenue"]["profit"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["key"] == "payroll")
+            .cloned()
+    };
+    let before = ok(&app, "GET", &uri, &owner, None).await;
+    assert!(line(&before).is_none(), "начисление без выплаты: {before}");
+    ok(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": id, "amount_tyiyn": 40_000,
+                     "source": "account", "account_id": safe }),
+        ),
+    )
+    .await;
+    let after = ok(&app, "GET", &uri, &owner, None).await;
+    let row = line(&after).unwrap();
+    assert_eq!(row["label"], "Выплачено сотрудникам (без оклада)");
+    assert_eq!(row["amount_tyiyn"], -40_000);
+    assert_eq!(
+        after["revenue"]["net_profit_tyiyn"].as_i64().unwrap(),
+        before["revenue"]["net_profit_tyiyn"].as_i64().unwrap() - 40_000
+    );
 }

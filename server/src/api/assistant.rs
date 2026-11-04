@@ -1687,7 +1687,7 @@ async fn totals_text(
     let t = crate::api::reports::totals_for(conn, branch_id, from, to).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
     Ok(format!(
-        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nВозврат поставщику: разница: {}\nЧистая прибыль: {}",
+        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\n{}: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nВозврат поставщику: разница: {}\nЧистая прибыль: {}",
         period_label(from, to),
         t.sales_count,
         format_som(revenue),
@@ -1695,6 +1695,11 @@ async fn totals_text(
         format_som(t.services_tyiyn),
         format_som(t.cost_tyiyn),
         format_som(t.gross_tyiyn),
+        if t.payroll_basis == crate::api::pnl::PAYOUT {
+            "Выплачено сотрудникам"
+        } else {
+            "Оплата труда"
+        },
         format_som(t.payroll_tyiyn),
         format_som(t.bank_fee_tyiyn),
         format_som(t.expenses_tyiyn),
@@ -1719,12 +1724,17 @@ async fn by_day_text(
         let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
         let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
         lines.push(format!(
-            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, возврат поставщику: разница {}, чистая прибыль {}",
+            "{} ({}): чеков {}, выручка {}, валовая {}, {} {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, возврат поставщику: разница {}, чистая прибыль {}",
             day.format("%d.%m.%Y"),
             weekday(day),
             t.sales_count,
             format_som(revenue),
             format_som(t.gross_tyiyn),
+            if t.payroll_basis == crate::api::pnl::PAYOUT {
+                "выплачено сотрудникам"
+            } else {
+                "оплата труда"
+            },
             format_som(t.payroll_tyiyn),
             format_som(t.bank_fee_tyiyn),
             format_som(t.expenses_tyiyn),
@@ -1981,7 +1991,8 @@ async fn expenses_text(
     from: NaiveDate,
     to: NaiveDate,
 ) -> AppResult<String> {
-    let rows = crate::api::reports::articles_for(conn, branch_id, from, to).await?;
+    let rows =
+        crate::api::reports::articles_for(conn, branch_id, from, to, Default::default()).await?;
     if rows.is_empty() {
         return Ok(format!("Расходов {} нет.", period_label(from, to)));
     }

@@ -1,5 +1,4 @@
-import { formatDate } from '../lib/format'
-import type { PnlNode } from '../lib/pnl'
+import { docWhen, type PnlNode } from '../lib/pnl'
 import { Badge, Money } from './ui'
 
 /**
@@ -22,7 +21,7 @@ function PnlRow({ node, level, open, onToggle }: { node: PnlNode; level: number;
   const canOpen = kids.length > 0 || (node.hidden ?? 0) > 0
   const isOpen = canOpen && open.has(node.id)
   const d = node.doc
-  const details = d ? [d.date && formatDate(d.date), d.payee && `кому: ${d.payee}`, d.account, d.user, d.comment && d.payee !== d.comment && d.comment, d.branch].filter(Boolean) : []
+  const details = d ? [d.date && docWhen(d.date, d.at), d.payee && `кому: ${d.payee}`, d.account, d.user, d.comment && d.payee !== d.comment && d.comment, d.branch].filter(Boolean) : []
   return (
     <div role="treeitem" aria-expanded={canOpen ? isOpen : undefined} data-testid={`pnl-${node.id}`}>
       <button

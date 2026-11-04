@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as \"hour!\",\n                      coalesce(sum(l.amount_tyiyn), 0)::bigint as \"revenue!\",\n                      coalesce(sum(l.amount_tyiyn - l.cost_tyiyn), 0)::bigint as \"gross!\",\n                      count(distinct s.id) filter (where s.kind = 'sale') as \"count!\"\n               from sales s join sale_lines l on l.sale_id = s.id\n               where s.branch_id = $1 and s.business_date = $2\n                 and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $3, $4)\n               group by 1 order by 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hour!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "revenue!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "gross!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "bd97e892c0a0e3d8ac67b1b14ed5720931c59a2b56718214a3bbcb534892b026"
+}

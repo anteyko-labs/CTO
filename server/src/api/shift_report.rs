@@ -875,7 +875,11 @@ fn profit_lines(t: &crate::api::reports::Totals) -> Vec<Line> {
         ("revaluation", "Переоценка и ревизия", -t.revaluation_tyiyn),
         (
             "payroll",
-            "Начисления сотрудникам (без оклада)",
+            if t.payroll_basis == crate::api::pnl::PAYOUT {
+                "Выплачено сотрудникам (без оклада)"
+            } else {
+                "Начисления сотрудникам (без оклада)"
+            },
             -t.payroll_tyiyn,
         ),
         ("bank_fee", "Комиссия банка", -t.bank_fee_tyiyn),

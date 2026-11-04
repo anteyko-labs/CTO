@@ -134,6 +134,14 @@ struct World {
 impl World {
     async fn new(pool: PgPool) -> Self {
         let app = setup(pool.clone()).await;
+        // Сверка с прежним расчётом прибыли — учёт зарплаты по начислению (ADR-193).
+        sqlx::query(
+            r#"insert into settings (branch_id, key, value)
+           select id, 'profit_report', '{"payroll_basis": "accrual"}' from branches"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let owner = login(&app, "owner", "owner-pass-1").await;
         let admin = login(&app, "admin", "admin-pass-1").await;
         let e = ok(

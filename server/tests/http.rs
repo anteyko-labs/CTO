@@ -4027,6 +4027,14 @@ async fn loyalty_lookup_is_shared_and_unambiguous(pool: PgPool) {
 async fn cash_shortage_and_surplus_enter_profit(pool: PgPool) {
     // Недостача и излишек кассы — строка прибыли; удержание с кассира её уравновешивает (ADR-065).
     let app = setup(pool.clone()).await;
+    // Удержание в прибыли — при учёте по начислению; по выплате — `tests/pnl.rs` (ADR-193).
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'profit_report', '{"payroll_basis": "accrual"}' from branches"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;

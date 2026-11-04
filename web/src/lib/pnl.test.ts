@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { notInProfit, periodTitle, pnlSheets, pnlTree, quickPeriod, type PnlNode } from './pnl'
+import { docWhen, notInProfit, periodTitle, pnlSheets, pnlTree, quickPeriod, type PnlNode } from './pnl'
 import type { ProfitReport } from './types'
 
 const base = { branch: 'Основной', created_at: '2026-10-31T05:00:00Z', comment: '', user_name: 'Владелец', account_name: 'Касса' }
@@ -184,6 +184,66 @@ describe('прибыль и убытки', () => {
     const tree = sheets[0].rows.map((r) => (Array.isArray(r) ? { cells: r, level: 0 } : r))
     const x3 = tree.find((r) => r.cells[0] === 'Налоговая' && (r.cells[2] as { money: number }).money === -40_000)
     expect(x3?.level).toBe(2)
+  })
+
+  describe('зарплата по выплате (ADR-193)', () => {
+    const paidReport: ProfitReport = { ...report, totals: { ...report.totals, payroll_basis: 'payout', payroll_tyiyn: 15_000 } }
+
+    it('сумма работника — выплаты списком, начисленное справочно вне суммы', () => {
+      const tree = pnlTree(paidReport)
+      const roma = find(tree, 'opex.staff.e1')
+      expect(roma?.amount).toBe(15_000)
+      expect(roma?.children?.map((c) => [c.label, c.info ?? false])).toEqual([
+        ['Бонус', false],
+        ['Начислено за период (в прибыль не входит)', true],
+        ['Остаток к выплате на сегодня', true],
+      ])
+      expect(find(tree, 'opex.staff.e1.accrued')?.amount).toBe(26_650)
+      expect(find(tree, 'opex.staff.e1.bonus')?.label).toBe('Бонус / доп. доход')
+      expect(find(tree, 'opex.salary')?.amount).toBe(15_000)
+      expect(find(tree, 'opex.salary')?.children?.reduce((a, c) => a + (c.amount ?? 0), 0)).toBe(15_000)
+    })
+
+    it('выплата не повторяется в «Не входит в прибыль»', () => {
+      expect(notInProfit(paidReport).map((n) => n.label)).toEqual(['Оплата поставщикам за товар', 'Изъято из касс'])
+      const money = pnlSheets(paidReport, { branch: 'Основной', now: '31.10.2026 18:00' })[5]
+      expect(money.rows.length).toBe(2)
+    })
+
+    it('лист «Зарплата»: выплачено и начислено справочно', () => {
+      const sheet = pnlSheets(paidReport, { branch: 'Основной', now: '31.10.2026 18:00' })[2]
+      const rows = sheet.rows.map((x) => (Array.isArray(x) ? x : x.cells))
+      expect(rows.find((c) => c[0] === 'Всего выплачено за период')?.[3]).toEqual({ money: 15_000 })
+      expect(rows.find((c) => c[0] === 'Начислено за период (справочно)')?.[3]).toEqual({ money: 26_650 })
+    })
+
+    it('«Все филиалы» с разным учётом: у работника нет суммы, выплата — по учёту своего филиала', () => {
+      const part = (name: string, basis: 'payout' | 'accrual') => ({ branch_id: name, name, report: { ...report, totals: { ...report.totals, payroll_basis: basis } } })
+      const mixed = { ...paidReport, all_branches: true, branches: [part('Основной', 'accrual'), part('Второй', 'payout')] } as ProfitReport
+      const tree = pnlTree(mixed)
+      expect(find(tree, 'opex.salary')?.label).toBe('Зарплата работникам (в филиалах разный учёт)')
+      expect(find(tree, 'opex.staff.e1')).toMatchObject({ amount: null, info: true })
+      expect(notInProfit(mixed).map((n) => n.label)).toContain('Выдано работникам')
+    })
+  })
+
+  it('время проведения у документа и в выгрузке', () => {
+    expect(docWhen('2026-10-31', '2026-10-31T05:00:00Z')).toBe('31.10.2026 11:00')
+    expect(docWhen('2026-10-30', '2026-10-31T05:00:00Z')).toMatch(/^30\.10\.2026, проведено 31\.10\.2026/)
+    expect(docWhen('2026-10-31')).toBe('31.10.2026')
+    expect(find(pnlTree(report), 'opex.article.Хозтовары')?.children?.[0].doc?.at).toBe('2026-10-31T05:00:00Z')
+    const tree = pnlSheets(report, { branch: 'Основной', now: '31.10.2026 18:00' })[0]
+    expect(tree.columns.at(-1)?.label).toBe('Проведено')
+    const row = tree.rows.map((x) => (Array.isArray(x) ? x : x.cells)).find((c) => c[0] === 'Хозмаг')
+    expect(String(row?.[7])).toContain('11:00')
+  })
+
+  it('подпись периода с часами', () => {
+    expect(periodTitle('2026-11-04', '2026-11-04', '09:00', '14:00')).toBe('За 4 ноября 2026, с 09:00 до 14:00')
+    expect(periodTitle('2026-11-04', '2026-11-04', '', '14:00')).toBe('За 4 ноября 2026, до 14:00')
+    expect(periodTitle('2026-11-03', '2026-11-04', '09:00', '14:00')).toBe('С 3 ноября 2026 09:00 по 4 ноября 2026 14:00')
+    const sheet = pnlSheets({ ...report, from: '2026-11-04', to: '2026-11-04' }, { branch: 'Основной', now: '', fromTime: '09:00', toTime: '14:00' })[0]
+    expect(sheet.title?.[1]).toContain('с 09:00 до 14:00')
   })
 
   it('быстрые периоды по дате Бишкека', () => {

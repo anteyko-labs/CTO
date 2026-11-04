@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(writeoff_tyiyn), 0)::bigint as \"writeoff!\",\n                  coalesce(sum(diff_tyiyn), 0)::bigint as \"diff!\"\n           from defect_resolutions\n           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n             and public.pnl_in_window(created_at, $4, $5)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "writeoff!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "diff!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "ed133cb59a0aeed6a8ea8a2152b9221319e1084b7eac667a8235b3497d6a7462"
+}

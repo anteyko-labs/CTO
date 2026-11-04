@@ -1,3 +1,4 @@
+import { payrollLabel } from '../lib/pnl'
 import { useCallback, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, ErrorBox, Field, Loading, Money, PageHeader } from '../components/ui'
@@ -412,7 +413,7 @@ export function OwnerDashboard() {
               <Step label="Выручка" value={revenue} strong />
               <Step label="Закупка проданного товара" value={t.cost_tyiyn} minus />
               <Step label="Валовая прибыль" value={t.gross_tyiyn} strong />
-              <Step label="Зарплата сотрудникам" value={t.payroll_tyiyn} minus />
+              <Step label={payrollLabel(t)} value={t.payroll_tyiyn} minus />
               {(t.salary_tyiyn ?? 0) !== 0 && <Step label="в т.ч. оклады за месяц" value={t.salary_tyiyn ?? 0} minus sub />}
               {t.bank_fee_tyiyn !== 0 && <Step label="Комиссия банка (карта, QR)" value={t.bank_fee_tyiyn} minus />}
               {t.expenses_tyiyn !== 0 && <Step label="Расходы" value={t.expenses_tyiyn} minus />}
@@ -509,7 +510,7 @@ function ownerSheets(data: Dashboard, report: ProfitReport | null, o: { title: s
     line('Выручка', t.goods_tyiyn + t.services_tyiyn, true),
     line('Закупка проданного товара', -t.cost_tyiyn),
     line('Валовая прибыль', t.gross_tyiyn, true),
-    line('Зарплата сотрудникам', -t.payroll_tyiyn),
+    line(payrollLabel(t), -t.payroll_tyiyn),
     ...opt('в т.ч. оклады за месяц', t.salary_tyiyn ? -t.salary_tyiyn : 0, 1),
     ...opt('Комиссия банка (карта, QR)', -t.bank_fee_tyiyn, 0),
     ...opt('Расходы', -t.expenses_tyiyn, 0),

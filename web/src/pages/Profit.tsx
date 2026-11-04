@@ -31,16 +31,21 @@ export default function Profit() {
   const today = todayBishkek()
   const user = useUser()
   const settings = useLoad(() => get<ProfitSettings>('/settings/profit-report'), [])
-  const [picked, setRange] = useState<{ from: string; to: string } | null>(null)
+  const [picked, setRange] = useState<{ from: string; to: string; fromTime?: string; toTime?: string } | null>(null)
   const [reversalsPick, setShowReversals] = useState<boolean | null>(null)
   // Период по умолчанию и показ сторно — из настроек «Отчёт о прибыли» («Этот месяц», свёрнуто).
   const ready = !settings.loading || Boolean(settings.error)
   const range = picked ?? (ready ? quickPeriod(settings.data?.default_period ?? 'month', today) : null)
   const showReversals = reversalsPick ?? settings.data?.show_reversals ?? false
   const [all, setAll] = useAllBranches(Boolean(user.several_branches))
+  const fromTime = picked?.fromTime ?? ''
+  const toTime = picked?.toTime ?? ''
   const r = useLoad(
-    () => (range ? get<AllBranches<ProfitReport>>(`/reports/profit${qs({ ...range, detail: 1, ...branchParam(all) })}`) : Promise.resolve(null)),
-    [range?.from, range?.to, all],
+    () =>
+      range
+        ? get<AllBranches<ProfitReport>>(`/reports/profit${qs({ from: range.from, to: range.to, from_time: fromTime, to_time: toTime, detail: 1, ...branchParam(all) })}`)
+        : Promise.resolve(null),
+    [range?.from, range?.to, fromTime, toTime, all],
   )
   const [open, toggle, setOpen] = useOpenSet()
   const [moneyOpen, toggleMoney] = useOpenSet()
@@ -53,14 +58,14 @@ export default function Profit() {
   const to = range?.to ?? today
   const quickOn = (k: QuickPeriod) => {
     const q = quickPeriod(k, today)
-    return q.from === from && q.to === to
+    return q.from === from && q.to === to && !fromTime && !toTime
   }
 
   return (
     <div>
       <PageHeader
         title="Прибыль и убытки"
-        subtitle={range ? periodTitle(from, to) : undefined}
+        subtitle={range ? periodTitle(from, to, fromTime, toTime) : undefined}
         actions={
           <div className="no-print flex flex-wrap gap-2">
             <ExportButton
@@ -68,7 +73,7 @@ export default function Profit() {
               file={`Прибыль и убытки${all ? ' все филиалы' : ''}`}
               period={periodText(from, to)}
               disabled={!r.data}
-              sheets={() => (r.data ? pnlSheets(r.data, { branch: branchName, now: formatDateTime(new Date().toISOString()) }) : [])}
+              sheets={() => (r.data ? pnlSheets(r.data, { branch: branchName, now: formatDateTime(new Date().toISOString()), fromTime, toTime }) : [])}
             />
             <Button variant="secondary" disabled={!t} onClick={() => window.print()}>
               Печать
@@ -92,10 +97,16 @@ export default function Profit() {
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <Field label="С">
-            <input type="date" className="w-40" value={from} max={to} onChange={(e) => e.target.value && setRange({ from: e.target.value, to })} />
+            <input type="date" className="w-40" value={from} max={to} onChange={(e) => e.target.value && setRange({ from: e.target.value, to, fromTime, toTime })} />
+          </Field>
+          <Field label="С часа">
+            <input type="time" className="w-28" value={fromTime} onChange={(e) => setRange({ from, to, fromTime: e.target.value, toTime })} />
           </Field>
           <Field label="По">
-            <input type="date" className="w-40" value={to} min={from} onChange={(e) => e.target.value && setRange({ from, to: e.target.value })} />
+            <input type="date" className="w-40" value={to} min={from} onChange={(e) => e.target.value && setRange({ from, to: e.target.value, fromTime, toTime })} />
+          </Field>
+          <Field label="По час">
+            <input type="time" className="w-28" value={toTime} onChange={(e) => setRange({ from, to, fromTime, toTime: e.target.value })} />
           </Field>
           <div className="pb-2">
             <Checkbox label="Показать сторно и исправления" checked={showReversals} onChange={setShowReversals} />
@@ -148,14 +159,15 @@ export default function Profit() {
             </CardTitle>
             <PnlTree nodes={tree} open={open} onToggle={toggle} />
             <div className="mt-2 text-xs text-slate-500">
-              Чеков {t.sales_count}, маржа {percent(t.margin_bp)}. Зарплата — по начислению; выдача денег прибыль не меняет.
+              Чеков {t.sales_count}, маржа {percent(t.margin_bp)}.{' '}
+              {t.payroll_basis === 'accrual' ? 'Зарплата — по начислению; выдача денег прибыль не меняет.' : 'Зарплата — когда выплачена; начисленное без выплаты прибыль не меняет.'}
             </div>
           </Card>
 
           {money.length > 0 && (
             <Card className="break-inside-avoid" data-testid="pnl-money">
               <CardTitle>Не входит в прибыль — движение денег</CardTitle>
-              <div className="mb-2 text-xs text-slate-500">Деньги переместились (поставщикам, в сейф, работникам), прибыль от этого не меняется.</div>
+              <div className="mb-2 text-xs text-slate-500">Деньги переместились, прибыль от этого не меняется.</div>
               <PnlTree nodes={money} open={moneyOpen} onToggle={toggleMoney} />
             </Card>
           )}

@@ -1,7 +1,8 @@
 // «Прибыль и убытки» (задача 003 Н12, SPEC-08, ADR-157): ответ `GET /reports/profit?detail=1`
 // → дерево строк для экрана и листы для выгрузки в Excel. Только раскладка: итоги — серверные
 // `totals` (`gross_tyiyn`, `net_tyiyn`), раскрытие каждой строки складывается в её сумму.
-import { formatSom, shiftDate } from './format'
+import type { AllBranches } from './branchReport'
+import { bishkekDate, formatDate, formatDateTime, formatSom, formatTime, shiftDate } from './format'
 import { PURPOSE_LABELS } from './payouts'
 import { periodLabel, shortDate } from './payrollPeriod'
 import type { ProfitDetail, ProfitReport, SalaryExpected, StockUnit } from './types'
@@ -42,11 +43,12 @@ export function quickPeriod(kind: QuickPeriod, today: string): { from: string; t
   }
 }
 
-/** «С 1 октября 2026 по 31 октября 2026» — подпись периода, как у заказчика. */
-export function periodTitle(from: string, to: string): string {
+/** «С 1 октября 2026 по 31 октября 2026» — подпись периода, как у заказчика; с часами — «За 4 ноября 2026, с 09:00 до 14:00». */
+export function periodTitle(from: string, to: string, fromTime?: string, toTime?: string): string {
   const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
   const day = (iso: string) => `${Number(iso.slice(8, 10))} ${months[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`
-  return from === to ? `За ${day(from)}` : `С ${day(from)} по ${day(to)}`
+  if (from === to) return `За ${day(from)}${fromTime ? `, с ${fromTime}` : toTime ? ',' : ''}${toTime ? ` до ${toTime}` : ''}`
+  return `С ${day(from)}${fromTime ? ` ${fromTime}` : ''} по ${day(to)}${toTime ? ` ${toTime}` : ''}`
 }
 
 // ---------- Дерево ----------
@@ -64,6 +66,8 @@ export interface PnlNode {
   /** Строка-документ: дата и подробности. */
   doc?: {
     date?: string
+    /** Когда проведён (момент записи). */
+    at?: string
     payee?: string
     account?: string | null
     user?: string | null
@@ -77,6 +81,31 @@ export interface PnlNode {
   children?: PnlNode[]
   /** Сколько строк сторно скрыто в раскрытии. */
   hidden?: number
+}
+
+/** Дата документа со временем проведения; проведён не в свой день — оба момента. */
+export function docWhen(date: string, at?: string): string {
+  if (!at) return formatDate(date)
+  return bishkekDate(at) === date ? `${formatDate(date)} ${formatTime(at)}` : `${formatDate(date)}, проведено ${formatDateTime(at)}`
+}
+
+/** Подпись строки зарплаты в сводке (ADR-193). */
+export const payrollLabel = (t: { payroll_basis?: string }): string => (t.payroll_basis === 'accrual' ? 'Зарплата сотрудникам' : 'Выплачено сотрудникам')
+
+/** Как зарплата входит в прибыль отчёта; в «Все филиалы» настройки филиалов могут расходиться. */
+function basisOf(r: ProfitReport): 'payout' | 'accrual' | 'mixed' {
+  const parts = (r as AllBranches<ProfitReport>).branches ?? []
+  if (new Set(parts.map((p) => p.report.totals.payroll_basis)).size > 1) return 'mixed'
+  return r.totals.payroll_basis === 'payout' ? 'payout' : 'accrual'
+}
+
+/** Выплата этого филиала уже в прибыли (строка «Зарплата работникам», а не движение денег). */
+function payoutInProfit(r: ProfitReport): (branch: string) => boolean {
+  const parts = (r as AllBranches<ProfitReport>).branches ?? []
+  const basis = basisOf(r)
+  if (basis !== 'mixed') return () => basis === 'payout'
+  const byName = new Map(parts.map((p) => [p.name, p.report.totals.payroll_basis]))
+  return (branch) => byName.get(branch) === 'payout'
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -155,6 +184,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
   const defectDiff = t.defect_diff_tyiyn ?? 0
   const returnDiff = t.return_diff_tyiyn ?? 0
   const branchOf = (b?: string) => (r.all_branches ? b : undefined)
+  const basis = basisOf(r)
 
   // 1. Выручка: товары по категориям и товарам, работы по услугам.
   const categories = groupBy(d.products, (p) => p.category).map(([name, items]) => ({ name, items }))
@@ -226,7 +256,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
                 id: `cost.revision.${x.id}`,
                 label: x.number ? `Ревизия № ${x.number}` : 'Ревизия',
                 amount: x.amount_tyiyn,
-                doc: { date: x.date, user: x.user_name, branch: branchOf(x.branch) },
+                doc: { date: x.date, at: x.created_at, user: x.user_name, branch: branchOf(x.branch) },
               })),
             },
           ]
@@ -251,7 +281,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
       label: e.payee || e.comment || `Расход № ${e.number}`,
       amount: e.amount_tyiyn,
       reversal: Boolean(e.reversal_of || e.reversed),
-      doc: { date: e.date, payee: e.payee, account: e.account_name, user: e.user_name, comment: e.comment, branch: branchOf(e.branch), mark: mark(e) },
+      doc: { date: e.date, at: e.created_at, payee: e.payee, account: e.account_name, user: e.user_name, comment: e.comment, branch: branchOf(e.branch), mark: mark(e) },
     }))
     return { id: `opex.article.${name}`, label: name, amount: sumOf(rows, (e) => e.amount_tyiyn), ...withReversals(docs, showReversals) }
   })
@@ -269,28 +299,29 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
       label: purposeLabel(p.purpose),
       amount: p.amount_tyiyn,
       reversal: Boolean(p.reversal_of || p.reversed),
-      doc: { date: p.date, account: p.account_name, user: p.user_name, comment: p.comment, branch: branchOf(p.branch), mark: mark(p) },
+      doc: { date: p.date, at: p.created_at, account: p.account_name, user: p.user_name, comment: p.comment, branch: branchOf(p.branch), mark: mark(p) },
     }))
     const shown = withReversals(docs, showReversals)
-    return {
-      id: `opex.staff.${id}`,
-      label: name,
-      amount: s?.total_tyiyn ?? 0,
-      children: [
-        ...(s?.items ?? []).map((i) => ({ id: `opex.staff.${id}.${i.kind}`, label: kindLabel(i.kind), amount: i.amount_tyiyn })),
-        ...(paid.length
-          ? [{ id: `opex.staff.${id}.paid`, label: 'Выдано за период (прибыль не меняет)', amount: sumOf(paid, (p) => p.amount_tyiyn), info: true, ...shown }]
-          : []),
-        ...(s?.owed_tyiyn !== undefined && s.owed_tyiyn !== 0
-          ? [{ id: `opex.staff.${id}.owed`, label: 'Остаток к выплате на сегодня', amount: s.owed_tyiyn, info: true }]
-          : []),
-        ...soon.map((e) => ({ id: `opex.staff.${id}.expected`, label: expectedSalaryText(e), amount: null, info: true })),
-      ],
+    const kinds: PnlNode[] = (s?.items ?? []).map((i) => ({ id: `opex.staff.${id}.${i.kind}`, label: kindLabel(i.kind), amount: i.amount_tyiyn }))
+    const reference: PnlNode[] = [
+      ...(s?.owed_tyiyn !== undefined && s.owed_tyiyn !== 0 ? [{ id: `opex.staff.${id}.owed`, label: 'Остаток к выплате на сегодня', amount: s.owed_tyiyn, info: true }] : []),
+      ...soon.map((e) => ({ id: `opex.staff.${id}.expected`, label: expectedSalaryText(e), amount: null, info: true })),
+    ]
+    const accrued: PnlNode[] = kinds.length ? [{ id: `opex.staff.${id}.accrued`, label: 'Начислено за период (в прибыль не входит)', amount: s?.total_tyiyn ?? 0, info: true, children: kinds }] : []
+    const paidInfo = (label: string): PnlNode[] => (paid.length ? [{ id: `opex.staff.${id}.paid`, label, amount: sumOf(paid, (p) => p.amount_tyiyn), info: true, ...shown }] : [])
+    // По выплате: сумма работника — выплаты списком, начисленное справочно (ADR-193).
+    if (basis === 'payout') {
+      return { id: `opex.staff.${id}`, label: name, amount: sumOf(paid, (p) => p.amount_tyiyn), children: [...shown.children, ...accrued, ...reference], hidden: shown.hidden }
     }
+    // Филиалы считают по-разному: по работнику суммы нет, итог строки — серверный.
+    if (basis === 'mixed') {
+      return { id: `opex.staff.${id}`, label: name, amount: null, info: true, children: [...accrued, ...paidInfo('Выдано за период'), ...reference] }
+    }
+    return { id: `opex.staff.${id}`, label: name, amount: s?.total_tyiyn ?? 0, children: [...kinds, ...paidInfo('Выдано за период (прибыль не меняет)'), ...reference] }
   })
   const salary: PnlNode = {
     id: 'opex.salary',
-    label: 'Зарплата работникам',
+    label: basis === 'mixed' ? 'Зарплата работникам (в филиалах разный учёт)' : 'Зарплата работникам',
     amount: t.payroll_tyiyn,
     children: salaryNodes,
   }
@@ -318,7 +349,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
               id: `opex.cash.${c.id}`,
               label: `Смена № ${c.number}${c.cashier ? `, ${c.cashier}` : ''}`,
               amount: -c.amount_tyiyn,
-              doc: { date: c.date, branch: branchOf(c.branch) },
+              doc: { date: c.date, at: c.created_at, branch: branchOf(c.branch) },
             })),
           },
         ]
@@ -349,7 +380,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
                   id: `writeoff.defect.${x.id}`,
                   label: `Брак № ${x.number}: ${x.product}`,
                   amount: x.writeoff_tyiyn,
-                  doc: { date: x.date, user: x.user_name, branch: branchOf(x.branch), mark: x.reversal_of ? 'отмена решения' : undefined },
+                  doc: { date: x.date, at: x.created_at, user: x.user_name, branch: branchOf(x.branch), mark: x.reversal_of ? 'отмена решения' : undefined },
                 })),
             },
           ]
@@ -366,7 +397,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
                   id: `writeoff.diff.${x.id}`,
                   label: `Брак № ${x.number}: ${x.product}`,
                   amount: -x.diff_tyiyn,
-                  doc: { date: x.date, user: x.user_name, branch: branchOf(x.branch) },
+                  doc: { date: x.date, at: x.created_at, user: x.user_name, branch: branchOf(x.branch) },
                 })),
             },
           ]
@@ -381,7 +412,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
                 id: `writeoff.return.${x.id}`,
                 label: `Возврат № ${x.number}${x.supplier ? `: ${x.supplier}` : ''}`,
                 amount: -x.diff_tyiyn,
-                doc: { date: x.date, user: x.user_name, branch: branchOf(x.branch), mark: x.reversal_of ? 'сторно' : undefined },
+                doc: { date: x.date, at: x.created_at, user: x.user_name, branch: branchOf(x.branch), mark: x.reversal_of ? 'сторно' : undefined },
               })),
             },
           ]
@@ -419,19 +450,22 @@ export function notInProfit(r: ProfitReport): PnlNode[] {
         id: `money.${m.id}`,
         label: m.payee || m.comment || label,
         amount: -m.amount_tyiyn,
-        doc: { date: m.date, payee: m.payee ?? '', account: m.account_name, user: m.user_name, comment: m.comment, branch: branchOf(m.branch), mark: m.reversed ? 'отменено' : undefined },
+        doc: { date: m.date, at: m.created_at, payee: m.payee ?? '', account: m.account_name, user: m.user_name, comment: m.comment, branch: branchOf(m.branch), mark: m.reversed ? 'отменено' : undefined },
       })),
     }
   })
+  // Выплаты, вошедшие в «Зарплату работникам», здесь не повторяются (ADR-193).
+  const inProfit = payoutInProfit(r)
+  const payouts = d.payouts.filter((p) => !inProfit(p.branch))
   out.push({
     id: 'money.payouts',
     label: 'Выдано работникам',
-    amount: sumOf(d.payouts, (p) => p.amount_tyiyn),
-    children: d.payouts.map((p) => ({
+    amount: sumOf(payouts, (p) => p.amount_tyiyn),
+    children: payouts.map((p) => ({
       id: `money.payout.${p.id}`,
       label: `${p.employee_name}: ${purposeLabel(p.purpose)}`,
       amount: p.amount_tyiyn,
-      doc: { date: p.date, account: p.account_name, user: p.user_name, comment: p.comment, branch: branchOf(p.branch), mark: mark(p) },
+      doc: { date: p.date, at: p.created_at, account: p.account_name, user: p.user_name, comment: p.comment, branch: branchOf(p.branch), mark: mark(p) },
     })),
   })
   return out.filter((n) => n.amount !== 0 || (n.children?.length ?? 0) > 0)
@@ -460,6 +494,7 @@ function flatten(nodes: PnlNode[], level = 0): SheetRow[] {
         d?.account ?? null,
         d?.user ?? null,
         [d?.mark, n.info ? 'справочно' : undefined, d?.branch].filter(Boolean).join(', ') || null,
+        d?.at ? formatDateTime(d.at) : null,
       ],
     })
     if (n.children?.length) out.push(...flatten(n.children, level + 1))
@@ -471,9 +506,9 @@ function flatten(nodes: PnlNode[], level = 0): SheetRow[] {
  * Книга «Прибыль и убытки»: дерево целиком (раскрыто, со сторно), расходы, зарплата, по дням,
  * товары и работы, движение денег вне прибыли. Деньги — числами из тыйынов (I1).
  */
-export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }): Sheet[] {
+export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string; fromTime?: string; toTime?: string }): Sheet[] {
   const d = r.detail ?? EMPTY_DETAIL
-  const title = ['Прибыль и убытки', `${periodTitle(r.from, r.to)} (${periodText(r.from, r.to)})`, `Филиал: ${opts.branch}`, `Выгружено: ${opts.now}`]
+  const title = ['Прибыль и убытки', `${periodTitle(r.from, r.to, opts.fromTime, opts.toTime)} (${periodText(r.from, r.to)})`, `Филиал: ${opts.branch}`, `Выгружено: ${opts.now}`]
   const allBranches = Boolean(r.all_branches)
   const branchCol = (b: string): Cell[] => (allBranches ? [b] : [])
   const branchHead = allBranches ? [{ label: 'Филиал' }] : []
@@ -481,7 +516,7 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
     name: 'Прибыль и убытки',
     title,
     filter: false,
-    columns: [{ label: 'Строка', width: 48 }, { label: 'Дата' }, { label: 'Сумма' }, { label: 'Кому / комментарий' }, { label: 'Касса' }, { label: 'Кто провёл' }, { label: 'Отметка' }],
+    columns: [{ label: 'Строка', width: 48 }, { label: 'Дата' }, { label: 'Сумма' }, { label: 'Кому / комментарий' }, { label: 'Касса' }, { label: 'Кто провёл' }, { label: 'Отметка' }, { label: 'Проведено' }],
     rows: [
       ...flatten(pnlTree(r, true)),
       { cells: [] },
@@ -493,7 +528,7 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
   const expenses: Sheet = {
     name: 'Расходы',
     title: title.slice(0, 2),
-    columns: [{ label: '№' }, { label: 'Дата' }, { label: 'Статья' }, { label: 'Кому' }, { label: 'Сумма' }, { label: 'Касса' }, { label: 'Комментарий' }, { label: 'Кто провёл' }, { label: 'Отметка' }, ...branchHead],
+    columns: [{ label: '№' }, { label: 'Дата' }, { label: 'Статья' }, { label: 'Кому' }, { label: 'Сумма' }, { label: 'Касса' }, { label: 'Комментарий' }, { label: 'Кто провёл' }, { label: 'Отметка' }, { label: 'Проведено' }, ...branchHead],
     rows: [
       ...d.expenses.map((e) => [
         xl.int(e.number),
@@ -505,6 +540,7 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
         e.comment,
         e.user_name,
         mark(e) ?? '',
+        formatDateTime(e.created_at),
         ...branchCol(e.branch),
       ]),
       { cells: ['Итого', null, null, null, xl.money(r.totals.expenses_tyiyn)], bold: true },
@@ -517,24 +553,32 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
   }
   for (const p of d.payouts) {
     salaryRows.push({
-      cells: [p.employee_name, `Выдано: ${purposeLabel(p.purpose)}`, xl.date(p.date), xl.money(p.amount_tyiyn), p.account_name ?? '', p.user_name, p.comment, mark(p) ?? '', ...branchCol(p.branch)],
+      cells: [p.employee_name, `Выдано: ${purposeLabel(p.purpose)}`, xl.date(p.date), xl.money(p.amount_tyiyn), p.account_name ?? '', p.user_name, p.comment, mark(p) ?? '', formatDateTime(p.created_at), ...branchCol(p.branch)],
     })
   }
   for (const e of d.salary_expected ?? []) {
-    salaryRows.push({ cells: [e.employee_name, expectedSalaryText(e), xl.date(e.pay_date), null, '', '', '', 'справочно, в прибыль не входит', ...branchCol('')] })
+    salaryRows.push({ cells: [e.employee_name, expectedSalaryText(e), xl.date(e.pay_date), null, '', '', '', 'справочно, в прибыль не входит', '', ...branchCol('')] })
   }
   for (const s of staff) {
     salaryRows.push({ cells: [s.name, 'Итого начислено', null, xl.money(s.total_tyiyn)], bold: true })
     if (s.owed_tyiyn !== undefined) salaryRows.push({ cells: [s.name, 'Остаток к выплате на сегодня', null, xl.money(s.owed_tyiyn)] })
   }
-  salaryRows.push({ cells: ['Всего начислено за период', null, null, xl.money(r.totals.payroll_tyiyn)], bold: true })
-  salaryRows.push({ cells: ['Всего выдано за период', null, null, xl.money(sumOf(d.payouts, (p) => p.amount_tyiyn))], bold: true })
+  const basis = basisOf(r)
+  const accruedAll = basis === 'accrual' ? r.totals.payroll_tyiyn : sumOf(staff, (s) => s.total_tyiyn)
+  salaryRows.push({ cells: [basis === 'accrual' ? 'Всего начислено за период' : 'Начислено за период (справочно)', null, null, xl.money(accruedAll)], bold: true })
+  salaryRows.push({ cells: [basis === 'accrual' ? 'Всего выдано за период' : 'Всего выплачено за период', null, null, xl.money(sumOf(d.payouts, (p) => p.amount_tyiyn))], bold: true })
   const salary: Sheet = {
     name: 'Зарплата',
     title: title.slice(0, 2),
-    columns: [{ label: 'Работник' }, { label: 'Что' }, { label: 'Дата' }, { label: 'Сумма' }, { label: 'Касса' }, { label: 'Кто выдал' }, { label: 'Комментарий' }, { label: 'Отметка' }, ...branchHead],
+    columns: [{ label: 'Работник' }, { label: 'Что' }, { label: 'Дата' }, { label: 'Сумма' }, { label: 'Касса' }, { label: 'Кто выдал' }, { label: 'Комментарий' }, { label: 'Отметка' }, { label: 'Проведено' }, ...branchHead],
     rows: salaryRows,
-    footer: ['Зарплата входит в прибыль по начислению (ADR-023); выдача денег прибыль не меняет.'],
+    footer: [
+      basis === 'payout'
+        ? 'Зарплата входит в прибыль, когда выплачена; начисленное без выплаты прибыль не меняет.'
+        : basis === 'accrual'
+          ? 'Зарплата входит в прибыль при начислении; выдача денег прибыль не меняет.'
+          : 'В филиалах разный учёт зарплаты: см. настройки отчёта каждого филиала.',
+    ],
   }
   const days: Sheet = {
     name: 'По дням',
@@ -565,10 +609,11 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
       { cells: ['Итого', null, null, xl.money(r.totals.goods_tyiyn + r.totals.services_tyiyn)], bold: true },
     ],
   }
+  const inProfit = payoutInProfit(r)
   const money: Sheet = {
     name: 'Не входит в прибыль',
     title: [...title.slice(0, 2), 'Деньги переместились, прибыль не меняется'],
-    columns: [{ label: 'Что' }, { label: 'Дата' }, { label: 'Сумма' }, { label: 'Кому' }, { label: 'Касса' }, { label: 'Кто провёл' }, { label: 'Комментарий' }, ...branchHead],
+    columns: [{ label: 'Что' }, { label: 'Дата' }, { label: 'Сумма' }, { label: 'Кому' }, { label: 'Касса' }, { label: 'Кто провёл' }, { label: 'Комментарий' }, { label: 'Проведено' }, ...branchHead],
     rows: [
       ...d.not_in_profit.map((m) => [
         MONEY_KINDS.find(([k]) => k === m.kind)?.[1] ?? m.kind,
@@ -578,9 +623,12 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
         m.account_name,
         m.user_name,
         m.comment,
+        formatDateTime(m.created_at),
         ...branchCol(m.branch),
       ]),
-      ...d.payouts.map((p) => [`Выдано работнику: ${p.employee_name}`, xl.date(p.date), xl.money(p.amount_tyiyn), p.employee_name, p.account_name ?? '', p.user_name, p.comment, ...branchCol(p.branch)]),
+      ...d.payouts
+        .filter((p) => !inProfit(p.branch))
+        .map((p) => [`Выдано работнику: ${p.employee_name}`, xl.date(p.date), xl.money(p.amount_tyiyn), p.employee_name, p.account_name ?? '', p.user_name, p.comment, formatDateTime(p.created_at), ...branchCol(p.branch)]),
     ],
   }
   return [tree, expenses, salary, days, goods, money]

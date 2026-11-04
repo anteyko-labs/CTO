@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select e.id, e.number, a.name as article, e.expense_date, e.amount_tyiyn, e.payee,\n                  e.comment, c.name as \"account_name?\", u.full_name as user_name, e.created_at,\n                  e.reversal_of,\n                  exists (select 1 from expenses x where x.reversal_of = e.id) as \"reversed!\"\n           from expenses e\n           join expense_articles a on a.id = e.article_id\n           join users u on u.id = e.user_id\n           left join cash_accounts c on c.id = e.account_id\n           where e.branch_id = $1 and e.expense_date between $2 and $3\n           order by a.name, e.expense_date, e.created_at",
+  "query": "select e.id, e.number, a.name as article, e.expense_date, e.amount_tyiyn, e.payee,\n                  e.comment, c.name as \"account_name?\", u.full_name as user_name, e.created_at,\n                  e.reversal_of,\n                  exists (select 1 from expenses x where x.reversal_of = e.id) as \"reversed!\"\n           from expenses e\n           join expense_articles a on a.id = e.article_id\n           join users u on u.id = e.user_id\n           left join cash_accounts c on c.id = e.account_id\n           where e.branch_id = $1 and e.expense_date between $2 and $3\n             and public.pnl_in_window(e.expense_date, e.created_at, $4, $5)\n           order by a.name, e.expense_date, e.created_at",
   "describe": {
     "columns": [
       {
@@ -68,7 +68,9 @@
       "Left": [
         "Uuid",
         "Date",
-        "Date"
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -86,5 +88,5 @@
       null
     ]
   },
-  "hash": "fa95ae219beb257bca126e2b4b738f4f801fbdf206ccf84e7f2184cfab9ead54"
+  "hash": "7c4331f150ae26344a436916c41bc96e8d14daca4081fae9a5a3746ea6e9714f"
 }

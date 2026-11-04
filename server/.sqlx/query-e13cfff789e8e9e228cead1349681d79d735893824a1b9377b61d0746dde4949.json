@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"v!\" from expenses\n           where branch_id = $1 and expense_date between $2 and $3\n             and public.pnl_in_window(expense_date, created_at, $4, $5)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e13cfff789e8e9e228cead1349681d79d735893824a1b9377b61d0746dde4949"
+}

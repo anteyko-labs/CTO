@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.name as \"name!\", coalesce(sum(e.amount_tyiyn), 0)::bigint as \"amount!\"\n           from expenses e join expense_articles a on a.id = e.article_id\n           where e.branch_id = $1 and e.expense_date between $2 and $3\n             and public.pnl_in_window(e.expense_date, e.created_at, $4, $5)\n           group by a.name having coalesce(sum(e.amount_tyiyn), 0) <> 0 order by 2 desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "6010f29cff663d4603e989c43714f9830dc8e584928a03c58dcf7679ddde93b9"
+}

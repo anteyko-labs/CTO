@@ -8703,7 +8703,15 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(salary, 2_500_000);
-    // Сводка расшифровывает оклад внутри оплаты труда, чистую прибыль это не меняет.
+    // Сводка расшифровывает оклад внутри оплаты труда, чистую прибыль это не меняет (учёт по
+    // начислению: оклад ещё не выплачен, ADR-193).
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'profit_report', '{"payroll_basis": "accrual"}' from branches"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let day: chrono::NaiveDate = sqlx::query_scalar(
         "select business_date from payroll_accruals where kind = 'monthly_salary'",
     )

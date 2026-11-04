@@ -431,9 +431,44 @@ async fn open_shift_cash_to_qr_changes_till_and_bank(pool: PgPool) {
     );
 }
 
+/// Учёт зарплаты по выплате (ADR-193): удержание прибыль не гасит — поправка возвращает недостачу.
+#[sqlx::test(migrations = "./migrations")]
+async fn closed_shift_fix_counts_only_the_shortage_when_paid_basis(pool: PgPool) {
+    let w = W::new(pool).await;
+    let s1 = w.open_shift().await;
+    let (sid, _) = w.sale(json!([cash(100_000)])).await;
+    w.close_shift(&s1, -100_000).await;
+    let profit_before = w.profit_net().await;
+    let (s, out) = w
+        .pay_change(
+            &w.owner,
+            &sid,
+            Uuid::now_v7(),
+            json!({ "payments": [card(100_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(w.profit_net().await, profit_before + 100_000 - 500);
+    let r1 = w.get(&format!("/api/v1/shifts/{s1}/report")).await;
+    let a = &r1["after_close"];
+    let net_before = a["before"]["net_profit_tyiyn"].as_i64().unwrap();
+    assert_eq!(
+        a["after"]["net_profit_tyiyn"].as_i64().unwrap(),
+        net_before + 100_000 - 500
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn closed_shift_shortage_returns_to_cashier(pool: PgPool) {
     let w = W::new(pool).await;
+    // Недостача и удержание взаимно — учёт по начислению; по выплате — тест выше (ADR-193).
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'profit_report', '{"payroll_basis": "accrual"}' from branches"#,
+    )
+    .execute(&w.pool)
+    .await
+    .unwrap();
     let s1 = w.open_shift().await;
     let (sid, _) = w.sale(json!([cash(100_000)])).await;
     // Недостача 1 000 — удержана с кассира при закрытии.

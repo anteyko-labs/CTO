@@ -597,7 +597,7 @@ async fn profit_shows_expected_salary_outside_net(pool: PgPool) {
     // В чистую не входит: зарплаты за период ещё нет.
     assert_eq!(before["totals"]["payroll_tyiyn"], 0);
 
-    // Начислили оклад — строки «ожидается» больше нет, оклад — в зарплате.
+    // Начислили оклад — строки «ожидается» больше нет; в прибыли он появится с выплатой (ADR-193).
     ok(
         app,
         owner,
@@ -608,6 +608,7 @@ async fn profit_shows_expected_salary_outside_net(pool: PgPool) {
     .await;
     let after = ok(app, owner, "GET", &uri, None).await;
     assert_eq!(after["detail"]["salary_expected"], json!([]));
-    assert_eq!(after["totals"]["payroll_tyiyn"], row["expected_tyiyn"]);
+    assert_eq!(after["totals"]["payroll_tyiyn"], 0);
+    assert_eq!(after["staff"][0]["total_tyiyn"], row["expected_tyiyn"]);
     let _ = (&w.pool, &w.admin, &w.master, &w.safe);
 }

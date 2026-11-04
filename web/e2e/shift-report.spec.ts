@@ -242,7 +242,7 @@ test('чек смены: безнал по счетам, чистая прибы
   // с «Печать». С настройкой «Печатать прибыль в чеке смены» — на бумаге и прибыль.
   await page.goto(`/shifts/${shift.id}`)
   await expect(page.getByTestId('tile-net-profit')).toBeVisible()
-  await expect(page.getByTestId('net-profit')).toContainText('без оклада')
+  await expect(page.getByTestId('net-profit')).toContainText(/без оклада/i)
   await expect(page.getByTestId('net-profit-total')).toContainText('Чистая прибыль за смену')
   await apiPut(page.request, '/settings/cashier', { op_id: crypto.randomUUID(), print_shift_profit: true })
   const before = (await prints(page)).length

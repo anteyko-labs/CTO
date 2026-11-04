@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select r.id, r.number, (r.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  sp.name as \"supplier?\", r.diff_tyiyn, r.reversal_of, u.full_name as user_name\n           from supplier_returns r\n           left join suppliers sp on sp.id = r.supplier_id\n           join users u on u.id = r.user_id\n           where r.branch_id = $1 and r.diff_tyiyn <> 0\n             and (r.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n           order by r.created_at",
+  "query": "select r.id, r.number, (r.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  sp.name as \"supplier?\", r.diff_tyiyn, r.reversal_of, u.full_name as user_name,\n                  r.created_at\n           from supplier_returns r\n           left join suppliers sp on sp.id = r.supplier_id\n           join users u on u.id = r.user_id\n           where r.branch_id = $1 and r.diff_tyiyn <> 0\n             and (r.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n             and public.pnl_in_window(r.created_at, $4, $5)\n           order by r.created_at",
   "describe": {
     "columns": [
       {
@@ -37,13 +37,20 @@
         "ordinal": 6,
         "name": "user_name",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
         "Date",
-        "Date"
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -53,8 +60,9 @@
       false,
       false,
       true,
+      false,
       false
     ]
   },
-  "hash": "511de6118384bc8eeb2f5be06ddd7a5f09b361c49006d11c433b6add088f893f"
+  "hash": "5d81cdf91cb282d2d7d73c5d6684e4598cb77c1b3555341e78f8e71aa451712b"
 }

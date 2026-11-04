@@ -2517,7 +2517,15 @@ async fn day_report(
     let staff = crate::api::payroll::staff_pay(conn, branch_id, day, day).await?;
     let money = money_now(conn, branch_id).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
-    let mut minus = vec![format!("  − зарплата: {}", format_som(t.payroll_tyiyn))];
+    let mut minus = vec![format!(
+        "  − {}: {}",
+        if t.payroll_basis == crate::api::pnl::PAYOUT {
+            "выплачено сотрудникам"
+        } else {
+            "зарплата"
+        },
+        format_som(t.payroll_tyiyn)
+    )];
     if t.bank_fee_tyiyn != 0 {
         minus.push(format!(
             "  − комиссия банка: {}",

@@ -14,6 +14,7 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::reports::TimeWindow;
 use crate::auth::{Ctx, CurrentUser};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops;
@@ -45,6 +46,17 @@ pub struct ProfitSettings {
     /// не выдано» (задача 003 Н12б, ADR-161). По умолчанию да.
     #[serde(default = "yes")]
     pub expenses_bonus_accruals: bool,
+    /// Зарплата в прибыли: `payout` — когда выплатили (по умолчанию, задача 033), `accrual` — при
+    /// начислении, как было (ADR-193).
+    #[serde(default = "default_payroll_basis")]
+    pub payroll_basis: String,
+}
+
+pub const PAYOUT: &str = "payout";
+pub const ACCRUAL: &str = "accrual";
+
+fn default_payroll_basis() -> String {
+    PAYOUT.into()
 }
 
 fn yes() -> bool {
@@ -66,6 +78,7 @@ impl Default for ProfitSettings {
             expense_payee: default_payee(),
             show_reversals: false,
             expenses_bonus_accruals: true,
+            payroll_basis: default_payroll_basis(),
         }
     }
 }
@@ -83,6 +96,16 @@ pub async fn profit_settings(
     .await?;
     Ok(v.and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default())
+}
+
+/// Как зарплата входит в прибыль филиала (ADR-193).
+pub async fn payroll_basis(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<&'static str> {
+    let s = profit_settings(conn, branch_id).await?;
+    Ok(if s.payroll_basis == ACCRUAL {
+        ACCRUAL
+    } else {
+        PAYOUT
+    })
 }
 
 async fn get_settings(
@@ -115,6 +138,9 @@ async fn put_settings(
         return Err(invalid(
             "поле «Кому»: не спрашивать, необязательно или обязательно",
         ));
+    }
+    if !matches!(req.payroll_basis.as_str(), PAYOUT | ACCRUAL) {
+        return Err(invalid("зарплата в прибыли: по выплате или по начислению"));
     }
     // Запись и журнал — одна транзакция (инвариант 7).
     let mut tx = state.pool.begin().await?;
@@ -179,6 +205,7 @@ pub struct RevisionRow {
     pub date: NaiveDate,
     pub user_name: Option<String>,
     pub amount_tyiyn: i64,
+    pub created_at: DateTime<Utc>,
     pub branch: String,
 }
 
@@ -211,7 +238,8 @@ pub struct ExpenseRow {
     pub branch: String,
 }
 
-/// Выплата работнику за период: деньги ушли, прибыль не меняется (она — по начислению, ADR-023).
+/// Выплата работнику за период: при учёте по выплате — строка зарплаты в прибыли, при учёте по
+/// начислению — только движение денег (ADR-193).
 #[derive(Serialize)]
 pub struct PayoutRow {
     pub id: Uuid,
@@ -248,6 +276,7 @@ pub struct CashDiffRow {
     pub date: NaiveDate,
     pub cashier: Option<String>,
     pub amount_tyiyn: i64,
+    pub created_at: DateTime<Utc>,
     pub branch: String,
 }
 
@@ -263,6 +292,7 @@ pub struct DefectRow {
     pub diff_tyiyn: i64,
     pub reversal_of: Option<Uuid>,
     pub user_name: String,
+    pub created_at: DateTime<Utc>,
     pub branch: String,
 }
 
@@ -276,6 +306,7 @@ pub struct SupplierReturnRow {
     pub diff_tyiyn: i64,
     pub reversal_of: Option<Uuid>,
     pub user_name: String,
+    pub created_at: DateTime<Utc>,
     pub branch: String,
 }
 
@@ -329,6 +360,7 @@ pub async fn detail(
     user: &CurrentUser,
     from: NaiveDate,
     to: NaiveDate,
+    w: TimeWindow,
 ) -> AppResult<PnlDetail> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
@@ -350,11 +382,14 @@ pub async fn detail(
            left join products p on p.id = l.product_id
            left join categories c on c.id = p.category_id
            where s.branch_id = $1 and s.business_date between $2 and $3 and l.kind <> 'service'
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)
            group by p.id, p.name, c.name, p.unit
            order by 6 desc, 2"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -380,11 +415,14 @@ pub async fn detail(
            join sales s on s.id = l.sale_id
            left join services sv on sv.id = l.service_id
            where s.branch_id = $1 and s.business_date between $2 and $3 and l.kind = 'service'
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)
            group by sv.id, sv.name
            order by 4 desc, 2"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -399,11 +437,14 @@ pub async fn detail(
     .collect();
 
     let returns_tyiyn = sqlx::query_scalar!(
-        r#"select coalesce(sum(-total_tyiyn), 0)::bigint as "v!" from sales
-           where branch_id = $1 and business_date between $2 and $3 and kind = 'return'"#,
+        r#"select coalesce(sum(-s.total_tyiyn), 0)::bigint as "v!" from sales s
+           where s.branch_id = $1 and s.business_date between $2 and $3 and s.kind = 'return'
+             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -412,18 +453,22 @@ pub async fn detail(
         r#"select m.doc_id as "id!", r.number as "number?",
                   (coalesce(r.posted_at, max(m.created_at)) at time zone 'Asia/Bishkek')::date as "date!",
                   u.full_name as "user_name?",
-                  (-sum(m.value_delta_tyiyn))::bigint as "amount!"
+                  (-sum(m.value_delta_tyiyn))::bigint as "amount!",
+                  coalesce(r.posted_at, max(m.created_at)) as "created_at!"
            from stock_movements m
            left join revisions r on r.id = m.doc_id
            left join users u on u.id = coalesce(r.posted_by, r.user_id)
            where m.branch_id = $1 and m.doc_type = 'revision' and m.doc_id is not null
              and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(m.created_at, $4, $5)
            group by m.doc_id, r.number, r.posted_at, u.full_name
            having sum(m.value_delta_tyiyn) <> 0
            order by 3, 2"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -434,6 +479,7 @@ pub async fn detail(
         date: r.date,
         user_name: r.user_name,
         amount_tyiyn: r.amount,
+        created_at: r.created_at,
         branch: branch.clone(),
     })
     .collect();
@@ -441,10 +487,13 @@ pub async fn detail(
     let revision_tyiyn = sqlx::query_scalar!(
         r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
            where branch_id = $1 and doc_type = 'revision'
-             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(created_at, $4, $5)"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -457,12 +506,15 @@ pub async fn detail(
            left join products p on p.id = m.product_id
            where m.branch_id = $1 and m.doc_type = 'revaluation'
              and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(m.created_at, $4, $5)
            group by 1, p.id, p.name
            having sum(m.value_delta_tyiyn) <> 0
            order by 1, 3"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -496,10 +548,13 @@ pub async fn detail(
            join users u on u.id = e.user_id
            left join cash_accounts c on c.id = e.account_id
            where e.branch_id = $1 and e.expense_date between $2 and $3
+             and public.pnl_in_window(e.expense_date, e.created_at, $4, $5)
            order by a.name, e.expense_date, e.created_at"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -533,10 +588,13 @@ pub async fn detail(
            left join cash_accounts c on c.id = p.account_id
            where p.branch_id = $1
              and p.pay_date between $2 and $3
+             and public.pnl_in_window(p.pay_date, p.created_at, $4, $5)
            order by e.full_name, p.pay_date, p.created_at"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -564,18 +622,22 @@ pub async fn detail(
              select p.account_id, p.fee_tyiyn as v
              from sale_payments p join sales s on s.id = p.sale_id
              where s.branch_id = $1 and s.business_date between $2 and $3 and p.fee_tyiyn <> 0
+               and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)
              union all
              select m.account_id, -m.amount_tyiyn from cash_movements m
              where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
                and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+               and public.pnl_in_window(m.created_at, $4, $5)
              union all
              select a.account_id, a.amount_tyiyn from bank_fee_adjustments a
              where a.branch_id = $1 and a.op_day between $2 and $3
+               and public.pnl_in_window(a.op_day, null, $4, $5)
              union all
              select m.account_id, -m.amount_tyiyn from cash_movements m
              join pay_fixes fx on fx.id = m.doc_id join shifts sh on sh.id = fx.shift_id
              where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'pay_fix'
                and sh.business_date between $2 and $3
+               and public.pnl_in_window(sh.business_date, m.created_at, $4, $5)
            )
            select f.account_id as "id?", coalesce(c.name, 'Без счёта') as "name!",
                   coalesce(sum(f.v), 0)::bigint as "amount!"
@@ -585,7 +647,9 @@ pub async fn detail(
            order by 3 desc"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -600,18 +664,22 @@ pub async fn detail(
 
     let cash_diffs = sqlx::query!(
         r#"select s.id, s.number, s.business_date, e.full_name as "cashier?",
-                  coalesce(sum(m.amount_tyiyn), 0)::bigint as "amount!"
+                  coalesce(sum(m.amount_tyiyn), 0)::bigint as "amount!",
+                  max(m.created_at) as "created_at!"
            from cash_movements m
            join shifts s on s.id = m.doc_id
            left join employees e on e.id = s.cashier_employee_id
            where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
              and s.business_date between $2 and $3
+             and public.pnl_in_window(s.business_date, m.created_at, $4, $5)
            group by s.id, s.number, s.business_date, e.full_name
            having coalesce(sum(m.amount_tyiyn), 0) <> 0
            order by s.business_date, s.number"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -622,6 +690,7 @@ pub async fn detail(
         date: r.business_date,
         cashier: r.cashier,
         amount_tyiyn: r.amount,
+        created_at: r.created_at,
         branch: branch.clone(),
     })
     .collect();
@@ -629,18 +698,21 @@ pub async fn detail(
     let defects = sqlx::query!(
         r#"select x.id, d.number, (x.created_at at time zone 'Asia/Bishkek')::date as "date!",
                   p.name as product, x.kind, x.writeoff_tyiyn, x.diff_tyiyn, x.reversal_of,
-                  u.full_name as user_name
+                  u.full_name as user_name, x.created_at
            from defect_resolutions x
            join defects d on d.id = x.defect_id
            join products p on p.id = d.product_id
            join users u on u.id = x.user_id
            where x.branch_id = $1
              and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(x.created_at, $4, $5)
              and (x.writeoff_tyiyn <> 0 or x.diff_tyiyn <> 0)
            order by x.created_at"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -655,22 +727,27 @@ pub async fn detail(
         diff_tyiyn: r.diff_tyiyn,
         reversal_of: r.reversal_of,
         user_name: r.user_name,
+        created_at: r.created_at,
         branch: branch.clone(),
     })
     .collect();
 
     let supplier_returns = sqlx::query!(
         r#"select r.id, r.number, (r.created_at at time zone 'Asia/Bishkek')::date as "date!",
-                  sp.name as "supplier?", r.diff_tyiyn, r.reversal_of, u.full_name as user_name
+                  sp.name as "supplier?", r.diff_tyiyn, r.reversal_of, u.full_name as user_name,
+                  r.created_at
            from supplier_returns r
            left join suppliers sp on sp.id = r.supplier_id
            join users u on u.id = r.user_id
            where r.branch_id = $1 and r.diff_tyiyn <> 0
              and (r.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(r.created_at, $4, $5)
            order by r.created_at"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?
@@ -683,6 +760,7 @@ pub async fn detail(
         diff_tyiyn: r.diff_tyiyn,
         reversal_of: r.reversal_of,
         user_name: r.user_name,
+        created_at: r.created_at,
         branch: branch.clone(),
     })
     .collect();
@@ -700,10 +778,13 @@ pub async fn detail(
            left join suppliers sup on sup.id = r.supplier_id
            where m.branch_id = $1 and m.kind in ('supplier_payment', 'cash_out', 'transfer_out')
              and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(m.created_at, $4, $5)
            order by m.kind, m.created_at"#,
         b,
         from,
-        to
+        to,
+        w.start,
+        w.end
     )
     .fetch_all(&mut *conn)
     .await?

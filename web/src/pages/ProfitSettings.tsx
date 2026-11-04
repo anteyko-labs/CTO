@@ -19,6 +19,11 @@ const PAYEE: [Settings['expense_payee'], string, string][] = [
   ['off', 'Не спрашивать', 'Поля «Кому» в форме нет'],
 ]
 
+const PAYROLL: [NonNullable<Settings['payroll_basis']>, string, string][] = [
+  ['payout', 'По выплате', 'Расход появляется, когда нажали «Выплатить». Начисленное без выплаты прибыль не меняет'],
+  ['accrual', 'По начислению', 'Расход появляется сразу при начислении, выплата прибыль не меняет'],
+]
+
 export default function ProfitSettings() {
   const st = useLoad(() => get<Settings>('/settings/profit-report'), [])
   const act = useAction()
@@ -59,6 +64,13 @@ export default function ProfitSettings() {
             <div className="flex flex-col gap-2" role="radiogroup" aria-label="Период при открытии">
               {PERIODS.map(([v, label]) => radio('profit-period', v, s.default_period, label, () => save({ ...s, default_period: v }, `Период по умолчанию: ${label.toLowerCase()}`)))}
             </div>
+          </Card>
+          <Card data-testid="profit-settings-payroll">
+            <CardTitle>Зарплата в прибыли</CardTitle>
+            <div className="flex flex-col gap-2" role="radiogroup" aria-label="Зарплата в прибыли">
+              {PAYROLL.map(([v, label, hint]) => radio('profit-payroll', v, s.payroll_basis ?? 'payout', label, () => save({ ...s, payroll_basis: v }, `Зарплата в прибыли: ${label.toLowerCase()}`), hint))}
+            </div>
+            <p className="mt-2 text-sm text-slate-500">Меняет чистую прибыль за все периоды: в отчёте, в сводке, в боте и в отчёте смены. Заработок работников и «К выплате» не меняются.</p>
           </Card>
           <Card data-testid="profit-settings-payee">
             <CardTitle>Поле «Кому» в расходе</CardTitle>

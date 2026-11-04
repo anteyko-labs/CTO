@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from sales s\n           where s.branch_id = $1 and s.business_date between $2 and $3 and s.kind = 'sale'\n             and public.pnl_in_window(s.business_date, coalesce(s.client_time, s.created_at), $4, $5)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "326457a432350274a6221b5cea796c21a1e7d961e648e93231a3276b9b782740"
+}
