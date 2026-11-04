@@ -2,6 +2,7 @@
 // «Оприходование (без поставщика)», две строки одним документом; в списке приходов с отметкой,
 // отбор по виду; сторно всего документа.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { discardEntryDrafts } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -31,6 +32,7 @@ async function apiGet<T>(request: APIRequestContext, path: string): Promise<T> {
 
 test('«Приход» → «Оприходование»: две строки, отметка в списке, сторно', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Оприходование ${RUN}`, kind: 'other' })
   const goods = [
     { name: `Хомут ОП ${RUN}`, code: `53${RUN}707` },
@@ -103,6 +105,7 @@ test('«Приход» → «Оприходование»: две строки, 
 
 test('Незавершённое оприходование не теряется: другой раздел, закрытая вкладка, проведение', async ({ page, context }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Черновик ${RUN}`, kind: 'other' })
   const code = `55${RUN}909`
   const name = `Гайка ЧР ${RUN}`
@@ -153,6 +156,7 @@ test('Незавершённое оприходование не теряетс�
 
 test('Незавершённый приход: поставщик, номер и способ оплаты возвращаются', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Черновик П ${RUN}`, kind: 'other' })
   const code = `56${RUN}919`
   await apiPost(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name: `Болт ЧР ${RUN}`, barcodes: [code], sale_price_tyiyn: 10_000 })

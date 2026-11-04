@@ -1,7 +1,7 @@
 // Метры у любого товара (задача 006, ADR-178): товар заводится в метрах из прихода, приход 3,5 м по
 // цене за метр, в ревизии вписывают «2» — это 2 м, а не 2 мм; после проведения остаток 2 000 мм.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -24,6 +24,7 @@ async function api<T>(request: APIRequestContext, method: 'get' | 'post', path: 
 
 test('товар в метрах: завести в приходе, приход 3,5 м, ревизия «2» — остаток 2 м', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const category = `Кат м ${RUN}`
   const cat = await api<{ id: string }>(page.request, 'post', '/categories', { name: category, kind: 'other' })
   const name = `Шланг м ${RUN}`

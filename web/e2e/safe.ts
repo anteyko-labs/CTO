@@ -10,3 +10,11 @@ export async function ownerSafe(request: APIRequestContext): Promise<string> {
   expect(safe, 'нет сейфа владельца').toBeTruthy()
   return safe!.id
 }
+
+/** Черновик прихода и оприходования свой у входа (ADR-190): у тестов один владелец, форма начинается с чистого листа. */
+export async function discardEntryDrafts(request: APIRequestContext): Promise<void> {
+  for (const kind of ['receipt', 'stock_in']) {
+    const res = await request.post(`/api/v1/entry-drafts/${kind}/discard`)
+    expect(res.ok(), await res.text()).toBeTruthy()
+  }
+}

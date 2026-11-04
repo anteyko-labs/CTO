@@ -1,7 +1,7 @@
 // Килограммы у любого товара (ADR-174): товар заводится в кг прямо из прихода, приход 2,5 кг по
 // цене за кг, в ревизии вписывают 1,25 кг — после проведения остаток 1 250 г.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -24,6 +24,7 @@ async function api<T>(request: APIRequestContext, method: 'get' | 'post', path: 
 
 test('товар в кг: завести в приходе, приход 2,5 кг, ревизия 1,25 кг — остаток 1 250 г', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const category = `Кат кг ${RUN}`
   const cat = await api<{ id: string }>(page.request, 'post', '/categories', { name: category, kind: 'other' })
   const name = `Солидол кг ${RUN}`

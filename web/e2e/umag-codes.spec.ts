@@ -4,7 +4,7 @@
 // «Завести» и «Это уже есть»; на кассе Умага нет — незаведённый код там «Код не найден».
 // Экран «Связать с Умагом»: сводка, автосвязывание, похожие пары, «Не то», «Отвязать», конфликт кода.
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
-import { ownerSafe } from './safe'
+import { discardEntryDrafts, ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -110,6 +110,7 @@ async function adminWith(page: Page, browser: Browser, permissions: string[]) {
 
 test('приход: несвязанный код Умага — окно, «Завести и добавить», все коды у товара; повторный скан — тот же товар', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const catName = `Фильтры Умаг ${RUN}`
   await category(page.request, catName)
   const name = `Фильтр Умаг ${RUN}`
@@ -177,6 +178,7 @@ test('приход: несвязанный код Умага — окно, «З�
 
 test('приход: «Это уже есть — выбрать товар» связывает строку Умага со своим товаром', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await category(page.request, `Свечи Умаг ${RUN}`)
   const own = `Свеча зажигания своя ${RUN}`
   const p = await product(page.request, cat, own, [`63${RUN}04`], 30_000)
@@ -199,6 +201,7 @@ test('приход: «Это уже есть — выбрать товар» с�
 
 test('приход: начало кода Умага и код целиком без Enter — строки Умага в списке', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   // Как в рабочей выгрузке: у DOLCE и MEDORI коды с общим началом 467372689, у FENIX — только 4673.
   // Цифр кода в названиях нет: иначе строка нашлась бы и по сходству названия.
   const head = `9${RUN}`
@@ -234,6 +237,7 @@ test('приход: начало кода Умага и код целиком б
 
 test('«Товары»: поиск по коду и тексту показывает Умаг; скан — окно и «Завести»; блок «Умаг» в карточке', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const catName = `Антифризы Умаг ${RUN}`
   await category(page.request, catName)
   const name = `Антифриз Умаг ${RUN} G12`
@@ -291,6 +295,7 @@ test('«Товары»: поиск по коду и тексту показыв�
 
 test('касса: товаров Умага не видно; код Умага связанного товара — товар в чеке, незаведённый — «Код не найден»', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await category(page.request, `Колодки Умаг ${RUN}`)
   const linked = `Колодки свои ${RUN}`
   const p = await product(page.request, cat, linked, [`66${RUN}06`], 120_000)
@@ -336,6 +341,7 @@ test.describe('режим кассы 1366×768', () => {
 
   test('блока и окна Умага нет; скан кода Умага связанного товара добавляет товар', async ({ page }) => {
     await login(page)
+    await discardEntryDrafts(page.request)
     const cat = await category(page.request, `Сенсор Умаг ${RUN}`)
     const linked = `Щётка сенсор ${RUN}`
     const p = await product(page.request, cat, linked, [`77${RUN}14`], 40_000)
@@ -375,6 +381,7 @@ test.describe('режим кассы 1366×768', () => {
 
 test('«Связать с Умагом»: сводка, автосвязывание, новая выгрузка, похожие пары, «Не то», конфликт кода, «Отвязать»', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await category(page.request, `Связь Умаг ${RUN}`)
   const byCode = await product(page.request, cat, `Масло по коду ${RUN}`, [`70${RUN}08`], 250_000)
   const byName = await product(page.request, cat, `Тосол «Ёлка» ${RUN}`, [], 40_000)
@@ -480,6 +487,7 @@ test('«Связать с Умагом»: сводка, автосвязыван
 
 test('без права «Товары и штрихкоды»: в приходе и «Товарах» — только текст, экрана связывания нет', async ({ page, browser }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const name = `Ремень Умаг ${RUN}`
   const code = `80${RUN}16`
   await putUmag(page.request, [{ name, barcode: code, price_tyiyn: 35_000, cost_tyiyn: 20_000, unit: 'шт' }])
@@ -549,6 +557,7 @@ async function freeLiterCodes(request: APIRequestContext): Promise<{ liter: stri
 
 test('ревизия: скан наклейки с нулём впереди (в Умаге нуль потерян) — +1, курсор в сканере; следующий скан — другой товар', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const catName = `Ревизия Умаг ${RUN}`
   const cat = await category(page.request, catName)
   // Код Умага у товара — без нуля впереди, как в Excel; на наклейке — с нулём.
@@ -586,6 +595,7 @@ test('ревизия: скан наклейки с нулём впереди (в
 
 test('«Товары»: Enter по артикулу своего товара — его карточка, а не окно Умага; без сети — текст про связь', async ({ page, context }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await category(page.request, `Свечи артикул ${RUN}`)
   const article = `BKR${RUN}E`
   const own = `Свеча NGK своя ${RUN}`
@@ -624,6 +634,7 @@ test('«Товары»: Enter по артикулу своего товара �
 
 test('строка «литр»: коды литра Умага не становятся кодами канистры — касса «Код не найден», EAN канистры — товар', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const liter = await freeCode(page.request, 7)
   const plu = await freeCode(page.request, 4)
   const ean = `40${RUN}23`
@@ -670,6 +681,7 @@ test('строка «литр»: коды литра Умага не стано�
 
 test('строка «литр»: наклейка «1 литр» (код строки + 01000) — не код канистры: карточка без неё, касса «Код не найден»', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   // Как IDEMITSU 5W30 4Л рабочей выгрузки: 2760275, PLU 1276 и наклейка 2760275010002, заводского кода нет.
   const { liter, sticker } = await freeLiterCodes(page.request)
   const plu = await freeCode(page.request, 4)
@@ -713,6 +725,7 @@ test('строка «литр»: наклейка «1 литр» (код стр�
 
 test('«Сканер товаров»: строка «литр» без заводского кода — карточка без кода литра, код выдаёт программа', async ({ page }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const liter = await freeCode(page.request, 7)
   const name = `AZMOL ТЕСТ ${RUN} 10W40 200L`
   await putUmag(page.request, [{ name, barcode: liter, unit: 'литр', price_tyiyn: 55_000, cost_tyiyn: 40_000 }])
@@ -748,6 +761,7 @@ test('«Сканер товаров»: строка «литр» без заво
 
 test('закупка Умага: администратору без права прихода не видна', async ({ page, browser }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const code = `84${RUN}18`
   await putUmag(page.request, [{ name: `Ремень закупка ${RUN}`, barcode: code, price_tyiyn: 35_000, cost_tyiyn: 31_700, unit: 'шт' }])
   const { ctx, page: admin } = await adminWith(page, browser, ['products'])
@@ -774,6 +788,7 @@ async function umagSwitch(request: APIRequestContext, enabled: boolean) {
 
 test('выключатель Умага: блоков и окон нет, касса находит товар по перенесённому коду и без сети; включается одной кнопкой', async ({ page, context }) => {
   await login(page)
+  await discardEntryDrafts(page.request)
   const cat = await category(page.request, `Выключатель Умаг ${RUN}`)
   const own = `Фильтр выключателя ${RUN}`
   const p = await product(page.request, cat, own, [`84${RUN}18`], 45_000)
