@@ -121,8 +121,8 @@ test('свой банк: завести, продать картой на нег
   await expect(page.getByTestId('fee-history')).toContainText('1,00 %')
   await page.getByRole('button', { name: 'Отмена' }).click()
 
-  // Убрать за собой: деньги — на счёт по умолчанию для перевода, банк — в архив (история остаётся).
-  const main = accounts.find((a) => a.kind === 'bank' && a.default_transfer)
+  // Убрать за собой: деньги — на счёт по умолчанию для карты, банк — в архив (история остаётся).
+  const main = accounts.find((a) => a.kind === 'bank' && a.default_card)
   await api(page.request, 'POST', '/cash/transfers', {
     op_id: crypto.randomUUID(),
     from_account_id: bank?.id,

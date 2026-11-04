@@ -13318,3 +13318,117 @@ async fn owner_qr_lands_in_owner_safe_without_fee_and_fee_refund(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn owner_qr_on_safe_return_pay_change_offline_and_income(pool: PgPool) {
+    // Задача 029: возврат, изменение оплаты, чек без сети и отчёт — через тот же сейф, комиссия 0.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
+    let item = product(&app, &owner, "Фильтр", 100_000, 0).await;
+    let safe = owner_safe(&app, &owner).await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": safe,
+                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 0 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, bank, _) = accounts_of(&app, &owner).await;
+    let start = balance_of(&pool, &safe).await;
+    let sale = |pay: &str, offline: bool| {
+        let mut b = json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+            "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 100_000 }],
+            "payments": [{ "method": pay, "amount_tyiyn": 100_000 }] });
+        if offline {
+            b["offline"] = json!(true);
+            b["client_time"] = json!(chrono::Utc::now().to_rfc3339());
+        }
+        b
+    };
+    let post = |who: String, uri: String, body: Value| {
+        let app = app.clone();
+        async move {
+            let (s, _, v) = call(&app, "POST", &uri, Some(&who), Some(body)).await;
+            assert_eq!(s, StatusCode::OK, "{uri}: {v}");
+            v
+        }
+    };
+    // Чек без сети.
+    post(
+        admin.clone(),
+        "/api/v1/sales".into(),
+        sale("transfer", true),
+    )
+    .await;
+    assert_eq!(balance_of(&pool, &safe).await, start + 100_000);
+    // Возврат — из сейфа.
+    let sold = post(
+        admin.clone(),
+        "/api/v1/sales".into(),
+        sale("transfer", false),
+    )
+    .await;
+    assert_eq!(balance_of(&pool, &safe).await, start + 200_000);
+    post(
+        owner.clone(),
+        format!("/api/v1/sales/{}/return", sold["id"].as_str().unwrap()),
+        json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                "payments": [{ "method": "transfer", "amount_tyiyn": 100_000 }] }),
+    )
+    .await;
+    assert_eq!(balance_of(&pool, &safe).await, start + 100_000);
+    // Изменение оплаты: наличные → QR владельцу на сейф.
+    let cash = post(admin.clone(), "/api/v1/sales".into(), sale("cash", false)).await;
+    post(
+        owner.clone(),
+        format!("/api/v1/sales/{}/pay-change", cash["id"].as_str().unwrap()),
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибся способом",
+                "payments": [{ "method": "transfer", "amount_tyiyn": 100_000, "account_id": safe }] }),
+    )
+    .await;
+    assert_eq!(balance_of(&pool, &safe).await, start + 200_000);
+    // Сейф как счёт карты — нельзя.
+    let cash2 = post(admin.clone(), "/api/v1/sales".into(), sale("cash", false)).await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/sales/{}/pay-change", cash2["id"].as_str().unwrap()),
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "comment": "ошибся способом",
+                "payments": [{ "method": "card", "amount_tyiyn": 100_000, "account_id": safe }] }),
+        ),
+    )
+    .await;
+    assert_ne!(s, StatusCode::OK);
+    // Движения сейфа сходятся с остатком (I6), на банке комиссии нет.
+    let sum: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from cash_movements where account_id = $1::uuid",
+    )
+    .bind(&safe)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(sum, balance_of(&pool, &safe).await);
+    assert_eq!(balance_of(&pool, &bank).await, 0);
+    // Отчёт: способ учтён, комиссии нет, кассиру — без строки сейфа.
+    let (s, _, inc) = call(&app, "GET", "/api/v1/reports/income", Some(&owner), None).await;
+    assert_eq!(s, StatusCode::OK, "{inc}");
+    assert_eq!(sum_of(&inc["methods"], "fee_tyiyn"), 0);
+    let (s, _, inc) = call(&app, "GET", "/api/v1/reports/income", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::OK, "{inc}");
+    assert!(
+        !inc["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["account_id"] == json!(safe)),
+        "{inc}"
+    );
+}
