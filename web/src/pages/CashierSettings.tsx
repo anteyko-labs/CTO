@@ -267,6 +267,20 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
             Выключено — товар с остатком 0 в чек не попадает, больше остатка не пробить никому, и вам тоже (разлив из бочки — тоже). Без связи касса
             сверяет по последним остаткам; если чек всё же ушёл в минус, придёт уведомление.
           </p>
+          <label className="mt-3 inline-flex items-center gap-2 text-sm">
+            <input
+              id="service-client-required"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={s.service_client_required}
+              onChange={(e) => set({ service_client_required: e.target.checked })}
+            />
+            Данные клиента в чеке «В сервис» обязательны
+          </label>
+          <p className="mt-2 text-sm text-slate-500">
+            Включено — без клиента, телефона, машины и пробега чек «В сервис» не провести. Выключено — их можно не указывать. Мастер и вид замены нужны
+            всегда, клиент для долга и оплаты по счёту — тоже.
+          </p>
         </Card>
 
         <Card data-testid="cashier-profit">

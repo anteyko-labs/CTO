@@ -145,15 +145,18 @@ export const CLIENT_NEED_SHORT: Record<ClientNeed, string> = {
 }
 
 /** Чего не хватает чеку «в сервис» (ADR-100). Телефон фирмы может быть у того, кто приехал:
- *  касса его не знает — проверит сервер. */
+ *  касса его не знает — проверит сервер. Владелец сделал данные необязательными (`required: false`,
+ *  ADR-191) — не хватает ничего. */
 export function serviceClientMissing(input: {
   party: Pick<Party, 'kind' | 'name' | 'first_name' | 'last_name' | 'phone'> | null
   contactChosen: boolean
   vehicleChosen: boolean
   mileage: string
+  required?: boolean
 }): ClientNeed[] {
   const { party } = input
   const out: ClientNeed[] = []
+  if (input.required === false) return out
   if (!party || !clientNamed(party)) out.push('client')
   if (!party || (!party.phone.trim() && !(party.kind === 'company' && input.contactChosen))) out.push('phone')
   if (!party || !input.vehicleChosen) out.push('vehicle')

@@ -369,4 +369,33 @@ async fn allow_negative_setting_restores_old_behavior(pool: PgPool) {
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(w.stock(&w.item).await, -5);
+    // Данные клиента в сервисе (задача 032): администратору нельзя, владельцу — с журналом.
+    let (s, _, _) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        Some(&w.admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "service_client_required": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(
+        w.get("/api/v1/settings/cashier").await["service_client_required"],
+        true
+    );
+    let off = w
+        .ok(
+            "PUT",
+            "/api/v1/settings/cashier",
+            json!({ "op_id": Uuid::now_v7(), "service_client_required": false }),
+        )
+        .await;
+    assert_eq!(off["service_client_required"], false);
+    let client_logged: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'settings.cashier' and data #>> '{after,service_client_required}' = 'false'",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(client_logged, 1);
 }

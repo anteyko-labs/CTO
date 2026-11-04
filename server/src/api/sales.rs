@@ -1615,7 +1615,15 @@ pub async fn post_sale_core(
             }
             bypass.push("чек «в сервис» без вида замены".into());
         }
-        let missing = service_client_missing(conn, &req).await?;
+        // Владелец мог сделать данные клиента необязательными (задача 032, ADR-191).
+        let missing = if crate::api::cashier_settings::load(conn, branch_id)
+            .await?
+            .service_client_required
+        {
+            service_client_missing(conn, &req).await?
+        } else {
+            Vec::new()
+        };
         if !missing.is_empty() {
             if !lenient {
                 return Err(invalid(format!(

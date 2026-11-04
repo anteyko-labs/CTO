@@ -104,6 +104,10 @@ pub struct CashierSettings {
     /// Бочка на кассе (задача 010): товар в литрах с тарой строго больше этого объёма, л, —
     /// в чек сразу розливом в литрах, а не канистрой; 0 — всегда канистра.
     pub barrel_pour_over_l: i32,
+    /// «Данные клиента в чеке «В сервис» обязательны» (задача 032, ADR-191): выключено — клиент,
+    /// телефон, машина и пробег необязательны; мастер и вид замены — всегда. По умолчанию
+    /// включено — как было (I21).
+    pub service_client_required: bool,
 }
 
 impl Default for CashierSettings {
@@ -130,6 +134,7 @@ impl Default for CashierSettings {
             sale_requires_shift: true,
             sale_allow_negative: false,
             barrel_pour_over_l: 150,
+            service_client_required: true,
         }
     }
 }

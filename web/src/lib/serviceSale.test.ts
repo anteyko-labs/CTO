@@ -62,6 +62,10 @@ describe('данные клиента для «В сервис» (ADR-100)', () 
     expect(clientNamed(person({ first_name: '', last_name: '', name: 'Азамат Уулу' }))).toBe(true)
     expect(clientNamed({ kind: 'company', name: 'ОсОО Транс', first_name: '', last_name: '' })).toBe(true)
   })
+  it('данные необязательны по настройке владельца — не хватает ничего (ADR-191)', () => {
+    expect(serviceClientMissing({ party: null, contactChosen: false, vehicleChosen: false, mileage: '', required: false })).toEqual([])
+    expect(serviceClientMissing({ party: null, contactChosen: false, vehicleChosen: false, mileage: '', required: true })).toEqual(['client', 'phone', 'vehicle', 'mileage'])
+  })
   it('недостающее — в порядке сервера', () => {
     expect(serviceClientMissing({ party: null, contactChosen: false, vehicleChosen: false, mileage: '' })).toEqual(['client', 'phone', 'vehicle', 'mileage'])
     expect(serviceClientMissing({ party: person({}), contactChosen: false, vehicleChosen: true, mileage: '120000' })).toEqual([])

@@ -1274,7 +1274,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // На вынос с доливкой мастер — по желанию: выбран — ставка услуги, нет — ничего (ADR-118).
   const topupMaster = saleType === 'takeaway' && hasTopup(lines)
   const clientNeeds =
-    saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
+    saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage, required: cs.service_client_required }) : []
   // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
   const discountLines = canDiscount ? [] : lines.filter((l) => isDiscount(parseSom(l.priceText), lineList(l), l.gift))
   // Продажа только при открытой смене (задача 005 Н4, ADR-169): при связи и без смены вместо
@@ -2137,7 +2137,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </div>
       ) : (
         <div data-client>
-          <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
+          <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service' && cs.service_client_required} />
         </div>
       )}
       {party && vehicleId && !touch && <OilHint book={carBook} />}
@@ -2209,7 +2209,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           <>
             <Field
               label={`Пробег сейчас, ${unitLabel(carUnit)}`}
-              required
+              required={cs.service_client_required}
               hint={serviceLeft ? undefined : 'Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку'}
             >
               {/* Не больше 7 цифр: пробег до 5 000 000, лишняя цифра — опечатка (ADR-093). */}
@@ -3545,7 +3545,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <Modal title="Клиент и машина" wide onClose={() => setClientOpen(false)}>
           <div className="flex flex-col gap-3">
             <div data-client-modal>
-              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
+              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service' && cs.service_client_required} />
             </div>
             {party && vehicleId && <OilHint book={carBook} />}
             <Button className="min-h-[64px]! text-xl!" onClick={() => setClientOpen(false)}>

@@ -2,7 +2,7 @@
 // с «Готово», удаление отложенного чека — с подтверждением, права без «Прихода» и «Товаров»,
 // режим кассы 1366×768 — «Оплатить» закреплена, «Не хватает» одной строкой в окне оплаты.
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
-import { ensureShift, openPay } from './cashier'
+import { ensureShift, openPay, pickMaster } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -195,6 +195,65 @@ test.describe('режим кассы 1366×768', () => {
     await keyboard.getByRole('button', { name: 'Скрыть', exact: true }).click()
     await page.getByRole('button', { name: 'Выйти из режима кассы' }).click()
   })
+})
+
+test('данные клиента в сервисе: владелец выключает обязательность, мастер нужен всегда (задача 032)', async ({ page }) => {
+  await login(page)
+  const item = `Товар-032 ${RUN}`
+  const kind = `Замена-032 ${RUN}`
+  const master = `Мастер-032 ${RUN}`
+  await goods(page.request, item)
+  await apiPost(page.request, '/services', { name: kind, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+  // Двое: единственный мастер выбирается сам.
+  await apiPost(page.request, '/employees', { full_name: master, is_master: true })
+  await apiPost(page.request, '/employees', { full_name: `${master} 2`, is_master: true })
+  await ensureShift(page.request)
+  const toggle = page.locator('#service-client-required')
+  const save = () => page.getByRole('button', { name: 'Сохранить' }).first().click()
+  const submit = page.getByRole('button', { name: /Провести чек/ }).first()
+  const fillCheck = async () => {
+    await page.goto('/')
+    await addToCart(page, item)
+    await page.getByRole('button', { name: 'В сервис' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Вид замены' })
+    await dialog.getByPlaceholder('Найти услугу').fill(RUN)
+    await dialog.getByTestId('service-choices').getByRole('button', { name: new RegExp(kind) }).click()
+    await dialog.getByRole('button', { name: 'Готово' }).click()
+  }
+
+  try {
+    // Выключено: без мастера «Провести» недоступно, с мастером чек проводится без клиента.
+    await page.goto('/settings/cashier')
+    await expect(toggle).toBeChecked()
+    await toggle.uncheck()
+    await save()
+    await expect(page.getByText('Настройки кассы сохранены').first()).toBeVisible()
+    await fillCheck()
+    await openPay(page)
+    const pay = page.getByRole('dialog', { name: 'Оплата' })
+    await expect(pay).toContainText('мастер')
+    await expect(pay).not.toContainText('телефон')
+    await expect(pay.getByRole('button', { name: /Провести чек/ })).toBeDisabled()
+    await pay.getByRole('button', { name: 'Закрыть' }).click()
+    await pickMaster(page, master)
+    await openPay(page)
+    await page.getByRole('button', { name: 'Без сдачи' }).click()
+    await expect(submit).toBeEnabled()
+    await submit.click()
+    await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
+
+    // Включено: снова нужны данные клиента.
+    await page.goto('/settings/cashier')
+    await toggle.check()
+    await save()
+    await expect(page.getByText('Настройки кассы сохранены').first()).toBeVisible()
+    await fillCheck()
+    await pickMaster(page, master)
+    await openPay(page)
+    await expect(page.getByRole('dialog', { name: 'Оплата' })).toContainText('телефон')
+  } finally {
+    await page.request.put('/api/v1/settings/cashier', { data: { op_id: crypto.randomUUID() }, headers: DEVICE })
+  }
 })
 
 test('права: без «Прихода» и «Оприходования» — только «Нет права»; карточка товара без «Товаров» — только чтение', async ({ page, browser }) => {

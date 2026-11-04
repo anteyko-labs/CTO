@@ -113,6 +113,8 @@ export interface CashierSettings {
   sale_allow_negative: boolean
   /** Бочка (задача 010): товар в литрах с тарой больше стольких литров — в чек розливом; 0 — канистрой. */
   barrel_pour_over_l: number
+  /** Данные клиента в чеке «В сервис» обязательны (задача 032); мастер и вид замены — всегда. */
+  service_client_required: boolean
 }
 
 export const DEFAULT_CASHIER: CashierSettings = {
@@ -130,6 +132,7 @@ export const DEFAULT_CASHIER: CashierSettings = {
   sale_cost_on_till: false,
   sale_requires_shift: true,
   sale_allow_negative: false,
+  service_client_required: true,
   barrel_pour_over_l: 150,
 }
 

@@ -10877,6 +10877,104 @@ async fn service_needs_client_data_offline_reports_reasons(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn service_client_data_optional_by_setting(pool: PgPool) {
+    // Владелец выключил обязательность данных клиента (задача 032, ADR-191): чек с мастером и видом
+    // замены проводится, без мастера и вида замены — нет; долг без клиента — нет; машина без
+    // пробега — запись в книжке без пробега; чек без сети — без причины владельцу.
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 10_000).await;
+    let branch = w.owner.user.branch_id;
+    let with_kind = || {
+        let mut req = takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 1, 50_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            cash(70_000),
+        );
+        req.sale_type = "service".into();
+        req.master_id = Some(w.master);
+        req
+    };
+    // По умолчанию — как было.
+    assert!(matches!(
+        sell(&pool, &w.admin, with_kind()).await,
+        Err(AppError::Validation(m)) if m.contains("нужны данные клиента")
+    ));
+    sqlx::query("insert into settings (branch_id, key, value) values ($1, 'cashier', '{\"service_client_required\": false}') on conflict (branch_id, key) do update set value = settings.value || excluded.value")
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let sale = sell(&pool, &w.admin, with_kind()).await.unwrap();
+    assert!(sale.master_fee_tyiyn > 0);
+    // Мастер обязателен всегда.
+    let mut req = with_kind();
+    req.master_id = None;
+    assert!(matches!(
+        sell(&pool, &w.admin, req).await,
+        Err(AppError::Validation(m)) if m.contains("в сервисе нужен мастер")
+    ));
+    // Вид замены обязателен всегда.
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    assert!(matches!(
+        sell(&pool, &w.admin, req).await,
+        Err(AppError::Validation(m)) if m.contains("Выберите вид замены")
+    ));
+    // Долг без клиента — по-прежнему нет.
+    let mut req = with_kind();
+    req.payments = vec![PaymentReq {
+        account_id: None,
+        bank_qr_id: None,
+        price_per_kg_tyiyn: None,
+        method: "debt".into(),
+        amount_tyiyn: 70_000,
+        grams: None,
+    }];
+    assert!(matches!(
+        sell(&pool, &w.admin, req).await,
+        Err(AppError::Validation(m)) if m.contains("укажите клиента")
+    ));
+    // Машина без пробега — запись в книжке без пробега.
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, first_name, last_name) values ($1, $2, 'customer', 'person', 'Асанов Бакыт', 'Бакыт', 'Асанов')")
+        .bind(party)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let vehicle = Uuid::now_v7();
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG123ABC', '01KG123ABC')")
+        .bind(vehicle)
+        .bind(branch)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = with_kind();
+    req.party_id = Some(party);
+    req.vehicle_id = Some(vehicle);
+    let sale = sell(&pool, &w.admin, req).await.unwrap();
+    let km: Option<i32> =
+        sqlx::query_scalar("select mileage_km from oil_changes where sale_id = $1")
+            .bind(sale.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(km, None);
+    // Без сети — проводится, причины о данных клиента нет.
+    let mut req = with_kind();
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(3));
+    sell(&pool, &w.admin, req).await.unwrap();
+    let text = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
+    assert!(!text.contains("без данных клиента"), "{text}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn discount_needs_right(pool: PgPool) {
     // Цена ниже каталожной — только владелец или право «Скидка в чеке» (ADR-097): без права онлайн
     // — 403, без сети — проведено с причиной; подарок, баллы и цена выше — не скидка.
