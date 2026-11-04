@@ -300,8 +300,12 @@ async fn four_people_open_one_whole_warehouse_draft(pool: PgPool) {
             |_| json!({ "category_id": null, "reuse_draft": true }),
         )
         .await;
+    // Новый черновик заводит только владелец (ADR-186): администратор, опередивший его, получает
+    // отказ, остальные присоединяются к одному черновику.
+    assert_eq!(res[0].0, StatusCode::OK, "{}", res[0].1);
     let mut ids: Vec<String> = res
         .iter()
+        .filter(|(s, v)| !(*s == StatusCode::FORBIDDEN && code(v) == "forbidden"))
         .map(|(s, v)| {
             assert_eq!(*s, StatusCode::OK, "{v}");
             v["head"]["id"].as_str().unwrap().to_string()
@@ -729,7 +733,9 @@ async fn overlapping_revision_starts_share_one_draft(pool: PgPool) {
         .await;
     for (s, v) in &res {
         assert!(
-            *s == StatusCode::OK || (*s == StatusCode::CONFLICT && code(v) == "revision_open"),
+            *s == StatusCode::OK
+                || (*s == StatusCode::CONFLICT && code(v) == "revision_open")
+                || (*s == StatusCode::FORBIDDEN && code(v) == "forbidden"),
             "{v}"
         );
     }
