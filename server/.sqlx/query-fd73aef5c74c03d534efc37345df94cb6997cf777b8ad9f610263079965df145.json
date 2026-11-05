@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update label_jobs set status = 'failed', error = 'устарело', done_at = now(), doc_html = null\n           where branch_id = $1 and status = 'queued'\n             and (created_at < now() - interval '24 hours'\n                  or (size in ('book', 'doc') and created_at < now() - interval '2 minutes'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fd73aef5c74c03d534efc37345df94cb6997cf777b8ad9f610263079965df145"
+}

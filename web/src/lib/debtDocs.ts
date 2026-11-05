@@ -1,6 +1,6 @@
 // Документы о долге и акт сверки (SPEC-10): тексты по умолчанию, подстановки, сумма прописью, печать A4.
 // Тексты правит владелец в настройках; пустое значение подстановки печатается линией для записи от руки.
-import { printInFrame } from './printFrame'
+import { printDoc } from './docPrint'
 import { formatDateTime, formatSomExact } from './format'
 import { salePriceSuffix, saleQtyText } from './units'
 import type { Sale } from './types'
@@ -366,7 +366,8 @@ const A4_STYLE = `
 `
 
 export function printHtml(title: string, body: string): void {
-  printInFrame(
+  void printDoc(
+    title,
     `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${A4_STYLE}</style></head><body>${body}</body></html>`,
   )
 }

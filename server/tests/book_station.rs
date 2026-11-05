@@ -184,3 +184,93 @@ async fn book_job_goes_to_book_station_only(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// Задача 034: документ A4 берёт только станция `doc`; после печати HTML в базе не остаётся.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn doc_job_goes_to_doc_station_only(pool: PgPool) {
+    bootstrap::ensure_owner(&pool, Some(("owner".into(), "owner-pass-1".into())))
+        .await
+        .unwrap();
+    let app = app(build_state(pool.clone(), false).await.unwrap(), None);
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let doc_station = Uuid::now_v7();
+    let take = |station: Uuid, size: &'static str| json!({ "station_id": station, "size": size });
+
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/v1/label-jobs/doc",
+        &owner,
+        Some(json!({ "op_id": Uuid::now_v7(), "title": "Пусто", "html": " " })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let v = ok(
+        &app,
+        "POST",
+        "/api/v1/label-jobs/take",
+        &owner,
+        take(doc_station, "doc"),
+    )
+    .await;
+    assert!(v["job"].is_null());
+
+    let body = json!({ "op_id": Uuid::now_v7(), "title": "Акт сверки", "html": "<p>АКТ</p>" });
+    let created = ok(&app, "POST", "/api/v1/label-jobs/doc", &owner, body.clone()).await;
+    assert_eq!(created["station_online"], true);
+    // Повтор op_id — то же задание.
+    let again = ok(&app, "POST", "/api/v1/label-jobs/doc", &owner, body).await;
+    assert_eq!(again["id"], created["id"]);
+
+    for size in ["big", "small", "book"] {
+        let v = ok(
+            &app,
+            "POST",
+            "/api/v1/label-jobs/take",
+            &owner,
+            take(Uuid::now_v7(), size),
+        )
+        .await;
+        assert!(v["job"].is_null(), "станция {size} взяла документ");
+    }
+
+    let v = ok(
+        &app,
+        "POST",
+        "/api/v1/label-jobs/take",
+        &owner,
+        take(doc_station, "doc"),
+    )
+    .await;
+    assert_eq!(v["job"]["id"], created["id"]);
+    assert_eq!(v["job"]["doc"]["title"], "Акт сверки");
+    assert_eq!(v["job"]["doc"]["html"], "<p>АКТ</p>");
+
+    let id = created["id"].as_str().unwrap();
+    ok(
+        &app,
+        "POST",
+        &format!("/api/v1/label-jobs/{id}/done"),
+        &owner,
+        json!({ "station_id": doc_station }),
+    )
+    .await;
+    let (s, job) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/label-jobs/{id}"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(job["what"], "Акт сверки");
+    assert_eq!(job["size"], "doc");
+    let html: Option<String> = sqlx::query_scalar("select doc_html from label_jobs where id = $1")
+        .bind(Uuid::parse_str(id).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(html.is_none());
+}

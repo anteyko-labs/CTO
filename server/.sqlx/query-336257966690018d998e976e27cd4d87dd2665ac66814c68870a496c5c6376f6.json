@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update label_jobs set status = $3, error = $4, done_at = now(), doc_html = null\n           where id = $1 and branch_id = $2 and status = 'printing'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "336257966690018d998e976e27cd4d87dd2665ac66814c68870a496c5c6376f6"
+}

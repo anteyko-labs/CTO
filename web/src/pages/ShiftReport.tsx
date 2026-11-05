@@ -7,6 +7,7 @@ import { Pager, usePager } from '../components/Pager'
 import { ExportButton } from '../components/ExportButton'
 import { AfterCloseBlock, CashToBankButton, CashToBankModal, PayChangeModal, TransfersList, useCanFixPay } from '../components/PayChange'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
+import { printPage } from '../lib/docPrint'
 import { get } from '../lib/api'
 import { bishkekDate, formatDate, formatDateTime, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
 import { saleQtyText } from '../lib/units'
@@ -126,7 +127,7 @@ export default function ShiftReport() {
         }
         actions={
           <span className="no-print flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => window.print()}>
+            <Button variant="secondary" onClick={() => void printPage('Отчёт смены')}>
               Печать
             </Button>
             {/* Весь отчёт одним файлом: обзор и вкладки — листами (задача 003 Н13). */}

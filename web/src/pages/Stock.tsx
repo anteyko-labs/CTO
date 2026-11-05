@@ -10,7 +10,7 @@ import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDate, formatSom, todayBishkek } from '../lib/format'
 import { useDebounced, useLoad } from '../lib/hooks'
-import { printInFrame } from '../lib/printFrame'
+import { printDoc } from '../lib/docPrint'
 import { isOldStockLink, stockToProducts } from '../lib/stockLink'
 import { groupQty, groupRows, pricePer, rowQty, rowViscosity, stockSheetHtml, stockTotal } from '../lib/stockSheet'
 import type { Category, ProductList } from '../lib/types'
@@ -46,7 +46,7 @@ function StockPage() {
   const print = () => {
     if (!totals) return
     const filter = [category && `категория «${category.name}»`, query && `поиск «${query}»`].filter(Boolean).join(', ')
-    printInFrame(stockSheetHtml({ at: new Date().toISOString(), groups, total: totals, filter }))
+    void printDoc('Остатки', stockSheetHtml({ at: new Date().toISOString(), groups, total: totals, filter }))
   }
 
   const money = (v: number | undefined) => (v === undefined ? '' : formatSom(v))

@@ -2,11 +2,13 @@
 // фрейме, затем фокус возвращается туда, где был. Иначе после автопечати книжки или документа о
 // долге фокус оставался во фрейме и следующий скан товара терялся (ui-rules §4).
 
-/** Напечатать готовый HTML-документ. */
-export function printInFrame(html: string): void {
+/** Напечатать готовый HTML-документ. `sandbox` — документ пришёл с чужого устройства (задача 034):
+ *  скрипты в нём не выполняются. */
+export function printInFrame(html: string, opts: { sandbox?: boolean } = {}): void {
   const back = document.activeElement instanceof HTMLElement ? document.activeElement : null
   const frame = document.createElement('iframe')
   Object.assign(frame.style, { position: 'fixed', width: '0', height: '0', border: '0' })
+  if (opts.sandbox) frame.setAttribute('sandbox', 'allow-same-origin allow-modals')
   document.body.appendChild(frame)
   const doc = frame.contentDocument
   const win = frame.contentWindow

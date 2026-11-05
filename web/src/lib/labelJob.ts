@@ -6,13 +6,13 @@ export type LabelSize = 'big' | 'small'
 
 export const SIZE_BUTTON: Record<LabelSize, string> = { big: 'Большой штрихкод', small: 'Маленький штрихкод' }
 
-/** Вид станции: принтер этикеток или станция книжки на моноблоке кассы (задача 027). */
-export type StationSize = LabelSize | 'book'
+/** Вид станции: принтер этикеток, станция книжки (задача 027) или документов A4 (задача 034). */
+export type StationSize = LabelSize | 'book' | 'doc'
 
-/** Вид станции из адреса `/label-station?size=small|book`; иначе — большой принтер этикеток. */
+/** Вид станции из адреса `/label-station?size=small|book|doc`; иначе — большой принтер этикеток. */
 export function sizeFromSearch(search: string): StationSize {
   const size = new URLSearchParams(search).get('size')
-  return size === 'small' || size === 'book' ? size : 'big'
+  return size === 'small' || size === 'book' || size === 'doc' ? size : 'big'
 }
 
 export type JobStatus = 'queued' | 'printing' | 'done' | 'failed'

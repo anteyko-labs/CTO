@@ -7,6 +7,7 @@ import { BranchBreakdown, BranchScope } from '../components/BranchScope'
 import { ExportButton } from '../components/ExportButton'
 import { PnlTree } from '../components/PnlTree'
 import { Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Money, Notice, PageHeader } from '../components/ui'
+import { printPage } from '../lib/docPrint'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { branchParam, useAllBranches, type AllBranches } from '../lib/branchReport'
@@ -75,7 +76,7 @@ export default function Profit() {
               disabled={!r.data}
               sheets={() => (r.data ? pnlSheets(r.data, { branch: branchName, now: formatDateTime(new Date().toISOString()), fromTime, toTime }) : [])}
             />
-            <Button variant="secondary" disabled={!t} onClick={() => window.print()}>
+            <Button variant="secondary" disabled={!t} onClick={() => void printPage('Прибыль и убытки')}>
               Печать
             </Button>
           </div>

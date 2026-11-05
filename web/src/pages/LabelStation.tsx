@@ -4,6 +4,8 @@
 // у каждого принтера своё окно Chrome со своим профилем (--user-data-dir).
 // Задача 027: `?size=book` — станция книжки на моноблоке кассы: печатает масляную книжку машины
 // (и QR-наклейку бота) тем же документом, что касса, на свой принтер наклеек.
+// Задача 034: `?size=doc` — станция документов на моноблоке кассы: печатает готовый документ A4
+// (акт сверки, расписка, отчёт) на принтер HP.
 import { useEffect, useRef, useState } from 'react'
 import { labelsHtml, type LabelItem } from '../components/labels'
 import { Button, Card, CardTitle, ErrorBox, PageHeader } from '../components/ui'
@@ -25,6 +27,8 @@ interface Taken {
   items: LabelItem[]
   /** Задание книжки (задача 027). */
   book?: { vehicle_id: string; sale_id: string | null; client: string | null; master: string | null; qr: boolean }
+  /** Документ A4 (задача 034). */
+  doc?: { title: string; html: string }
 }
 
 /** Книжка машины — тем же документом, что на кассе; печатать нечего — ошибка задания. */
@@ -83,7 +87,15 @@ export default function LabelStation() {
       try {
         const res = await post<{ job: Taken | null }>('/label-jobs/take', { station_id: station.current, size })
         const job = res.job
-        if (job?.book) {
+        if (job?.doc) {
+          try {
+            printInFrame(job.doc.html, { sandbox: true })
+            await post(`/label-jobs/${job.id}/done`, { station_id: station.current })
+            setLast(`${job.created_by_name}: ${job.doc.title}`)
+          } catch (e) {
+            await post(`/label-jobs/${job.id}/failed`, { station_id: station.current, error: e instanceof Error ? e.message : String(e) })
+          }
+        } else if (job?.book) {
           try {
             await printBookJob(job.book)
             await post(`/label-jobs/${job.id}/done`, { station_id: station.current })
@@ -133,11 +145,11 @@ export default function LabelStation() {
 
   return (
     <div>
-      <PageHeader title={size === 'book' ? 'Станция книжки — принтер наклеек кассы' : size === 'small' ? 'Станция этикеток — маленький принтер (30×20)' : 'Станция этикеток — большой принтер'} />
+      <PageHeader title={size === 'doc' ? 'Станция документов — принтер HP' : size === 'book' ? 'Станция книжки — принтер наклеек кассы' : size === 'small' ? 'Станция этикеток — маленький принтер (30×20)' : 'Станция этикеток — большой принтер'} />
       <Card className="mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <span className={`text-lg font-semibold ${error ? 'text-red-700' : 'text-emerald-700'}`}>{error ? 'Принтер: нет связи с сервером' : size === 'book' ? 'Принтер: книжка — готов' : size === 'small' ? 'Принтер: маленькие этикетки — готов' : 'Принтер: большие этикетки — готов'}</span>
-          {size !== 'book' && (
+          <span className={`text-lg font-semibold ${error ? 'text-red-700' : 'text-emerald-700'}`}>{error ? 'Принтер: нет связи с сервером' : size === 'doc' ? 'Принтер HP: документы — готов' : size === 'book' ? 'Принтер: книжка — готов' : size === 'small' ? 'Принтер: маленькие этикетки — готов' : 'Принтер: большие этикетки — готов'}</span>
+          {size !== 'book' && size !== 'doc' && (
             <Button variant="secondary" onClick={() => void test()}>
               Пробная этикетка
             </Button>
@@ -146,7 +158,7 @@ export default function LabelStation() {
         {last && <div className="mt-2 text-sm text-slate-600">Последнее: {last}</div>}
         <ErrorBox error={error} />
         <p className="mt-2 text-xs text-slate-500">
-          {size === 'book' ? 'Держите это окно открытым: книжки с кассы печатаются сами.' : 'Держите эту страницу открытой: задания с телефонов печатаются сами.'}
+          {size === 'doc' ? 'Держите это окно открытым: документы с кассы печатаются сами.' : size === 'book' ? 'Держите это окно открытым: книжки с кассы печатаются сами.' : 'Держите эту страницу открытой: задания с телефонов печатаются сами.'}
         </p>
       </Card>
       <Card>

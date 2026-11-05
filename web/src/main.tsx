@@ -3,6 +3,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import CabinetApp from './pages/cabinet/CabinetApp'
+import { rememberDocRoute } from './lib/docPrint'
 import { shouldSelectOnFocus } from './lib/focus'
 import { requestPersistentStorage } from './lib/offline'
 import './index.css'
@@ -19,6 +20,9 @@ document.addEventListener('focusin', (e) => {
     }, 0)
   }
 })
+
+// Окно кассы открыто ярлыком с `?docs=station` — документы A4 с него идут на принтер HP (задача 034).
+rememberDocRoute(window.location.search, localStorage)
 
 // Просим браузер не вычищать хранилище: в нём очередь чеков, ещё не ушедших на сервер (SPEC-09).
 // Отказ браузера касса показывает предупреждением (ADR-062).

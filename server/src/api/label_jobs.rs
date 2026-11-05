@@ -4,6 +4,8 @@
 //! на этикетке (`piece`/`liter`/`meter`), станция печатает по нему.
 //! Задача 027: станция книжки (`book`) — второе окно Chrome на моноблоке кассы; задание несёт
 //! машину и чек, станция сама читает книжку и печатает её на свой принтер.
+//! Задача 034: станция документов (`doc`) — окно Chrome с принтером A4; задание несёт готовый HTML
+//! документа, после печати он стирается.
 //! Этикетки — без права (SPEC-01): любой вошедший филиала; чужой филиал задание не видит (I16).
 
 use axum::extract::{Path, Query, State};
@@ -26,11 +28,19 @@ const KIND: &str = "label_job.create";
 pub const MAX_COPIES: i64 = 500;
 /// Станция не отмечалась дольше — «склад не в сети».
 const STATION_ONLINE_SECS: f64 = 30.0;
+/// Документ в задании не больше (подписи — картинками внутри HTML).
+const MAX_DOC_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/label-jobs", routing::get(list_jobs).post(create_job))
         .route("/label-jobs/book", routing::post(create_book_job))
+        .route(
+            "/label-jobs/doc",
+            routing::post(create_doc_job).layer(axum::extract::DefaultBodyLimit::max(
+                MAX_DOC_BYTES + 64 * 1024,
+            )),
+        )
         .route("/label-jobs/take", routing::post(take_job))
         .route("/label-jobs/{id}", routing::get(get_job))
         .route("/label-jobs/{id}/done", routing::post(done_job))
@@ -62,10 +72,12 @@ struct Created {
     status: String,
 }
 
-/// Вид станции: размер этикетки (`big`/`small`) или станция книжки (`book`, задача 027).
+/// Вид станции: размер этикетки (`big`/`small`), станция книжки (`book`, задача 027) или
+/// документов (`doc`, задача 034).
 fn station_size(size: Option<&str>) -> AppResult<&'static str> {
     match size {
         Some("book") => Ok("book"),
+        Some("doc") => Ok("doc"),
         other => label_size(other),
     }
 }
@@ -169,14 +181,78 @@ async fn create_book_job(
     Ok(Json(out))
 }
 
-/// Задание, просроченное в очереди (24 ч; книжка — 2 мин: клиент уже уехал, задача 027), — «устарело»; взятое станцией и не закрытое за
+#[derive(Deserialize)]
+struct DocReq {
+    op_id: Uuid,
+    title: String,
+    html: String,
+}
+
+const DOC_KIND: &str = "label_job.doc";
+
+/// Касса ставит документ A4 в очередь станции документов (задача 034).
+async fn create_doc_job(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<DocReq>,
+) -> AppResult<Json<BookCreated>> {
+    if req.html.trim().is_empty() {
+        return Err(invalid("документ пустой"));
+    }
+    if req.html.len() > MAX_DOC_BYTES {
+        return Err(invalid("документ слишком большой для печати"));
+    }
+    let title: String = req.title.trim().chars().take(200).collect();
+    let title = if title.is_empty() {
+        "Документ".to_string()
+    } else {
+        title
+    };
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op::<BookCreated>(&mut tx, &ctx, req.op_id, DOC_KIND).await? {
+        return Ok(Json(done));
+    }
+    let id = ops::new_id();
+    sqlx::query!(
+        r#"insert into label_jobs (id, branch_id, op_id, items, copies, created_by, size, doc_title, doc_html)
+           values ($1, $2, $3, '[]'::jsonb, 1, $4, 'doc', $5, $6)"#,
+        id,
+        ctx.user.branch_id,
+        req.op_id,
+        ctx.user.id,
+        title,
+        req.html
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "label_job",
+        Some(id),
+        json!({ "size": "doc", "title": title }),
+    )
+    .await?;
+    let station_online = station_online(&mut tx, ctx.user.branch_id, "doc").await?;
+    let out = BookCreated {
+        id,
+        status: "queued".into(),
+        station_online,
+    };
+    ops::finish_op(&mut tx, &ctx, req.op_id, DOC_KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Задание, просроченное в очереди (24 ч; книжка и документ — 2 мин: иначе вышли бы вторым листом, когда станцию включат), — «устарело»; взятое станцией и не закрытое за
 /// 2 мин — снова в очередь (станция перезагрузилась).
 async fn housekeep(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     sqlx::query!(
-        r#"update label_jobs set status = 'failed', error = 'устарело', done_at = now()
+        r#"update label_jobs set status = 'failed', error = 'устарело', done_at = now(), doc_html = null
            where branch_id = $1 and status = 'queued'
              and (created_at < now() - interval '24 hours'
-                  or (size = 'book' and created_at < now() - interval '2 minutes'))"#,
+                  or (size in ('book', 'doc') and created_at < now() - interval '2 minutes'))"#,
         branch_id
     )
     .execute(&mut *conn)
@@ -302,7 +378,7 @@ async fn job_rows(
     let rows = sqlx::query!(
         r#"select j.id, j.status, j.error, j.copies, j.size, j.created_at, j.done_at,
                   u.full_name as "created_by_name!",
-                  coalesce('Книжка ' || (select v.plate from party_vehicles v
+                  coalesce(j.doc_title, 'Книжка ' || (select v.plate from party_vehicles v
                                          where v.id = (j.book->>'vehicle_id')::uuid),
                            (select string_agg(p.name, ', ')
                             from jsonb_to_recordset(j.items) as x(product_id uuid, copies bigint)
@@ -423,6 +499,9 @@ struct Taken {
     /// Задание книжки (задача 027); у этикеток — нет.
     #[serde(skip_serializing_if = "Option::is_none")]
     book: Option<serde_json::Value>,
+    /// Документ A4: `{title, html}` (задача 034); у остальных — нет.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    doc: Option<serde_json::Value>,
 }
 
 /// Станция берёт одно задание из очереди: две станции одно не возьмут (SKIP LOCKED).
@@ -441,7 +520,7 @@ async fn take_job(
                        where branch_id = $1 and size = $3 and status = 'queued'
                        order by created_at limit 1
                        for update skip locked)
-           returning id, items, copies, created_by, price_per, book"#,
+           returning id, items, copies, created_by, price_per, book, doc_title, doc_html"#,
         user.branch_id,
         req.station_id,
         size
@@ -475,6 +554,7 @@ async fn take_job(
         price_per: row.price_per,
         items,
         book: row.book,
+        doc: row.doc_html.map(|html| json!({ "title": row.doc_title, "html": html })),
     } })))
 }
 
@@ -508,7 +588,7 @@ async fn finish(
         return Ok(Json(json!({ "id": id, "status": status })));
     }
     let n = sqlx::query!(
-        r#"update label_jobs set status = $3, error = $4, done_at = now()
+        r#"update label_jobs set status = $3, error = $4, done_at = now(), doc_html = null
            where id = $1 and branch_id = $2 and status = 'printing'"#,
         id,
         user.branch_id,

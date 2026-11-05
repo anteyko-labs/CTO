@@ -40,6 +40,7 @@ describe('плашка задания на складе', () => {
   it('размер станции из адреса: по умолчанию большой', () => {
     expect(sizeFromSearch('')).toBe('big')
     expect(sizeFromSearch('?size=small')).toBe('small')
+    expect(sizeFromSearch('?size=doc')).toBe('doc')
     expect(sizeFromSearch('?size=x')).toBe('big')
   })
   it('номер станции хранится между запусками', () => {
