@@ -43,6 +43,19 @@ describe('этикетки большая и маленькая (задача 01
   })
 })
 
+describe('штрихкод большой этикетки читается сканером', () => {
+  it('58×40 — штрихкоду не меньше 18 мм высоты, текст мельче', async () => {
+    const { labelsHtml } = await import('./labels')
+    const html = labelsHtml([{ product, copies: 1 }], { ...big, width_mm: 58, height_mm: 40 })
+    expect(html).toContain('.code { flex: 1; min-height: 18mm;')
+    expect(html).toContain('.name { font-size: 8.8pt;')
+  })
+  it('маленькая 30×20 — прежние 9 мм', async () => {
+    const { labelsHtml } = await import('./labels')
+    expect(labelsHtml([{ product, copies: 1 }], small)).toContain('.code { flex: 1; min-height: 9mm;')
+  })
+})
+
 describe('цена за литр на этикетке (задача 021)', () => {
   const oil = {
     ...product,
