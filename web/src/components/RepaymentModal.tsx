@@ -12,6 +12,7 @@ import { repaymentDoc, repaymentFields, type RepaymentDoc } from '../lib/moneyFi
 import { invoicePayPreview, repayNote } from '../lib/supplierPay'
 import { CorrectionBanner, useCorrection } from './Correction'
 import { useTouchMode } from '../lib/cashierMode'
+import { Icon, type IconName } from './icons'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 // «Вне кассы» (из своих) больше нет — сервер отвечает 422 (ADR-079).
@@ -23,6 +24,9 @@ const METHOD_LABELS: Record<Method, string> = {
   transfer: 'QR владельцу',
   invoice: 'По счёту',
 }
+
+/** Значки — как на кнопках оплаты в кассе. */
+const METHOD_ICONS: Record<Method, IconName> = { cash: 'wallet', card: 'bank', transfer: 'scan', invoice: 'receipt' }
 
 const METHOD_HINTS: Record<Method, string> = {
   cash: 'Деньги в кассе смены: смена должна быть открыта.',
@@ -272,19 +276,24 @@ export function RepaymentModal({
                 </div>
               )}
               <div className="text-sm font-medium text-slate-700">Способ оплаты</div>
-              <div className={`grid overflow-hidden rounded-md border border-slate-300 text-sm`} style={{ gridTemplateColumns: `repeat(${methods.length}, minmax(0, 1fr))` }}>
+              {/* Как в кассе: отдельные плитки со значками, выбранная залита — видно, чем платят. */}
+              <div data-pay className={`grid gap-2 ${methods.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} ${methods.length === 3 ? 'sm:grid-cols-3' : ''}`}>
                 {methods.map((m) => (
                   <button
                     key={m}
                     type="button"
-                    className={`${touch ? 'min-h-[64px] text-lg' : 'min-h-[42px]'} py-2 ${method === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                    aria-pressed={method === m}
+                    className={`flex ${touch ? 'min-h-[64px] text-lg' : 'min-h-12 text-base'} items-center justify-center gap-1.5 rounded-lg border-2 px-2 py-1 leading-tight font-semibold shadow-sm ${
+                      method === m ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50 active:bg-slate-100'
+                    }`}
                     onClick={() => {
                       setMethod(m)
                       // Новый способ — снова его счёт по умолчанию.
                       setAccountPick('')
                     }}
                   >
-                    {METHOD_LABELS[m]}
+                    <Icon name={METHOD_ICONS[m]} className="h-6 w-6 shrink-0" />
+                    <span className="min-w-0">{METHOD_LABELS[m]}</span>
                   </button>
                 ))}
               </div>
