@@ -18,48 +18,55 @@ function isEan13(code: string): boolean {
   return (10 - (sum % 10)) % 10 === digits[12]
 }
 
-/** Ширина рисунка EAN-13 со свободными полями, единиц: по ней высота полос подбирается под поле кода. */
-const EAN_SVG_WIDTH = 250
-/** Подпись цифрами под полосами, единиц рисунка. */
-const DIGITS_HEIGHT = 14
+/** Точка термопринтера 203 dpi, мм. Полоса штрихкода — целое число точек: дробная (1,7 точки)
+ *  печатается рваной, и сканер код не читает. */
+const DOT_MM = 25.4 / 203
+/** Подпись цифрами под полосами, мм. */
+const DIGITS_MM = 2.4
 
-function barcodeSvg(code: string, barHeight: number): string {
+/** Штрихкод шириной не больше `availMm`, высотой `heightMm`: полоса — целое число точек, не меньше 2. */
+function barcodeSvg(code: string, availMm: number, heightMm: number): string {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  JsBarcode(svg, code, {
+  const opts = {
     format: isEan13(code) ? 'EAN13' : 'CODE128',
     // Свободное поле по краям: сканер не читает код, прижатый к краю этикетки (EAN-13 — 11 и
-    // 7 модулей; модуль — 2 единицы рисунка).
+    // 7 модулей). Единица рисунка — один модуль.
     margin: 0,
-    marginLeft: 22,
-    marginRight: 14,
-    height: barHeight,
-    fontSize: 12,
+    marginLeft: 11,
+    marginRight: 7,
+    width: 1,
+    // Ровная раскладка: первая цифра EAN-13 не выносится влево — рисунок ровно 113 модулей.
+    flat: true,
+    textMargin: 1,
     displayValue: true,
-  })
-  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+  }
+  JsBarcode(svg, code, { ...opts, height: 50, fontSize: 10 })
+  const modules = parseFloat(svg.getAttribute('width') ?? '') || 113
+  const moduleMm = Math.max(2, Math.floor(availMm / (modules * DOT_MM))) * DOT_MM
+  const fontSize = Math.max(6, Math.round(DIGITS_MM / moduleMm))
+  const bars = Math.max(10, Math.round(heightMm / moduleMm) - fontSize - opts.textMargin)
+  JsBarcode(svg, code, { ...opts, height: bars, fontSize })
+  svg.setAttribute('preserveAspectRatio', 'none')
   // Полосы по точкам принтера, без размытых краёв.
   svg.setAttribute('shape-rendering', 'crispEdges')
-  svg.removeAttribute('width')
-  svg.removeAttribute('height')
+  svg.setAttribute('width', `${(modules * moduleMm).toFixed(2)}mm`)
+  svg.setAttribute('height', `${((bars + fontSize + opts.textMargin) * moduleMm).toFixed(2)}mm`)
   return svg.outerHTML
 }
 
 /** HTML страницы печати: по одной этикетке на страницу заданного размера; цена — `per` (задача 021). */
 export function labelsHtml(items: LabelItem[], s: LabelSettings, per: PricePer = 'piece'): string {
   const labels: string[] = []
-  // Маленькая этикетка (до 25 мм в высоту): штрихкоду — не меньше 9 мм, текст ужимается в
-  // строку названия и строку «бренд · характеристики — цена» (проверка 20.10.2026).
+  // Маленькая этикетка (до 25 мм в высоту): текст ужимается в строку названия и строку
+  // «бренд · характеристики — цена» (проверка 20.10.2026), поля по бокам 0,5 мм — штрихкоду ширина.
   const compact = s.height_mm <= 25
-  // Большая: штрихкоду — 45 % высоты и вся ширина. Рисунок сжимается по высоте поля вместе с
-  // шириной: на 9 мм полоса выходила 0,19 мм, сканер склада такую не читал.
-  const codeMm = compact ? Math.min(9, Math.max(6, s.height_mm * 0.45)) : s.height_mm * 0.45
-  const barHeight = compact
-    ? Math.max(20, s.height_mm * 2)
-    : Math.round((codeMm / (s.width_mm - 3)) * EAN_SVG_WIDTH) - DIGITS_HEIGHT
+  const padX = compact ? 0.5 : 1.5
+  // Штрихкоду — половина высоты (маленькой — 55 %), текст мельче: на бумаге код выходил мелким.
+  const codeMm = Math.round(s.height_mm * (compact ? 0.55 : 0.5) * 10) / 10
   for (const { product, copies } of items) {
     const code = product.barcodes[0]
     if (!code) continue
-    const svg = barcodeSvg(code, barHeight)
+    const svg = barcodeSvg(code, s.width_mm - 2 * padX, codeMm)
     // Бренд, название и характеристики — вязкость и объём масла, тип фильтра (SPEC-29 §6).
     const t = labelText(product, s)
     const brand = t.brand ? `<div class="brand">${escapeHtml(t.brand)}</div>` : ''
@@ -82,29 +89,28 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings, per: PricePer =
       labels.push(html)
     }
   }
-  // Текст большой этикетки — не крупнее 1,1: высоту забирает штрихкод.
-  const k = Math.min(1.1, Math.max(1, Math.min(s.width_mm / 30, s.height_mm / 22)))
-  const pt = (n: number) => `${(n * k).toFixed(1)}pt`
+  // Текст не растёт с этикеткой: высоту забирает штрихкод.
+  const pt = (n: number) => `${n}pt`
   return `<!doctype html><html><head><meta charset="utf-8"><title>Этикетки</title><style>
     @page { size: ${s.width_mm}mm ${s.height_mm}mm; margin: 0; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; }
     /* На 1 мм ниже наклейки: ровно в её высоту Chrome переносит низ этикетки (цифры штрихкода)
        на следующую наклейку (проверка на XP-365B 03.11.2026). */
-    .label { width: ${s.width_mm}mm; height: ${s.height_mm - 1}mm; padding: 1.5mm; overflow: hidden;
+    .label { width: ${s.width_mm}mm; height: ${s.height_mm - 1}mm; padding: ${compact ? 0.5 : 1}mm ${padX}mm; overflow: hidden;
              display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; }
     .label:last-child { page-break-after: auto; }
-    .brand { font-size: ${pt(7)}; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
-    .name { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
-    .spec { font-size: ${pt(8)}; font-weight: bold; line-height: 1.1; }
-    .small { font-size: ${pt(7)}; }
-    .name.one { font-size: 7pt; white-space: nowrap; text-overflow: ellipsis; max-height: none; }
-    .code { flex: 1; min-height: ${codeMm}mm; display: flex; align-items: center; justify-content: center; }
-    .code svg { width: 100%; height: ${compact ? '100%' : `${codeMm}mm`}; }
-    .price { font-size: ${pt(11)}; font-weight: bold; text-align: right; }
+    .brand { font-size: ${pt(6)}; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
+    .name { font-size: ${pt(7)}; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
+    .spec { font-size: ${pt(7)}; font-weight: bold; line-height: 1.1; }
+    .small { font-size: ${pt(6)}; }
+    .name.one { font-size: 6pt; white-space: nowrap; text-overflow: ellipsis; max-height: none; }
+    .code { flex: 1; min-height: ${codeMm}mm; display: flex; overflow: hidden; align-items: center; justify-content: center; }
+    .code svg { flex: none; display: block; }
+    .price { font-size: ${pt(9)}; font-weight: bold; text-align: right; }
     .foot { display: flex; align-items: baseline; justify-content: space-between; gap: 1mm; }
-    .foot .meta { font-size: 6.5pt; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-    .foot .price { font-size: 9pt; white-space: nowrap; }
-    .price.big { font-size: 10pt; text-align: center; white-space: nowrap; }
+    .foot .meta { font-size: 6pt; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .foot .price { font-size: 8pt; white-space: nowrap; }
+    .price.big { font-size: 9pt; text-align: center; white-space: nowrap; }
   </style></head><body>${labels.join('')}</body></html>`
 }

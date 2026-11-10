@@ -4,7 +4,16 @@ import type { LabelSettings, Product } from '../lib/types'
 // В тестах нет DOM: штрихкод — заглушка, проверяется только текст этикетки.
 vi.mock('jsbarcode', () => ({ default: () => undefined }))
 beforeAll(() => {
-  const el = { setAttribute: () => undefined, removeAttribute: () => undefined, outerHTML: '<svg data-code></svg>' }
+  // Рисунок EAN-13 с полями — 113 модулей в ширину, 11 — подпись цифрами (единица = модуль).
+  const attrs: Record<string, string> = {}
+  const el = {
+    setAttribute: (k: string, v: string) => void (attrs[k] = v),
+    removeAttribute: (k: string) => void delete attrs[k],
+    getAttribute: (k: string) => (k === 'width' ? '113' : null),
+    get outerHTML() {
+      return `<svg data-code width="${attrs.width}" height="${attrs.height}"></svg>`
+    },
+  }
   vi.stubGlobal('document', { createElementNS: () => el })
 })
 
@@ -43,16 +52,23 @@ describe('этикетки большая и маленькая (задача 01
   })
 })
 
-describe('штрихкод большой этикетки читается сканером', () => {
-  it('58×40 — штрихкоду не меньше 18 мм высоты, текст мельче', async () => {
+describe('штрихкод читается сканером: полоса — целое число точек принтера 203 dpi', () => {
+  // Точка 203 dpi — 0,125 мм; дробная полоса (1,7 точки) печатается рваной, сканер её не читает.
+  it('58×40 — полоса 3 точки, штрихкод ≈ 42,4 мм, текст не крупнее 7 пт', async () => {
     const { labelsHtml } = await import('./labels')
     const html = labelsHtml([{ product, copies: 1 }], { ...big, width_mm: 58, height_mm: 40 })
-    expect(html).toContain('.code { flex: 1; min-height: 18mm;')
-    expect(html).toContain('.name { font-size: 8.8pt;')
+    expect(html).toContain('width="42.42mm"')
+    expect(html).toContain('.name { font-size: 7pt;')
   })
-  it('маленькая 30×20 — прежние 9 мм', async () => {
+  it('40×30 — полоса 2 точки, штрихкод ≈ 28,3 мм', async () => {
     const { labelsHtml } = await import('./labels')
-    expect(labelsHtml([{ product, copies: 1 }], small)).toContain('.code { flex: 1; min-height: 9mm;')
+    expect(labelsHtml([{ product, copies: 1 }], big)).toContain('width="28.28mm"')
+  })
+  it('маленькая 30×20 — полоса 2 точки (не 1,7), поля по бокам 0,5 мм', async () => {
+    const { labelsHtml } = await import('./labels')
+    const html = labelsHtml([{ product, copies: 1 }], small)
+    expect(html).toContain('width="28.28mm"')
+    expect(html).toContain('padding: 0.5mm 0.5mm')
   })
 })
 
