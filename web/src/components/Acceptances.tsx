@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { reasonLabel, qtyWords, type Acceptance, type AcceptanceList, type AcceptanceLine } from '../lib/acceptances'
 import { get, newOpId, post } from '../lib/api'
+import { printAcceptanceAct } from '../lib/acceptanceAct'
 import { formatDateTime, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { Badge, Button, Card, CardTitle, ErrorBox, Field, Loading, Modal, Table, toast } from './ui'
@@ -115,7 +116,13 @@ export function AcceptanceDetails({ a }: { a: Acceptance }) {
         {a.total_tyiyn !== null && ` · по накладной ${formatSom(a.total_tyiyn)}`}
       </div>
       {a.comment && <div className="text-slate-600">Комментарий: {a.comment}</div>}
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {/* Акт приёмки на бумаге — по желанию, только у проведённой (задача 035). */}
+        {a.status === 'accepted' && (
+          <Button variant="secondary" data-testid="acceptance-act-print" onClick={() => void printAcceptanceAct(a)}>
+            Печать акта
+          </Button>
+        )}
         {/* Строки приёмки; суммы — только если сервер их отдал (право «Приход товара»), как в таблице (задача 003 Н13). */}
         <ExportButton
           file={`Приёмка ${a.supplier_doc || a.supplier_name}`}

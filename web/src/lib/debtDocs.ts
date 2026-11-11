@@ -235,7 +235,7 @@ export function somInWords(tyiyn: number): string {
 
 // ---------- Подстановки ----------
 
-const esc = (s: string) =>
+export const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 
 /**

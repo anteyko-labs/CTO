@@ -34,6 +34,7 @@ import {
   type Reason,
 } from '../lib/acceptances'
 import { get, newOpId, post } from '../lib/api'
+import { printAcceptanceAct } from '../lib/acceptanceAct'
 import { enterFullscreen, setAcceptanceMode, setKeyboardOpen, useAcceptanceMode, useNumField, useTouchMode } from '../lib/cashierMode'
 import { formatDateTime, plural } from '../lib/format'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
@@ -220,6 +221,12 @@ function AcceptanceWork({ id }: { id: string }) {
         <Notice tone="sky">
           {a.status === 'accepted' ? `Принято: приход № ${a.receipt_number ?? ''}` : a.status === 'refused' ? 'Отказ от приёмки' : 'Убрано с приёмки'}
         </Notice>
+        {/* Акт приёмки на бумаге — по желанию (задача 035). */}
+        {a.status === 'accepted' && (
+          <Button variant="secondary" className="min-h-[64px] text-lg" data-testid="acceptance-act-print" onClick={() => void printAcceptanceAct(a)}>
+            Печать акта
+          </Button>
+        )}
         <Button variant="secondary" onClick={() => navigate('/acceptance')}>
           ← К списку
         </Button>

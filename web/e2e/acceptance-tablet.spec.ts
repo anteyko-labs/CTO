@@ -124,6 +124,9 @@ test('кассир принимает товар на планшете: отме
   await expect(box2).toContainText(`Принято на планшете: ${cashier}`)
   await expect(box2).toContainText('брак или повреждено')
   await expect(page.getByTestId('receipt-acceptance-signature')).toBeVisible()
+  // Акт приёмки на бумаге — по желанию, у проведённой (задача 035).
+  await expect(box2.getByTestId('acceptance-act-print')).toBeVisible()
+  await box2.getByTestId('acceptance-act-print').click()
 })
 
 test('«Приход»: блок «Ждут приёмки» с суммой, «Убрать с приёмки» с причиной', async ({ page }) => {
