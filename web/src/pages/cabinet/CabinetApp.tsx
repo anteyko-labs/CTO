@@ -30,6 +30,8 @@ interface Me {
   /** Долг по филиалам (SPEC-33): только ненулевые. */
   branch_balances?: { branch_id: string; name: string; balance_tyiyn: number }[]
   seller: Partial<Seller>
+  /** Филиалы для отбора «Все / …» (задача 036); один филиал — пусто. */
+  branches?: { id: string; name: string }[]
   /** Период акта по умолчанию — как на экране точки («Документы о долге»). */
   act_period?: ActPeriod | null
 }
@@ -116,17 +118,17 @@ function ChangePassword({ me, onDone }: { me: Me; onDone: () => void }) {
   )
 }
 
-function Purchases() {
+function Purchases({ branch }: { branch: string }) {
   const [from, setFrom] = useState(() => {
     const [y, m, d] = todayBishkek().split('-').map(Number)
     const t = new Date(Date.UTC(y, m - 1, d - 90))
     return t.toISOString().slice(0, 10)
   })
   const [to, setTo] = useState(todayBishkek())
-  const list = useLoad(() => get<CabinetSale[]>(`/client/sales${qs({ from, to })}`), [from, to])
+  const list = useLoad(() => get<CabinetSale[]>(`/client/sales${qs({ from, to, branch_id: branch })}`), [from, to, branch])
   const rows = list.data ?? []
   // Итог — по всему периоду; чеки — по страницам, другой период — первая страница.
-  const pager = usePager(rows, 'cabinet.sales', `${from}:${to}`)
+  const pager = usePager(rows, 'cabinet.sales', `${from}:${to}:${branch}`)
   return (
     <div className="flex flex-col gap-3">
       <Card className="flex flex-wrap items-end gap-3">
@@ -265,11 +267,11 @@ function Messages() {
 
 /** Акт сверки — тот же экран, что в программе (задача 003): периоды, сальдо, строки, обороты,
  *  вывод, «Печать» и «Скачать»; без ссылок на документы точки. */
-function Act({ me }: { me: Me }) {
+function Act({ me, branch = '' }: { me: Me; branch?: string }) {
   const seller: Seller = { name: '', inn: '', address: '', phone: '', director: '', bank: '', city: '', ...me.seller }
   return (
     <Card className="flex flex-col gap-3">
-      <ReconciliationView source="/client/reconciliation" defaultPeriod={me.act_period ?? 'all'} seller={seller} />
+      <ReconciliationView source="/client/reconciliation" defaultPeriod={me.act_period ?? 'all'} seller={seller} branchId={branch || undefined} />
       {!seller.name && <div className="text-xs text-slate-400">Реквизиты точки не заполнены — в печати будет {BLANK}.</div>}
     </Card>
   )
@@ -286,6 +288,8 @@ export default function CabinetApp() {
   )
   const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act' | 'messages'>('sales')
   const [stab, setStab] = useState<SupplierTab>('invoices')
+  /** Отбор кабинета юрлица по филиалу (задача 036): '' — все филиалы. */
+  const [branch, setBranch] = useState('')
   const supplier = me.data?.role === 'supplier'
   useEffect(() => {
     document.title = supplier ? 'Кабинет поставщика — Avtodom' : 'Кабинет клиента — Avtodom'
@@ -392,10 +396,24 @@ export default function CabinetApp() {
             </button>
           ))}
         </div>
-        {tab === 'sales' && <Purchases />}
+        {(m.branches?.length ?? 0) > 1 && (tab === 'sales' || tab === 'act') && (
+          <div className="inline-flex flex-wrap overflow-hidden rounded-md border border-slate-300 text-sm" data-testid="cabinet-branch">
+            {[{ id: '', name: 'Все филиалы' }, ...(m.branches ?? [])].map((b) => (
+              <button
+                key={b.id || 'all'}
+                type="button"
+                className={`min-h-[38px] px-3 py-1.5 ${branch === b.id ? 'bg-slate-800 text-white' : 'bg-white hover:bg-slate-50'}`}
+                onClick={() => setBranch(b.id)}
+              >
+                {b.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {tab === 'sales' && <Purchases branch={branch} />}
         {tab === 'contacts' && <Contacts />}
         {tab === 'cars' && <OilBookList path="/client/oil-book" editable={false} />}
-        {tab === 'act' && <Act me={m} />}
+        {tab === 'act' && <Act me={m} branch={branch} />}
         {tab === 'messages' && <Messages />}
       </main>
       )}

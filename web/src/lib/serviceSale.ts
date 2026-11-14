@@ -8,6 +8,14 @@ import type { Party, Service, ServiceOil } from './types'
  *  по категориям, канистра — наименьший объём канистры среди строк категории, розлив — в мл. */
 export type OilEnough = ReadonlySet<string>
 
+/** Отметка в `OilEnough`: в филиале «Услуги бесплатно для клиента» (задача 036) — все услуги по 0 с. */
+export const ALL_SERVICES_FREE = '*all-services-free*'
+
+/** Тот же набор с отметкой «все услуги бесплатно», если она включена в филиале. */
+export function withFreeServices(enough: OilEnough, free: boolean): OilEnough {
+  return free ? new Set([...enough, ALL_SERVICES_FREE]) : enough
+}
+
 export interface OilLine {
   categoryId?: string | null
   categoryKind?: string | null
@@ -51,6 +59,7 @@ type PricedService = Pick<Service, 'price_tyiyn' | 'free_with_oil' | 'oil_catego
 /** Услуга бесплатна: «бесплатно с нашим маслом», категория масла выбрана и такого масла в чеке
  *  не меньше канистры. Без категории флажок не действует. */
 export function serviceFree(s: PricedService | undefined, enough: OilEnough): boolean {
+  if (s && enough.has(ALL_SERVICES_FREE)) return true
   return Boolean(s?.free_with_oil && s.oil_category_id && enough.has(s.oil_category_id))
 }
 
@@ -62,6 +71,7 @@ export function servicePrice(s: PricedService | undefined, enough: OilEnough): n
 
 /** Подпись цены на кнопке выбора вида замены. */
 export function servicePriceText(s: PricedService, enough: OilEnough, money: (v: number) => string): string {
+  if (enough.has(ALL_SERVICES_FREE)) return 'бесплатно'
   if (serviceFree(s, enough)) return 'бесплатно — масло наше'
   return money(s.price_tyiyn)
 }

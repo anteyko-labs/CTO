@@ -2,7 +2,7 @@
 // «Расчёты между филиалами» — кто кому должен за долги клиентов, погашенные в чужом филиале.
 // Только владелец.
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { switchBranch } from '../lib/branch'
 import { ExportButton } from '../components/ExportButton'
@@ -32,7 +32,7 @@ interface SettlementEntry {
   user_name: string
 }
 
-type Form = { id?: string; name: string; address: string; phone: string }
+type Form = { id?: string; name: string; address: string; phone: string; ownAssortment?: boolean }
 
 export default function Branches() {
   const user = useUser()
@@ -48,10 +48,10 @@ export default function Branches() {
     if (!form) return
     void act.run(async () => {
       if (form.id) {
-        await patch<Branch>(`/branches/${form.id}`, { name: form.name, address: form.address, phone: form.phone })
+        await patch<Branch>(`/branches/${form.id}`, { name: form.name, address: form.address, phone: form.phone, own_assortment: Boolean(form.ownAssortment) })
         toast('Филиал сохранён')
       } else {
-        await post<Branch>('/branches', { op_id: opId, name: form.name, address: form.address, phone: form.phone })
+        await post<Branch>('/branches', { op_id: opId, name: form.name, address: form.address, phone: form.phone, own_assortment: Boolean(form.ownAssortment) })
         setOpId(newOpId())
         toast('Филиал заведён: кассы, счета и настройки — как в главном')
       }
@@ -84,7 +84,7 @@ export default function Branches() {
                 listSheet('Расчёты между филиалами: записи', ENTRY_COLS, settlements.data?.entries ?? [], { sheet: 'Записи расчётов' }),
               ]}
             />
-            <Button onClick={() => setForm({ name: '', address: '', phone: '' })}>Новый филиал</Button>
+            <Button onClick={() => setForm({ name: '', address: '', phone: '', ownAssortment: true })}>Новый филиал</Button>
           </>
         }
       />
@@ -111,7 +111,7 @@ export default function Branches() {
                   <RowMenu
                     items={[
                       ...(b.id !== user.branch_id ? [{ label: 'Перейти в филиал', onClick: () => switchBranch(b.id) }] : []),
-                      { label: 'Изменить', onClick: () => setForm({ id: b.id, name: b.name, address: b.address, phone: b.phone }) },
+                      { label: 'Изменить', onClick: () => setForm({ id: b.id, name: b.name, address: b.address, phone: b.phone, ownAssortment: Boolean(b.own_assortment) }) },
                       ...(b.is_main
                         ? []
                         : b.archived
@@ -189,6 +189,14 @@ export default function Branches() {
             <Field label="Телефон">
               <input maxLength={50} inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
             </Field>
+            <div data-testid="branch-own-assortment">
+              <Checkbox label="Свой список товаров" checked={Boolean(form.ownAssortment)} onChange={(v) => setForm({ ...form, ownAssortment: v })} />
+              <p className="mt-1 text-xs text-slate-500">
+                {form.id
+                  ? 'Отмечено — новые товары других филиалов здесь не продаются, пока в карточке товара не отметить «Продаётся в филиалах». Уже заведённые товары не меняются.'
+                  : 'Отмечено — товары других филиалов здесь не продаются, пока в карточке товара не отметить «Продаётся в филиалах». Без отметки — все товары, как в главном.'}
+              </p>
+            </div>
             <ErrorBox error={act.error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setForm(null)}>

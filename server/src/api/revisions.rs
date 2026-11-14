@@ -284,6 +284,8 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
                left join revision_lines l on l.product_id = p.id and l.revision_id = $1
                left join users u on u.id = l.user_id
                where not p.archived
+                 -- Товар не своего филиала (задача 036) — только если уже посчитан или с остатком.
+                 and (coalesce(bp.listed, true) or l.product_id is not null or coalesce(bp.stock_qty, 0) <> 0)
                  and ($3::uuid is null or p.category_id = $3)
                  and (l.product_id is not null or coalesce(bp.stock_qty, 0) <> 0 or $3::uuid is not null)
                order by (l.product_id is null), p.name

@@ -1401,7 +1401,7 @@ pub(crate) async fn dashboard_data(
         // «Заканчивается» — как на складе: архивные и влитые карточки не считаем (они не
         // продаются и в списке не видны), иначе число на сводке не сходится со складом.
         r#"select
-             coalesce(count(*) filter (where bp.stock_qty < bp.min_stock and not p.archived), 0)::bigint as "low!",
+             coalesce(count(*) filter (where bp.stock_qty < bp.min_stock and not p.archived and bp.listed), 0)::bigint as "low!",
              coalesce(count(*) filter (where bp.needs_review), 0)::bigint as "review!"
            from branch_products bp join products p on p.id = bp.product_id
            where bp.branch_id = $1"#,

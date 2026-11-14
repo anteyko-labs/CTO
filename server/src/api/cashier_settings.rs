@@ -108,6 +108,14 @@ pub struct CashierSettings {
     /// телефон, машина и пробег необязательны; мастер и вид замены — всегда. По умолчанию
     /// включено — как было (I21).
     pub service_client_required: bool,
+    /// «Принимать долг других филиалов» (задача 036, ADR-197): выключено — погашение в этом
+    /// филиале закрывает только его долг, долг клиента в других филиалах виден в скобках; включено
+    /// — как SPEC-33 §2 (сначала этот филиал, затем самые старые в других). По умолчанию
+    /// выключено — прямая просьба заказчика «долги разные, даже клиент общий» (I21).
+    pub repay_other_branches: bool,
+    /// «Услуги бесплатно для клиента» (задача 036): цена услуг в чеке филиала — 0 с, ставка
+    /// мастера за услугу начисляется как обычно. По умолчанию выключено — как было.
+    pub services_free: bool,
 }
 
 impl Default for CashierSettings {
@@ -135,6 +143,8 @@ impl Default for CashierSettings {
             sale_allow_negative: false,
             barrel_pour_over_l: 150,
             service_client_required: true,
+            repay_other_branches: false,
+            services_free: false,
         }
     }
 }
@@ -301,6 +311,8 @@ mod tests {
         assert!(d.sale_requires_shift);
         assert!(!d.sale_allow_negative);
         assert_eq!(d.barrel_pour_over_l, 150);
+        assert!(!d.repay_other_branches);
+        assert!(!d.services_free);
         let parsed: CashierSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(normalize(parsed).unwrap(), d);
     }

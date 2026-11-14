@@ -60,8 +60,11 @@ export function ReconciliationView({
   links = false,
   onClose,
   onDownload,
+  branchId,
 }: {
   source: string
+  /** Кабинет юрлица (задача 036): акт только этого филиала; нет — все филиалы. */
+  branchId?: string
   defaultPeriod: ActPeriod | null
   seller: Seller | undefined
   /** Подпись руководителя задана — встаёт в печатный акт (задача 008); кабинет клиента — без неё. */
@@ -79,7 +82,7 @@ export function ReconciliationView({
   const from = shown?.from ?? ''
   const to = shown?.to ?? today
   const ready = shown !== null
-  const act = useLoad(() => (ready ? get<Reconciliation>(`${source}${qs({ from, to })}`) : Promise.resolve(null)), [source, from, to, ready])
+  const act = useLoad(() => (ready ? get<Reconciliation>(`${source}${qs({ from, to, branch_id: branchId })}`) : Promise.resolve(null)), [source, from, to, ready, branchId])
   const choose = (kind: ActPeriod) => setChosen({ period: kind, ...actPeriod(kind, today) })
   const setFrom = (v: string) => setChosen({ period: 'custom', from: v, to })
   const setTo = (v: string) => setChosen({ period: 'custom', from, to: v })

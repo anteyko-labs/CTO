@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branch_products (branch_id, product_id, min_stock, listed)\n           select $1, p.id, coalesce(m.min_stock, 0), not $3\n           from products p left join branch_products m on m.product_id = p.id and m.branch_id = $2\n           where p.merged_into is null\n           on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e889c3dedcf1578ef993d3affc31801e4cd4abda4d748a456c2cd093ca68786b"
+}

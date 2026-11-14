@@ -100,3 +100,46 @@ test('филиалы: завести, переключить, свои касс�
   })
   expect(res.status()).toBe(409)
 })
+
+// Задача 036: филиал со своим списком товаров и раздельные долги клиента.
+test('свой список товаров филиала и долг другого филиала в скобках', async ({ page }) => {
+  await login(page)
+  const branches = await api<{ id: string; name: string; is_main: boolean }[]>(page.request, 'GET', '/branches')
+  const main = branches.find((b) => b.is_main)
+  expect(main).toBeTruthy()
+  const aikosName = `Айкос ${RUN}`
+  const aikos = await api<{ id: string }>(page.request, 'POST', '/branches', { op_id: crypto.randomUUID(), name: aikosName, own_assortment: true })
+  const cat = await api<{ id: string }>(page.request, 'POST', '/categories', { name: `Стики ${RUN}`, kind: 'other' }, main?.id)
+  const name = `Товар главного ${RUN}`
+  await api(page.request, 'POST', '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, sale_price_tyiyn: 30_000 }, main?.id)
+  const findIn = async (branch: string) =>
+    (await api<{ name: string }[]>(page.request, 'GET', `/products?q=${encodeURIComponent(name)}`, undefined, branch)).some((p) => p.name === name)
+  expect(await findIn(aikos.id)).toBe(false)
+
+  // Карточка товара в главном филиале: «Продаётся в филиалах» → Айкос.
+  await page.getByTestId('branch-switch').first().selectOption(main?.id ?? '')
+  await page.goto('/products')
+  await page.getByLabel('Поиск', { exact: true }).fill(name)
+  const row = page.getByRole('row', { name: new RegExp(name) })
+  await expect(row).toBeVisible()
+  await row.getByText(name).first().click()
+  const block = page.getByRole('dialog', { name: 'Товар' }).getByTestId('product-branches')
+  await expect(block).toBeVisible()
+  const listed = page.waitForResponse((r) => r.url().includes('/branches') && r.request().method() === 'PATCH')
+  // Отметка встаёт по ответу сервера.
+  await block.getByLabel(aikosName).click()
+  expect((await listed).ok()).toBeTruthy()
+  await expect(block.getByLabel(aikosName)).toBeChecked()
+  expect(await findIn(aikos.id)).toBe(true)
+
+  // Долг в двух филиалах: в карточке клиента Айкоса — его долг, долг главного — в скобках.
+  const party = await api<{ id: string }>(page.request, 'POST', '/parties', { kind: 'person', first_name: 'Долг', last_name: `Двух ${RUN}`, phone: `0700 ${RUN.slice(-6)}` }, main?.id)
+  await api(page.request, 'POST', '/debts/old', { op_id: crypto.randomUUID(), party_id: party.id, amount_tyiyn: 120_000, date: '2026-10-01', comment: 'главный' }, main?.id)
+  await api(page.request, 'POST', '/debts/old', { op_id: crypto.randomUUID(), party_id: party.id, amount_tyiyn: 30_000, date: '2026-10-02', comment: 'айкос' }, aikos.id)
+  await page.getByTestId('branch-switch').first().selectOption(aikos.id)
+  await expect(page.getByTestId('branch-switch').first()).toHaveValue(aikos.id)
+  await page.goto(`/clients/${party.id}`)
+  await expect(page.getByTestId('client-other-branch-debt')).toContainText(`в ${main?.name ?? ''}:`)
+  await expect(page.getByTestId('client-other-branch-debt')).toContainText(/1\s200/)
+  await page.getByTestId('branch-switch').first().selectOption(main?.id ?? '')
+})

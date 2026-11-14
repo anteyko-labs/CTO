@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select listed, stock_qty from branch_products where branch_id = $1 and product_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "listed",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "stock_qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f801c52f2dba9e2f6cb9f4b75bb52d5543dd796d0dae0ec54786bc1a47ffb703"
+}

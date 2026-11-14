@@ -1190,8 +1190,15 @@ pub async fn party(
             // Поставщик — по акту сверки: накладные, оплаты, возвраты и брак названы как есть,
             // знаки с его стороны (проверка 20.10.2026: правила клиента путали знаки и подписи).
             let (from, to) = period.map_or((None, None), |(f, t)| (Some(f), Some(t)));
-            let r = crate::api::parties::reconciliation_data(conn, user.branch_id, p.id, from, to)
-                .await?;
+            let r = crate::api::parties::reconciliation_data(
+                conn,
+                user.branch_id,
+                p.id,
+                from,
+                to,
+                None,
+            )
+            .await?;
             let mut lines = vec![format!("{} (поставщик)", r.name)];
             lines.push(format!("Баланс: {}", balance_text(r.closing_tyiyn)));
             lines.push(format!(
@@ -1291,8 +1298,15 @@ pub async fn party(
         }
         "reconciliation" => {
             let (from, to) = period.map_or((None, None), |(f, t)| (Some(f), Some(t)));
-            let r = crate::api::parties::reconciliation_data(conn, user.branch_id, p.id, from, to)
-                .await?;
+            let r = crate::api::parties::reconciliation_data(
+                conn,
+                user.branch_id,
+                p.id,
+                from,
+                to,
+                None,
+            )
+            .await?;
             let mut lines = vec![
                 format!("Акт сверки: {} {}", r.name, period_label(r.from, r.to)),
                 format!("Сальдо на начало: {}", balance_text(r.opening_tyiyn)),

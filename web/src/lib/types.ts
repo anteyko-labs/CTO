@@ -51,6 +51,8 @@ export interface Branch {
   phone: string
   archived: boolean
   is_main: boolean
+  /** «Свой список товаров» (задача 036). */
+  own_assortment?: boolean
 }
 
 export interface User {
@@ -673,6 +675,8 @@ export interface Party {
   branch_balance_tyiyn?: number
   /** Долг клиента по филиалам — только ненулевые. */
   branch_balances?: BranchBalance[]
+  /** Долги раздельно по филиалам (задача 036): `balance_tyiyn` — долг этого филиала. */
+  debts_separate?: boolean
 }
 
 /** Долг клиента в одном филиале (SPEC-33 §2). */
@@ -680,6 +684,8 @@ export interface BranchBalance {
   branch_id: string
   name: string
   balance_tyiyn: number
+  /** Филиал запроса (задача 036). */
+  here?: boolean
 }
 
 export interface PartyContact {

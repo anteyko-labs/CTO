@@ -457,6 +457,17 @@ async fn cashier_debtors_are_only_those_who_owe(pool: PgPool) {
             .execute(&pool)
             .await
             .unwrap();
+        // Долг — в филиале кассы: по умолчанию долги раздельно по филиалам (задача 036).
+        sqlx::query(
+            "insert into party_balances (party_id, branch_id, balance_tyiyn)
+             select $1, branch_id, $2 from parties where id = $1
+             on conflict (party_id, branch_id) do update set balance_tyiyn = excluded.balance_tyiyn",
+        )
+        .bind(id)
+        .bind(balance)
+        .execute(&pool)
+        .await
+        .unwrap();
         ids.push(id);
     }
     let (s, owe) = call(

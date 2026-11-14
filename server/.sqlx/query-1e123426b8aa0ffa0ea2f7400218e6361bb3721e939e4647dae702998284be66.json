@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as \"sale_price!\"\n           from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n           where p.id = $1\n           for key share of p",
+  "query": "select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as \"sale_price!\",\n                  coalesce(bp.listed, true) as \"listed!\"\n           from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n           where p.id = $1\n           for key share of p",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,11 @@
         "ordinal": 4,
         "name": "sale_price!",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "listed!",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -40,8 +45,9 @@
       false,
       true,
       false,
+      null,
       null
     ]
   },
-  "hash": "c3317bf135a0339edb0eff3782e2a5bbd187d1755188c3a2a1c363673602ca0b"
+  "hash": "1e123426b8aa0ffa0ea2f7400218e6361bb3721e939e4647dae702998284be66"
 }

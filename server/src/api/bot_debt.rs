@@ -46,7 +46,8 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
     let branch_id = sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
         .fetch_one(&mut *conn)
         .await?;
-    let party = crate::api::parties::load_party(&mut *conn, branch_id, party_id).await?;
+    // Общий долг и разбивка по филиалам, даже когда у филиалов долги раздельно (задача 036).
+    let party = crate::api::parties::load_party_as(&mut *conn, branch_id, party_id, false).await?;
     // Клиент общий: долг и записи — по всем филиалам, у записи — филиал (SPEC-33 §2).
     let several = crate::api::branches::several(&mut *conn).await?;
     let entries = sqlx::query!(
@@ -64,10 +65,28 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
     .await?;
     let mut lines = Vec::new();
     if party.balance_tyiyn > 0 {
-        lines.push(format!("💳 Ваш долг: {}", format_som(party.balance_tyiyn)));
-        // Долг в нескольких филиалах — по филиалам; гасить можно в любом.
-        if let Some(list) = party.branch_balances.as_array().filter(|l| l.len() > 1) {
-            for b in list {
+        let list = party
+            .branch_balances
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        // Долг в одном филиале из нескольких — с его названием (задача 036: бот один, долги
+        // филиалов раздельно).
+        let only = match list.as_slice() {
+            [b] if several => b
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| format!(" — {n}"))
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        lines.push(format!(
+            "💳 Ваш долг: {}{only}",
+            format_som(party.balance_tyiyn)
+        ));
+        // Долг в нескольких филиалах — по филиалам.
+        if list.len() > 1 {
+            for b in &list {
                 let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let v = b
                     .get("balance_tyiyn")

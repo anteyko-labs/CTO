@@ -209,7 +209,8 @@ async fn snapshot(
            from products p
            join categories c on c.id = p.category_id
            left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1
-           where not p.archived
+           -- Касса без сети — только товары своего филиала (задача 036).
+           where not p.archived and coalesce(bp.listed, true)
            order by p.name"#,
         user.branch_id
     )

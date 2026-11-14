@@ -1,5 +1,6 @@
 // Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
+import { otherBranchDebtText } from '../lib/branchDebt'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
@@ -53,7 +54,7 @@ import {
   type NextEdits,
   type OwnIntervals,
 } from '../lib/nextChange'
-import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
+import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, withFreeServices, type OilEnough } from '../lib/serviceSale'
 import { printBotQr, printOilBook, saleCheckOf, saleRecordOf } from '../lib/oilBookPrint'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, shouldAutoReceipt, type OilBookSettings } from '../lib/oilBookSettings'
 import { ServicePicker } from '../components/ServicePicker'
@@ -303,9 +304,13 @@ const NO_OIL: OilEnough = new Set<string>()
 /** Поле строки «Следующей замены»: `next-oil`, у услуги «прочее» — `next-svc-<услуга>`. */
 const nextId = (key: string): string => `next-${key.replace(':', '-')}`
 
-/** Категории нашего масла, которого в чеке не меньше канистры (ADR-104). */
+/** «Услуги бесплатно для клиента» филиала (задача 036): ставит экран кассы из настроек. */
+let servicesFreeHere = false
+
+/** Категории нашего масла, которого в чеке не меньше канистры (ADR-104); в филиале с бесплатными
+ *  услугами — с отметкой «все услуги по 0 с». */
 function cartOil(lines: readonly CartLine[]): OilEnough {
-  return oilEnough(
+  return withFreeServices(oilEnough(
     lines.map((l) => ({
       categoryId: l.product?.category_id,
       categoryKind: l.product?.category_kind,
@@ -313,7 +318,7 @@ function cartOil(lines: readonly CartLine[]): OilEnough {
       containerMl: l.product?.container_ml,
       gift: l.gift,
     })),
-  )
+  ), servicesFreeHere)
 }
 
 /** Цена строки вне правки — общим форматом с разрядами и «с»; неразобранный ввод — как есть. */
@@ -377,6 +382,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // «Настройки → Касса» (задача 003 Н2–Н4): раскладка режима кассы и скидка; без связи — из снимка.
   const cashierCfg = useLoad(loadCashierSettings, [])
   const cs = cashierCfg.data ?? DEFAULT_CASHIER
+  servicesFreeHere = cs.services_free
   const keyboard = useKeyboardOpen()
   const [shiftOpen, setShiftOpen] = useState<{ till: CashAccount | undefined } | null>(null)
   // Без связи — сотрудники из снимка кассы: кассир и мастер выбираются и после перезагрузки (SPEC-09).
@@ -3301,6 +3307,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               {party ? (
                 <>
                   В долг {formatSom(debtAmount || due)}: {party.name}, сейчас {balanceText(party.balance_tyiyn)}
+                  {otherBranchDebtText(party) && <> {otherBranchDebtText(party)}</>}
                   {party.credit_limit_tyiyn !== null && (
                     <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - (debtAmount || due))}</>
                   )}

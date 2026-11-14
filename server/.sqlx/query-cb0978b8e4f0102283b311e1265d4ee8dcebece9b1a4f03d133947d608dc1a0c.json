@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, archived from branches where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "archived",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "cb0978b8e4f0102283b311e1265d4ee8dcebece9b1a4f03d133947d608dc1a0c"
+}

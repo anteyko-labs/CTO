@@ -411,6 +411,33 @@ pub async fn lock_products(
     Ok(())
 }
 
+/// Товары документа продаются в филиале (задача 036): приход и оприходование товара не своего
+/// филиала — 409 с названиями; владелец сначала отмечает в карточке «Есть и в филиале».
+pub async fn require_listed(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    ids: impl IntoIterator<Item = Uuid>,
+) -> AppResult<()> {
+    let list: Vec<Uuid> = ids.into_iter().collect();
+    let names = sqlx::query_scalar!(
+        r#"select p.name from products p
+           join branch_products bp on bp.product_id = p.id and bp.branch_id = $1
+           where p.id = any($2) and not bp.listed
+           order by p.name"#,
+        branch_id,
+        &list
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Conflict(format!(
+        "не продаётся в этом филиале: {} — отметьте в карточке товара «Есть и в филиале»",
+        names.join(", ")
+    )))
+}
+
 /// Ответ на «из своих, мимо касс» в новых операциях (ADR-079): так больше не платят — деньги
 /// сначала вносят на счёт, потом платят с него, и остаток каждого счёта сходится с деньгами.
 pub const NO_OUTSIDE: &str = "«из своих, мимо касс» больше нет: выберите кассу или счёт — если платили свои деньги, сначала внесите их на счёт";
@@ -540,6 +567,7 @@ pub async fn post_receipt_tx(
         Some(resolve_paid_from(conn, ctx, req.paid_from.as_deref()).await?)
     };
     let branch_id = ctx.user.branch_id;
+    require_listed(conn, branch_id, distinct.iter().copied()).await?;
     lock_products(conn, branch_id, distinct).await?;
     // Пока ждали блокировку, карточку могли объединить с другой.
     let archived = sqlx::query_scalar!(

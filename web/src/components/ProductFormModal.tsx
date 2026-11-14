@@ -24,6 +24,7 @@ import { parsePointsRule, pointsChanged, pointsDraft, type PointsDraft } from '.
 import { unitText } from '../lib/unitChange'
 import { isKgM, isMilli, parseQty, perWord, unitShort, type StockUnit } from '../lib/units'
 import { ProductCostBlock } from './ProductCostBlock'
+import { ProductBranchesBlock } from './ProductBranchesBlock'
 import { PurchasePriceInput } from './PurchasePriceInput'
 
 interface Form {
@@ -734,6 +735,7 @@ export function ProductFormModal({
       </fieldset>
       {/* Связанная строка старой базы Умаг (SPEC-35 §3): после связывания у товара новые коды. */}
       {product && <ProductCostBlock productId={product.id} />}
+      {product && <ProductBranchesBlock productId={product.id} />}
       {product && <UmagCard productId={product.id} codes={codes} mayEdit={mayEdit} onProduct={(p) => setCodes(p.barcodes)} />}
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />

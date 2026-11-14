@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branch_products (branch_id, product_id, sale_price_tyiyn, min_stock, listed)\n           select b.id, $2, $3, case when b.id = $1 then $4::bigint else 0::bigint end,\n                  b.id = $1 or not b.own_assortment\n           from branches b",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c64e741137cd039aeafea5e3585f6757cf854564b4ed0f1b7253ca5c6981d7f6"
+}

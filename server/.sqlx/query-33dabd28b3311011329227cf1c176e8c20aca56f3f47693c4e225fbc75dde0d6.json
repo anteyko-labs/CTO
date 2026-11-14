@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name from products p\n           join branch_products bp on bp.product_id = p.id and bp.branch_id = $1\n           where p.id = any($2) and not bp.listed\n           order by p.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "33dabd28b3311011329227cf1c176e8c20aca56f3f47693c4e225fbc75dde0d6"
+}

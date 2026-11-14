@@ -1,4 +1,5 @@
 // Карточка клиента: работники, машины, покупки, долг и погашения (SPEC-10).
+import { otherBranchDebtText } from '../lib/branchDebt'
 import { useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
@@ -500,8 +501,14 @@ export default function ClientCard() {
             {formatSom(Math.abs(party.balance_tyiyn))}
           </div>
           <div className="text-xs text-slate-500">{balanceText(party.balance_tyiyn)}</div>
+          {/* Долги раздельно (задача 036): долг в других филиалах — в скобках. */}
+          {otherBranchDebtText(party) && (
+            <div className="mt-1 text-xs text-slate-500" data-testid="client-other-branch-debt">
+              {otherBranchDebtText(party)}
+            </div>
+          )}
           {/* Клиент общий (SPEC-33): долг по филиалам, гасить можно в любом. */}
-          {party.role === 'customer' && (party.branch_balances?.length ?? 0) > 1 && (
+          {party.role === 'customer' && !party.debts_separate && (party.branch_balances?.length ?? 0) > 1 && (
             <div className="mt-1 text-xs text-slate-600" data-testid="client-branch-debts">
               {party.branch_balances?.map((b) => (
                 <div key={b.branch_id}>

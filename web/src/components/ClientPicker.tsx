@@ -1,3 +1,4 @@
+import { otherBranchDebtText } from '../lib/branchDebt'
 import { useEffect, useRef, useState } from 'react'
 import { get, noServerAnswer, patch, post, qs } from '../lib/api'
 import { readSnapshot, searchSnapshotClients } from '../lib/offline'
@@ -304,6 +305,11 @@ export function ClientPicker({
                 </button>
               )}
               {party.inn && ` · ${party.kind === 'company' ? 'ИНН' : 'ПИН'} ${party.inn}`} · {balanceText(party.balance_tyiyn)}
+              {otherBranchDebtText(party) && (
+                <span className="ml-1 text-slate-500" data-testid="picker-other-branch-debt">
+                  {otherBranchDebtText(party)}
+                </span>
+              )}
             </div>
           </div>
           <button type="button" className="shrink-0 text-slate-400 hover:text-rose-600" aria-label="Убрать клиента" onClick={() => onParty(null)}>

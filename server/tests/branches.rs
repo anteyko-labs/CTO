@@ -975,7 +975,8 @@ async fn owner_reports_all_branches_as_the_sum_of_branches(pool: PgPool) {
         .get("/api/v1/products/list?branch=all", &w.owner, None)
         .await;
     assert_eq!(stock(&all), stock(&a) + stock(&b));
-    // Долги клиента: в каждом филиале — свой, у клиента — общий.
+    // Долги клиента: в каждом филиале — свой; по умолчанию раздельно (задача 036) — в списке
+    // филиала долг этого филиала, другие — в разбивке; во «Все филиалы» — общий.
     let debts = api.get("/api/v1/debts/list", &w.admin_b, None).await;
     let row = debts
         .as_array()
@@ -984,8 +985,19 @@ async fn owner_reports_all_branches_as_the_sum_of_branches(pool: PgPool) {
         .find(|r| r["id"] == w.client.as_str())
         .unwrap();
     assert_eq!(row["branch_balance_tyiyn"], 100_000);
-    assert_eq!(row["balance_tyiyn"], 200_000);
+    assert_eq!(row["balance_tyiyn"], 100_000);
+    assert_eq!(row["debts_separate"], true);
     assert_eq!(row["branch_balances"].as_array().unwrap().len(), 2);
+    let debts = api
+        .get("/api/v1/debts/list?branch=all", &w.owner, None)
+        .await;
+    let row = debts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == w.client.as_str())
+        .unwrap();
+    assert_eq!(row["balance_tyiyn"], 200_000);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -1151,6 +1163,15 @@ async fn new_product_purchase_price_and_oil_price_mode_stay_in_branch(pool: PgPo
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn client_debt_repaid_in_another_branch_is_settled_between_branches(pool: PgPool) {
     let w = world(pool.clone()).await;
+    // Прежнее правило SPEC-33 §2 — «Принимать долг других филиалов» включено (задача 036).
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           select id, 'cashier', '{"repay_other_branches": true}'::jsonb from branches
+           on conflict (branch_id, key) do update set value = settings.value || excluded.value"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     fill_branch(&w, w.a, &w.admin_a, SECRET).await;
     fill_branch(&w, w.b, &w.admin_b, "Б").await;
     let api = &w.api;
@@ -1678,4 +1699,487 @@ async fn purchase_price_is_a_grantable_permission_of_own_branch(pool: PgPool) {
     grant.execute(&pool).await.unwrap();
     w.api.ok("POST", &uri, &w.admin_b, None, body(13_000)).await;
     assert_eq!(stock_of(w.b).await, (10, 130_000));
+}
+
+/// Касса филиала для проверок задачи 036: кассир, мастер, открытая смена; продажа в минус.
+async fn open_till(
+    w: &World,
+    pool: &PgPool,
+    branch: Uuid,
+    admin: &str,
+    tag: &str,
+) -> (String, String) {
+    let api = &w.api;
+    let at = Some(branch);
+    let cashier = id(&api
+        .ok(
+            "POST",
+            "/api/v1/employees",
+            &w.owner,
+            at,
+            json!({ "full_name": format!("Кассир {tag}"), "is_cashier": true, "pin": "1234" }),
+        )
+        .await);
+    let master = id(&api
+        .ok(
+            "POST",
+            "/api/v1/employees",
+            &w.owner,
+            at,
+            json!({ "full_name": format!("Мастер {tag}"), "is_master": true }),
+        )
+        .await);
+    api.ok(
+        "POST",
+        "/api/v1/shifts/open",
+        admin,
+        None,
+        json!({ "op_id": op(), "cashier_employee_id": cashier, "cashier_pin": "1234" }),
+    )
+    .await;
+    allow_negative(pool).await;
+    (cashier, master)
+}
+
+/// Задача 036: у филиала «Свой список товаров» — товары других филиалов в нём не продаются,
+/// пока владелец не отметит «Продаётся в филиалах»; новый товар такого филиала не появляется в
+/// других филиалах со своим списком; товар с остатком из списка не убрать.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn own_assortment_hides_products_of_other_branches(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let api = &w.api;
+    let c = Uuid::parse_str(&id(&api
+        .ok(
+            "POST",
+            "/api/v1/branches",
+            &w.owner,
+            None,
+            json!({ "op_id": op(), "name": "Айкос", "own_assortment": true }),
+        )
+        .await))
+    .unwrap();
+    let admin_c = admin_in(api, &w.owner, c, "admin_c").await;
+    let (cashier, _) = open_till(&w, &pool, c, &admin_c, "Айкос").await;
+    let found = |v: &Value, pid: &str| v.as_array().unwrap().iter().any(|p| p["id"] == pid);
+    // Товар главного филиала в Айкос не ищется, не попадает в снимок кассы и не продаётся.
+    let search = api.get("/api/v1/products?q=Фильтр", &admin_c, None).await;
+    assert!(!found(&search, &w.item), "{search}");
+    let snap = api.get("/api/v1/offline/snapshot", &admin_c, None).await;
+    assert!(!found(&snap["products"], &w.item));
+    let sale = |pid: &str| {
+        json!({ "op_id": op(), "sale_type": "takeaway", "cashier_id": cashier,
+                "lines": [{ "kind": "piece", "product_id": pid, "qty": 1, "unit_price_tyiyn": 50_000 }],
+                "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }] })
+    };
+    let (s, v) = api
+        .call("POST", "/api/v1/sales", &admin_c, None, Some(sale(&w.item)))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("не продаётся в этом филиале"), "{v}");
+    let (s, v) = api
+        .call(
+            "POST",
+            "/api/v1/stock-ins",
+            &admin_c,
+            None,
+            Some(json!({ "op_id": op(), "comment": "нашли на полке",
+                         "lines": [{ "product_id": w.item, "qty": 3, "price_tyiyn": 10_000 }] })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // Карточку по id владелец открывает: видно, где товар продаётся.
+    let rows = api
+        .get(
+            &format!("/api/v1/products/{}/branches", w.item),
+            &w.owner,
+            None,
+        )
+        .await;
+    let listed = |rows: &Value, b: Uuid| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["branch_id"] == b.to_string())
+            .unwrap()["listed"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(
+        listed(&rows, w.a) && listed(&rows, w.b) && !listed(&rows, c),
+        "{rows}"
+    );
+    // Администратору список филиалов товара не отдаётся.
+    let (s, _) = api
+        .call(
+            "GET",
+            &format!("/api/v1/products/{}/branches", w.item),
+            &admin_c,
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // «Продаётся в филиалах»: Айкос — товар виден и продаётся.
+    let rows = api
+        .ok(
+            "PATCH",
+            &format!("/api/v1/products/{}/branches", w.item),
+            &w.owner,
+            None,
+            json!({ "op_id": op(), "branch_id": c, "listed": true }),
+        )
+        .await;
+    assert!(listed(&rows, c));
+    let search = api.get("/api/v1/products?q=Фильтр", &admin_c, None).await;
+    assert!(found(&search, &w.item));
+    api.ok("POST", "/api/v1/sales", &admin_c, None, sale(&w.item))
+        .await;
+    // Остаток в Айкос не 0 (продали в минус) — из списка не убрать.
+    let (s, v) = api
+        .call(
+            "PATCH",
+            &format!("/api/v1/products/{}/branches", w.item),
+            &w.owner,
+            None,
+            Some(json!({ "op_id": op(), "branch_id": c, "listed": false })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // Главный филиал тоже со своим списком: новый товар Айкос там не продаётся, а в Б (без
+    // своего списка) — продаётся, как было.
+    api.ok(
+        "PATCH",
+        &format!("/api/v1/branches/{}", w.a),
+        &w.owner,
+        None,
+        json!({ "own_assortment": true }),
+    )
+    .await;
+    let cat = api
+        .ok(
+            "POST",
+            "/api/v1/categories",
+            &w.owner,
+            Some(c),
+            json!({ "name": "Стики", "kind": "other" }),
+        )
+        .await;
+    let stick = id(&api
+        .ok(
+            "POST",
+            "/api/v1/products",
+            &w.owner,
+            Some(c),
+            json!({ "op_id": op(), "category_id": id(&cat), "name": "Стик Айкос", "sale_price_tyiyn": 30_000 }),
+        )
+        .await);
+    let a_search = api.get("/api/v1/products?q=Стик", &w.admin_a, None).await;
+    assert!(!found(&a_search, &stick), "{a_search}");
+    let b_search = api.get("/api/v1/products?q=Стик", &w.admin_b, None).await;
+    assert!(found(&b_search, &stick), "{b_search}");
+    let c_search = api.get("/api/v1/products?q=Стик", &admin_c, None).await;
+    assert!(found(&c_search, &stick));
+    // Владелец находит товар не этого филиала поиском «и не в продаже».
+    let all = api
+        .get("/api/v1/products?q=Стик&unlisted=true", &w.owner, Some(w.a))
+        .await;
+    assert!(
+        all.as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == stick && p["listed"] == false)
+    );
+    // Существующие филиалы без своего списка — все прежние товары на месте.
+    let none_hidden: i64 = sqlx::query_scalar(
+        "select count(*) from branch_products bp join branches b on b.id = bp.branch_id
+         where not b.own_assortment and not bp.listed",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(none_hidden, 0);
+}
+
+/// Задача 036: «Принимать долг других филиалов» выключено (по умолчанию) — у клиента в каждом
+/// филиале свой долг: баланс, лимит и погашение — только этого филиала, другие — в разбивке.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn client_debts_are_separate_by_branch_by_default(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    fill_branch(&w, w.a, &w.admin_a, SECRET).await;
+    fill_branch(&w, w.b, &w.admin_b, "Б").await;
+    let api = &w.api;
+    let party = format!("/api/v1/parties/{}", w.client);
+    let card = api.get(&party, &w.admin_b, None).await;
+    assert_eq!(card["balance_tyiyn"], 100_000, "{card}");
+    assert_eq!(card["debts_separate"], true);
+    let other: Vec<(String, bool)> = card["branch_balances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                b["name"].as_str().unwrap().to_string(),
+                b["here"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        other.contains(&("Основной".into(), false)) && other.contains(&("Филиал Б".into(), true))
+    );
+    // Список клиентов — тот же долг филиала.
+    let list = api
+        .get("/api/v1/parties?role=customer", &w.admin_b, None)
+        .await;
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == w.client)
+        .unwrap()
+        .clone();
+    assert_eq!(row["balance_tyiyn"], 100_000);
+    // Владелец во «Все филиалы» видит общий долг.
+    let all = api
+        .get("/api/v1/debts/list?branch=all", &w.owner, None)
+        .await;
+    let row = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == w.client)
+        .unwrap();
+    assert_eq!(row["balance_tyiyn"], 200_000);
+    assert_eq!(row["debts_separate"], false);
+    // Погашение 150 000 в Б: свой долг 100 000, переплата — аванс в Б; долг А не тронут.
+    let r = api
+        .ok(
+            "POST",
+            "/api/v1/debts/repayments",
+            &w.admin_b,
+            None,
+            json!({ "op_id": op(), "party_id": w.client, "amount_tyiyn": 150_000, "method": "cash" }),
+        )
+        .await;
+    assert_eq!(r["balance_tyiyn"], -50_000, "{r}");
+    assert_eq!(
+        api.get(&party, &w.admin_a, None).await["balance_tyiyn"],
+        100_000
+    );
+    let owed: i64 =
+        sqlx::query_scalar("select coalesce(sum(amount_tyiyn), 0)::bigint from branch_settlements")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(owed, 0, "расчётов между филиалами нет");
+    // Лимит долга — по долгу филиала: в А долг 100 000, лимит 150 000 — ещё 50 000 можно.
+    api.ok(
+        "PATCH",
+        &party,
+        &w.owner,
+        Some(w.a),
+        json!({ "credit_limit_tyiyn": 150_000 }),
+    )
+    .await;
+    let card_a = api.get(&party, &w.admin_a, None).await;
+    assert_eq!(card_a["credit_limit_tyiyn"], 150_000, "{card_a}");
+    let bad: i64 = sqlx::query_scalar(
+        "select count(*) from party_balances b
+         where b.balance_tyiyn <> (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l
+                                   where l.party_id = b.party_id and l.branch_id = b.branch_id)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bad, 0);
+}
+
+/// Задача 036: «Услуги бесплатно для клиента» в филиале — услуга в чеке по 0 с, ставка мастера
+/// начисляется; цена больше нуля — 422; в другом филиале — по прайсу, как было.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn free_services_in_branch_keep_master_fee(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let api = &w.api;
+    let svc = id(&api
+        .ok(
+            "POST",
+            "/api/v1/services",
+            &w.owner,
+            Some(w.a),
+            json!({ "name": "Чистка", "price_tyiyn": 40_000, "master_fee_tyiyn": 15_000 }),
+        )
+        .await);
+    let (cashier, master) = open_till(&w, &pool, w.b, &w.admin_b, "Б").await;
+    api.ok(
+        "PUT",
+        "/api/v1/settings/cashier",
+        &w.owner,
+        Some(w.b),
+        json!({ "op_id": op(), "services_free": true, "service_client_required": false,
+                "sale_allow_negative": true }),
+    )
+    .await;
+    let sale = |price: i64| {
+        json!({ "op_id": op(), "sale_type": "service", "cashier_id": cashier, "master_id": master,
+                "lines": [{ "kind": "service", "service_id": svc, "qty": 1, "unit_price_tyiyn": price }],
+                "payments": if price > 0 { json!([{ "method": "cash", "amount_tyiyn": price }]) } else { json!([]) } })
+    };
+    let (s, v) = api
+        .call(
+            "POST",
+            "/api/v1/sales",
+            &w.admin_b,
+            None,
+            Some(sale(40_000)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v.to_string().contains("бесплатная"), "{v}");
+    let done = api
+        .ok("POST", "/api/v1/sales", &w.admin_b, None, sale(0))
+        .await;
+    let sid = Uuid::parse_str(&id(&done)).unwrap();
+    let line: (i64, i64, i64) = sqlx::query_as(
+        "select list_price_tyiyn, amount_tyiyn, master_fee_tyiyn from sale_lines where sale_id = $1",
+    )
+    .bind(sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(line, (0, 0, 15_000), "клиенту 0 с, мастеру — его ставка");
+    // В главном филиале настройка не включена — услуга по прайсу.
+    let main = api.get("/api/v1/settings/cashier", &w.admin_a, None).await;
+    assert_eq!(main["services_free"], false);
+}
+
+/// Задача 036: кабинет юрлица — «Все филиалы» или один филиал: покупки и акт сверки.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn company_cabinet_filters_by_branch(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let api = &w.api;
+    let inn = "01507201810036";
+    let firm = id(&api
+        .ok(
+            "POST",
+            "/api/v1/parties",
+            &w.owner,
+            Some(w.a),
+            json!({ "kind": "company", "name": "ОсОО Два филиала", "phone": "0700 36-36-36", "inn": inn }),
+        )
+        .await);
+    for (branch, admin, tag) in [(w.a, &w.admin_a, "А"), (w.b, &w.admin_b, "Б")] {
+        let (cashier, _) = open_till(&w, &pool, branch, admin, tag).await;
+        api.ok(
+            "POST",
+            "/api/v1/sales",
+            admin,
+            None,
+            json!({ "op_id": op(), "sale_type": "takeaway", "cashier_id": cashier, "party_id": firm,
+                    "lines": [{ "kind": "piece", "product_id": w.item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+                    "payments": [{ "method": "debt", "amount_tyiyn": 50_000 }] }),
+        )
+        .await;
+    }
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/client/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "inn": inn, "password": "avtodom2026" }).to_string(),
+        ))
+        .unwrap();
+    let res = api.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let c = res
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(str::to_string)
+        .unwrap();
+    api.ok(
+        "POST",
+        "/api/v1/client/password",
+        &c,
+        None,
+        json!({ "old_password": "avtodom2026", "new_password": "firm-pass-036" }),
+    )
+    .await;
+    let me = api.get("/api/v1/client/me", &c, None).await;
+    // Кабинет — общий долг и разбивка, хотя у филиалов долги раздельно.
+    assert_eq!(me["balance_tyiyn"], 100_000, "{me}");
+    assert_eq!(me["branches"].as_array().unwrap().len(), 2);
+    let all = api.get("/api/v1/client/sales", &c, None).await;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let only_b = api
+        .get(&format!("/api/v1/client/sales?branch_id={}", w.b), &c, None)
+        .await;
+    let list = only_b.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["branch_name"], "Филиал Б");
+    let act_all = api.get("/api/v1/client/reconciliation", &c, None).await;
+    let act_b = api
+        .get(
+            &format!("/api/v1/client/reconciliation?branch_id={}", w.b),
+            &c,
+            None,
+        )
+        .await;
+    let debit = |a: &Value| -> i64 {
+        a["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["debit_tyiyn"].as_i64().unwrap())
+            .sum()
+    };
+    assert_eq!(debit(&act_all), 100_000, "{act_all}");
+    assert_eq!(debit(&act_b), 50_000, "{act_b}");
+}
+
+/// Задача 036 (ответ 3а): бот один — «💳 Мой долг» показывает общий долг и долг каждого
+/// филиала строкой с названием; долг в одном филиале — с его названием.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn client_bot_debt_names_each_branch(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let api = &w.api;
+    let client = Uuid::parse_str(&w.client).unwrap();
+    let (cashier_b, _) = open_till(&w, &pool, w.b, &w.admin_b, "Б").await;
+    let debt_sale = |cashier: &str| {
+        json!({ "op_id": op(), "sale_type": "takeaway", "cashier_id": cashier, "party_id": w.client,
+                "lines": [{ "kind": "piece", "product_id": w.item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+                "payments": [{ "method": "debt", "amount_tyiyn": 50_000 }] })
+    };
+    api.ok(
+        "POST",
+        "/api/v1/sales",
+        &w.admin_b,
+        None,
+        debt_sale(&cashier_b),
+    )
+    .await;
+    let mut conn = pool.acquire().await.unwrap();
+    let text = avtodom_server::api::bot_debt::customer_debt(&mut conn, client)
+        .await
+        .unwrap();
+    assert!(
+        text.contains("Ваш долг") && text.contains("— Филиал Б"),
+        "{text}"
+    );
+    let (cashier_a, _) = open_till(&w, &pool, w.a, &w.admin_a, "А").await;
+    api.ok(
+        "POST",
+        "/api/v1/sales",
+        &w.admin_a,
+        None,
+        debt_sale(&cashier_a),
+    )
+    .await;
+    let text = avtodom_server::api::bot_debt::customer_debt(&mut conn, client)
+        .await
+        .unwrap();
+    assert!(
+        text.contains("• Основной:") && text.contains("• Филиал Б:"),
+        "{text}"
+    );
+    assert!(!text.contains("— Филиал Б"), "{text}");
 }

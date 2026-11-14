@@ -281,6 +281,33 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
             Включено — без клиента, телефона, машины и пробега чек «В сервис» не провести. Выключено — их можно не указывать. Мастер и вид замены нужны
             всегда, клиент для долга и оплаты по счёту — тоже.
           </p>
+          <label className="mt-3 inline-flex items-center gap-2 text-sm">
+            <input
+              id="services-free"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={s.services_free}
+              onChange={(e) => set({ services_free: e.target.checked })}
+            />
+            Услуги бесплатно для клиента
+          </label>
+          <p className="mt-2 text-sm text-slate-500">
+            Только в этом филиале: услуги в чеке идут по 0 с, цену не поменять. Мастер получает свою ставку за услугу, как обычно.
+          </p>
+          <label className="mt-3 inline-flex items-center gap-2 text-sm">
+            <input
+              id="repay-other-branches"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={s.repay_other_branches}
+              onChange={(e) => set({ repay_other_branches: e.target.checked })}
+            />
+            Принимать долг других филиалов
+          </label>
+          <p className="mt-2 text-sm text-slate-500">
+            Выключено — у клиента в каждом филиале свой долг: здесь гасят только долг этого филиала, долг в других виден в скобках. Включено —
+            сначала гасится долг этого филиала, остаток — самые старые долги в других.
+          </p>
         </Card>
 
         <Card data-testid="cashier-profit">

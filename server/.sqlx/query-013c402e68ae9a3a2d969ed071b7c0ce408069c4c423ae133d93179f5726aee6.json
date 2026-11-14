@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, address, phone, archived, is_main from branches\n           where id = $1 for update",
+  "query": "select id, name, address, phone, archived, is_main, own_assortment from branches\n           order by is_main desc, archived, created_at",
   "describe": {
     "columns": [
       {
@@ -32,14 +32,18 @@
         "ordinal": 5,
         "name": "is_main",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "own_assortment",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
-      "Left": [
-        "Uuid"
-      ]
+      "Left": []
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -48,5 +52,5 @@
       false
     ]
   },
-  "hash": "5ed28836bce6e5b602bb1c12c4ae79a5340613aa151d6b0a943397ac22ef5d9e"
+  "hash": "013c402e68ae9a3a2d969ed071b7c0ce408069c4c423ae133d93179f5726aee6"
 }

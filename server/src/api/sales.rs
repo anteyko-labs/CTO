@@ -483,6 +483,19 @@ async fn prepare_line(
         if !s.active {
             bypass.push(format!("услуга «{}» отключена", s.name));
         }
+        // «Услуги бесплатно для клиента» (задача 036): цена по прайсу в этом филиале — 0 с;
+        // ставка мастера за услугу остаётся. Онлайн цена больше нуля — отказ; чек без сети с
+        // ценой уже состоялся — проводится с причиной владельцу (I10).
+        let free = crate::api::cashier_settings::load(conn, branch_id)
+            .await?
+            .services_free;
+        if free && l.unit_price_tyiyn > 0 {
+            let why = format!("услуга «{}» в этом филиале бесплатная: цена — 0 с", s.name);
+            if !offline {
+                return Err(invalid(why));
+            }
+            bypass.push(why);
+        }
         return Ok(Prepared {
             gift: false,
             kind: l.kind.clone(),
@@ -491,7 +504,7 @@ async fn prepare_line(
             qty: l.qty,
             units: 0,
             unit_price: l.unit_price_tyiyn,
-            list_price: s.price_tyiyn,
+            list_price: if free { 0 } else { s.price_tyiyn },
             amount: mul(l.qty, l.unit_price_tyiyn).ok_or_else(overflow)?,
             // Ставка мастера за работу фиксируется в строке, как себестоимость (ADR-043).
             master_fee: mul(l.qty, s.master_fee_tyiyn).ok_or_else(overflow)?,
@@ -508,7 +521,8 @@ async fn prepare_line(
     )
     .await?;
     let p = sqlx::query!(
-        r#"select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!"
+        r#"select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!",
+                  coalesce(bp.listed, true) as "listed!"
            from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
            where p.id = $1
            for key share of p"#,
@@ -524,6 +538,14 @@ async fn prepare_line(
             return Err(invalid("товар в архиве: найдите основную карточку"));
         }
         bypass.push(format!("товар «{}» в архиве", p.name));
+    }
+    // Товар не своего филиала (задача 036): онлайн — отказ, чек без сети уже состоялся (I10).
+    if !p.listed {
+        let why = format!("товар «{}» не продаётся в этом филиале", p.name);
+        if !offline {
+            return Err(AppError::Conflict(why));
+        }
+        bypass.push(why);
     }
     let (units, amount, list_price) = match (l.kind.as_str(), p.unit.as_str(), p.container_ml) {
         ("piece", "piece", _) => (l.qty, mul(l.qty, l.unit_price_tyiyn), p.sale_price),
@@ -2029,7 +2051,7 @@ pub async fn post_sale_core(
         let party_id = req
             .party_id
             .ok_or_else(|| invalid("для долга нужен клиент"))?;
-        let left = parties::credit_limit_left(conn, party_id).await?;
+        let left = parties::credit_limit_left(conn, party_id, branch_id).await?;
         parties::add_ledger(
             conn,
             ctx,
@@ -2917,12 +2939,10 @@ pub async fn return_sale_core(
     let in_correction = req.business_date.is_some();
     if debt_req > 0 && !in_correction {
         let owes = match orig.party_id {
-            Some(pid) => {
-                sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", pid)
-                    .fetch_one(&mut *conn)
-                    .await?
-                    .max(0)
-            }
+            // Долги раздельно (задача 036) — долг клиента в этом филиале.
+            Some(pid) => parties::customer_balance(conn, pid, branch_id)
+                .await?
+                .max(0),
             None => 0,
         };
         if debt_req > owes {

@@ -1034,9 +1034,8 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         // У клиента был аванс (переплата, деньги прежнего чека после его исправления): долг
         // этого чека им уже частично оплачен. Процент с этой части — сразу, ожидание — только на
         // настоящий долг (ADR-092). Долг чека уже в балансе клиента.
-        let balance = sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", pid)
-            .fetch_one(&mut *conn)
-            .await?;
+        // Долги раздельно (задача 036): аванс другого филиала этот долг не покрывает.
+        let balance = crate::api::parties::customer_balance(conn, pid, ctx.user.branch_id).await?;
         let covered = debt.saturating_sub(balance.max(0)).clamp(0, debt);
         if covered > 0 {
             let base = div_round(

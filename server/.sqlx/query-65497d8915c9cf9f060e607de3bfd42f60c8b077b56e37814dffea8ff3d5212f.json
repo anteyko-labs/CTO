@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', name)\n                                         order by is_main desc, created_at), '[]'::jsonb) as \"v!\"\n               from branches where not archived",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "65497d8915c9cf9f060e607de3bfd42f60c8b077b56e37814dffea8ff3d5212f"
+}

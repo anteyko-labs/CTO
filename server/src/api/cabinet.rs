@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::api::parties::{load_party, reconciliation_data};
+use crate::api::parties::{load_party_as, reconciliation_data};
 use crate::auth::{
     self, Ctx, Owner, hash_password, new_token, token_hash, verify_login_password, verify_password,
 };
@@ -334,6 +334,8 @@ struct MeOut {
     branch_balances: Value,
     /// Реквизиты точки — для шапки акта сверки при печати.
     seller: Value,
+    /// Филиалы для отбора «Все / …» (задача 036); один филиал — пусто.
+    branches: Value,
     /// Период акта сверки по умолчанию — тот же, что на экране точки («Документы о долге»,
     /// задача 003 Н9); нет — всё время.
     act_period: Option<String>,
@@ -341,7 +343,8 @@ struct MeOut {
 
 async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeOut>> {
     let mut conn = state.pool.acquire().await?;
-    let p = load_party(&mut conn, client.branch_id, client.party_id).await?;
+    // Кабинет — по всем филиалам: общий долг и разбивка, даже когда долги раздельно (задача 036).
+    let p = load_party_as(&mut conn, client.branch_id, client.party_id, false).await?;
     let docs = sqlx::query_scalar!(
         "select value from settings where branch_id = $1 and key = 'debt_docs'",
         client.branch_id
@@ -357,6 +360,17 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
         .and_then(|v| v.get("act_period"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let branches = if crate::api::branches::several(&mut conn).await? {
+        sqlx::query_scalar!(
+            r#"select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', name)
+                                         order by is_main desc, created_at), '[]'::jsonb) as "v!"
+               from branches where not archived"#
+        )
+        .fetch_one(&mut *conn)
+        .await?
+    } else {
+        json!([])
+    };
     let supplier = if client.role == "supplier" && !client.must_change {
         Some(json!(
             crate::api::supplier_cabinet::summary(&mut conn, client.party_id).await?
@@ -377,6 +391,7 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
         credit_limit_tyiyn: p.credit_limit_tyiyn,
         branch_balances: p.branch_balances,
         seller,
+        branches,
         act_period,
     }))
 }
@@ -385,6 +400,8 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
 struct PeriodQuery {
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    /// Только покупки этого филиала (задача 036); нет — все филиалы.
+    branch_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -438,12 +455,14 @@ async fn sales(
            left join party_contacts c on c.id = s.contact_id
            left join party_vehicles v on v.id = s.vehicle_id
            where s.party_id = $1
+             and ($4::uuid is null or s.branch_id = $4)
              and s.business_date >= coalesce($2, (now() at time zone 'Asia/Bishkek')::date - 90)
              and s.business_date <= coalesce($3, (now() at time zone 'Asia/Bishkek')::date)
            order by s.created_at desc limit 500"#,
         client.party_id,
         q.from,
-        q.to
+        q.to,
+        q.branch_id
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -544,16 +563,22 @@ async fn reconciliation(
 ) -> AppResult<Json<Value>> {
     client.ready()?;
     let mut conn = state.pool.acquire().await?;
-    let branch = match q.branch_id {
-        Some(b) if client.role == "supplier" => {
+    let picked = match q.branch_id {
+        Some(b) => Some(
             sqlx::query_scalar!("select id from branches where id = $1", b)
                 .fetch_optional(&mut *conn)
                 .await?
-                .ok_or(AppError::NotFound)?
-        }
-        _ => client.branch_id,
+                .ok_or(AppError::NotFound)?,
+        ),
+        None => None,
     };
-    let act = reconciliation_data(&mut conn, branch, client.party_id, q.from, q.to).await?;
+    // Поставщику — акт филиала; клиенту — всех филиалов или выбранного (задача 036).
+    let (branch, only) = match picked {
+        Some(b) if client.role == "supplier" => (b, None),
+        Some(b) => (b, Some(b)),
+        None => (client.branch_id, None),
+    };
+    let act = reconciliation_data(&mut conn, branch, client.party_id, q.from, q.to, only).await?;
     Ok(Json(json!(act)))
 }
 

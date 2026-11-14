@@ -39,6 +39,10 @@ pub fn routes() -> Router<AppState> {
             routing::get(get_product).patch(update_product),
         )
         .route("/products/{id}/prices", routing::patch(update_prices))
+        .route(
+            "/products/{id}/branches",
+            routing::get(product_branches).patch(set_product_listed),
+        )
         .route("/products/{id}/merge", routing::post(merge_product))
         .route("/products/{id}/barcodes", routing::post(add_barcode))
         .route(
@@ -580,6 +584,14 @@ pub struct ProductOut {
     pub points_mode: String,
     #[serde(default)]
     pub points_value: i64,
+    /// Товар продаётся в филиале запроса (задача 036): карточка общая, список товаров у филиала
+    /// свой. Списки, поиск и касса не показывают товар не своего филиала.
+    #[serde(default = "listed_default")]
+    pub listed: bool,
+}
+
+fn listed_default() -> bool {
+    true
 }
 
 fn inherit() -> String {
@@ -631,6 +643,9 @@ pub struct ProductFilter {
     pub stock: StockChip,
     /// Подытоги по категориям — «Склад → Остатки» (SPEC-36 §14).
     pub group_category: bool,
+    /// И товары не своего филиала (задача 036) — карточка по id: владелец отмечает «Есть и в
+    /// филиале». Списки, поиск и касса их не видят.
+    pub with_unlisted: bool,
 }
 
 pub(crate) fn escape_like(s: &str) -> String {
@@ -682,12 +697,14 @@ async fn query_products_raw(
                           where k.branch_id = $1 and k.product_id = p.id and k.resolved_at is null) as "cost_pending!",
                   coalesce(bp.last_cost_qty, 0) as "last_cost_qty!",
                   coalesce(bp.last_cost_tyiyn, 0) as "last_cost_tyiyn!",
+                  coalesce(bp.listed, true) as "listed!",
                   coalesce((select array_agg(b.code order by b.created_at) from product_barcodes b
                             where b.product_id = p.id), '{}') as "barcodes!: Vec<String>"
            from products p
            join categories c on c.id = p.category_id
            left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1
-           where ($2::text is null
+           where ($11 or coalesce(bp.listed, true))
+             and ($2::text is null
                   or p.name ilike '%' || $2 || '%' or p.brand ilike '%' || $2 || '%'
                   or p.article ilike '%' || $2 || '%'
                   or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code like $2 || '%')
@@ -725,6 +742,7 @@ async fn query_products_raw(
         },
         f.kind,
         exact,
+        f.with_unlisted,
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -779,6 +797,7 @@ async fn query_products_raw(
                 stock_value_tyiyn: owner.then_some(r.stock_value_tyiyn),
                 points_mode: r.points_mode,
                 points_value: r.points_value,
+                listed: r.listed,
             };
             (out, raw)
         })
@@ -794,6 +813,7 @@ pub async fn product_by_id(
         ids: Some(vec![id]),
         archived: ArchiveScope::All,
         limit: 1,
+        with_unlisted: true,
         ..Default::default()
     };
     query_products(conn, user, f)
@@ -844,6 +864,8 @@ async fn search_products(
         no_limit: whole_kind,
         stock: StockChip::All,
         group_category: false,
+        // Владелец ищет и товары не этого филиала — чтобы отметить «Есть и в филиале» (задача 036).
+        with_unlisted: user.is_owner() && params.get("unlisted").is_some_and(|v| v == "true"),
     };
     let mut conn = state.pool.acquire().await?;
     Ok(Json(query_products(&mut conn, &user, f).await?))
@@ -1687,8 +1709,12 @@ pub async fn create_product_tx(
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
-        r#"insert into branch_products (branch_id, product_id, sale_price_tyiyn, min_stock)
-           select b.id, $2, $3, case when b.id = $1 then $4::bigint else 0::bigint end from branches b"#,
+        // Новый товар продаётся в филиале, где его завели, и в филиалах без своего списка товаров
+        // (задача 036); в филиале со своим списком владелец отмечает «Продаётся в филиалах».
+        r#"insert into branch_products (branch_id, product_id, sale_price_tyiyn, min_stock, listed)
+           select b.id, $2, $3, case when b.id = $1 then $4::bigint else 0::bigint end,
+                  b.id = $1 or not b.own_assortment
+           from branches b"#,
         ctx.user.branch_id,
         id,
         req.sale_price_tyiyn,
@@ -2134,6 +2160,131 @@ pub async fn update_prices_tx(
     Ok(out)
 }
 
+/// Где товар продаётся (задача 036): строка на филиал.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProductBranch {
+    pub branch_id: Uuid,
+    pub name: String,
+    pub listed: bool,
+}
+
+async fn listed_rows(conn: &mut PgConnection, id: Uuid) -> AppResult<Vec<ProductBranch>> {
+    Ok(sqlx::query_as!(
+        ProductBranch,
+        r#"select b.id as branch_id, b.name, coalesce(bp.listed, true) as "listed!"
+           from branches b
+           left join branch_products bp on bp.branch_id = b.id and bp.product_id = $1
+           where not b.archived
+           order by b.is_main desc, b.created_at"#,
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+/// «Продаётся в филиалах» карточки товара — только владельцу (он один видит все филиалы).
+async fn product_branches(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<Vec<ProductBranch>>> {
+    user.require_owner()?;
+    let mut conn = state.pool.acquire().await?;
+    sqlx::query_scalar!("select id from products where id = $1", id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(listed_rows(&mut conn, id).await?))
+}
+
+#[derive(Deserialize)]
+struct ListedReq {
+    op_id: Uuid,
+    branch_id: Uuid,
+    listed: bool,
+}
+
+/// «Есть и в филиале …» (задача 036): товар продаётся в филиале или убран из его списка.
+/// Остаток и история не трогаются — товар с остатком убрать нельзя (409), иначе остаток
+/// пропал бы из склада филиала (I6).
+async fn set_product_listed(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ListedReq>,
+) -> AppResult<Json<Vec<ProductBranch>>> {
+    const KIND: &str = "product.listed";
+    ctx.user.require_owner()?;
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let p = sqlx::query!(
+        "select name, merged_into from products where id = $1 for update",
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if p.merged_into.is_some() {
+        return Err(invalid("товар влит в другую карточку: откройте основную"));
+    }
+    let branch = sqlx::query!(
+        "select name, archived from branches where id = $1",
+        req.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| invalid("филиал не найден"))?;
+    if branch.archived {
+        return Err(invalid("филиал закрыт"));
+    }
+    sqlx::query!(
+        "insert into branch_products (branch_id, product_id) values ($1, $2) on conflict do nothing",
+        req.branch_id,
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query!(
+        "select listed, stock_qty from branch_products where branch_id = $1 and product_id = $2 for update",
+        req.branch_id,
+        id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if !req.listed && row.stock_qty != 0 {
+        return Err(AppError::Conflict(format!(
+            "в филиале «{}» есть остаток «{}»: сначала спишите или продайте его",
+            branch.name, p.name
+        )));
+    }
+    if row.listed != req.listed {
+        sqlx::query!(
+            "update branch_products set listed = $3 where branch_id = $1 and product_id = $2",
+            req.branch_id,
+            id,
+            req.listed
+        )
+        .execute(&mut *tx)
+        .await?;
+        ops::audit(
+            &mut tx,
+            &ctx,
+            KIND,
+            "product",
+            Some(id),
+            json!({ "name": p.name, "branch_id": req.branch_id, "branch_name": branch.name,
+                    "listed": req.listed }),
+        )
+        .await?;
+    }
+    let out = listed_rows(&mut tx, id).await?;
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
 /// Документ, строкой которого поставили цену продажи: приход или оприходование (ADR-086).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PriceDoc {
@@ -2568,6 +2719,17 @@ async fn merge_product(
         "update gift_rule_items set gift_product_id = $2 where gift_product_id = $1",
         id,
         req.into_product_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    // Дубль продавался в филиале — основной товар теперь продаётся там же (задача 036).
+    sqlx::query!(
+        r#"update branch_products m set listed = true
+           from branch_products d
+           where m.product_id = $1 and d.branch_id = m.branch_id and d.product_id = $2
+             and d.listed and not m.listed"#,
+        req.into_product_id,
+        id
     )
     .execute(&mut *tx)
     .await?;

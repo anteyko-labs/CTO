@@ -1,5 +1,6 @@
 // Долги: кто должен нам и кому должны мы, с оплатой и погашением (SPEC-10). Экран на всю
 // ширину: таблица с сортировкой и страницами, срок и последняя оплата — с сервера (SPEC-27 §6).
+import { otherBranchDebtText } from '../lib/branchDebt'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
@@ -183,6 +184,15 @@ function Side({
 /** Под долгом филиала — общий долг клиента и долги в других филиалах (SPEC-33 §2). */
 function BranchDebt({ row, here }: { row?: DebtRow; here: number }) {
   const parts = row?.branch_balances ?? []
+  // Долги раздельно (задача 036): под долгом филиала — долги в других в скобках.
+  if (row?.debts_separate) {
+    const text = otherBranchDebtText(row)
+    return text ? (
+      <div className="text-xs text-slate-500" data-testid="debt-other-branches">
+        {text}
+      </div>
+    ) : null
+  }
   if (!row || parts.length < 2) return null
   return (
     <div className="text-xs text-slate-500" data-testid="debt-branches">

@@ -332,6 +332,7 @@ pub async fn post_tx(conn: &mut PgConnection, ctx: &Ctx, req: StockInReq) -> App
         costs.push(cost);
     }
     ops::check_amount(total)?;
+    crate::api::receipts::require_listed(conn, branch_id, distinct.iter().copied()).await?;
     crate::api::receipts::lock_products(conn, branch_id, distinct.iter().copied()).await?;
     let ids: Vec<Uuid> = distinct.iter().copied().collect();
     ops::ensure_not_merged(conn, &ids).await?;

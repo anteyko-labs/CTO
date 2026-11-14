@@ -1,5 +1,6 @@
 // Оплата долга: клиент гасит нам или мы платим поставщику, деньги проходят через кассу (SPEC-10).
 // Большое окно (SPEC-28 §3): долг, просрочка, неоплаченные чеки или накладные, оплата и итог после неё.
+import { otherBranchDebtText } from '../lib/branchDebt'
 import { useState } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -57,7 +58,7 @@ export function RepaymentModal({
   onClose,
   onDone,
 }: {
-  party: Pick<Party, 'id' | 'name' | 'balance_tyiyn' | 'role'>
+  party: Pick<Party, 'id' | 'name' | 'balance_tyiyn' | 'role'> & Partial<Pick<Party, 'debts_separate' | 'branch_balances'>>
   /** Оплата одной накладной; без неё оплата закрывает самые старые накладные (ADR-073). */
   invoice?: InvoiceToPay
   /** «Исправить» проведённую оплату (SPEC-29 §24): id записи долга; окно заполняется ею. */
@@ -176,7 +177,14 @@ export function RepaymentModal({
                 testId="repay-debt"
               />
             ) : (
-              <Stat label={supplier ? 'Должны мы' : 'Должен нам'} value={formatSom(done ? done.after : debt)} tone={supplier ? 'slate' : 'amber'} testId="repay-debt" big={touch ? 'touch' : true} />
+              <Stat
+                label={supplier ? 'Должны мы' : 'Должен нам'}
+                value={formatSom(done ? done.after : debt)}
+                hint={supplier ? undefined : otherBranchDebtText(party) || undefined}
+                tone={supplier ? 'slate' : 'amber'}
+                testId="repay-debt"
+                big={touch ? 'touch' : true}
+              />
             )}
             {!supplier && (
               <Stat
@@ -495,7 +503,10 @@ export function DebtorPayment({ party: chequeParty, onClose, onPaid }: { party?:
                     <span className="block truncate font-medium">{p.name}</span>
                     {p.phone && <span className={`block text-slate-500 ${touch ? 'text-base' : 'text-sm'}`}>{p.phone}</span>}
                   </span>
-                  <span className={`shrink-0 font-bold tabular-nums text-rose-700 ${touch ? 'text-3xl' : 'text-2xl'}`}>{formatSom(p.balance_tyiyn)}</span>
+                  <span className="shrink-0 text-right">
+                    <span className={`block font-bold tabular-nums text-rose-700 ${touch ? 'text-3xl' : 'text-2xl'}`}>{formatSom(p.balance_tyiyn)}</span>
+                    {otherBranchDebtText(p) && <span className="block text-xs text-slate-500">{otherBranchDebtText(p)}</span>}
+                  </span>
                 </button>
               </li>
             ))}

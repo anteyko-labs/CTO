@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products m set listed = true\n           from branch_products d\n           where m.product_id = $1 and d.branch_id = m.branch_id and d.product_id = $2\n             and d.listed and not m.listed",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3a8700655c2c96d5451f71c660d138a2b50d46dab10e33a2541c99d92cf564d9"
+}

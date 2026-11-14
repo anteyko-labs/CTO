@@ -82,6 +82,9 @@ pub struct PartyOut {
     /// поставщика пусто: деньги филиала другим филиалам не показываются.
     #[serde(default)]
     pub branch_balances: serde_json::Value,
+    /// Долги клиента раздельно по филиалам (задача 036): `balance_tyiyn` — долг этого филиала,
+    /// долги других (`branch_balances` с `here: false`) экран показывает в скобках.
+    pub debts_separate: bool,
 }
 
 #[derive(Serialize)]
@@ -181,6 +184,7 @@ pub(crate) async fn search_parties(
                     .replace('_', "\\_")
             });
     let phone_digits = q.as_deref().and_then(crate::domain::phone::search_digits);
+    let separate = separate_debts(&mut *conn, branch_id).await?;
     let rows = sqlx::query_as!(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
@@ -190,22 +194,25 @@ pub(crate) async fn search_parties(
                     greatest(0, b.bal - coalesce((
                       select sum(l.amount_tyiyn) from party_ledger l
                       where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
-                        and (parties.role = 'customer' or $10 or l.branch_id = $1)
+                        and ((parties.role = 'customer' and not $11) or $10 or l.branch_id = $1)
                         and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))
                   else 0 end::bigint as "overdue_tyiyn!",
                   b.here as "branch_balance_tyiyn!",
                   (select coalesce(jsonb_agg(jsonb_build_object('branch_id', pb.branch_id, 'name', br.name,
-                                                                'balance_tyiyn', pb.balance_tyiyn)
+                                                                'balance_tyiyn', pb.balance_tyiyn,
+                                                                'here', pb.branch_id = $1)
                                              order by br.is_main desc, br.created_at), '[]'::jsonb)
                    from party_balances pb join branches br on br.id = pb.branch_id
                    where pb.party_id = parties.id and pb.balance_tyiyn <> 0
-                     and (parties.role = 'customer' or $10)) as "branch_balances!"
+                     and (parties.role = 'customer' or $10)) as "branch_balances!",
+                  (parties.role = 'customer' and $11 and not $10) as "debts_separate!"
            from parties
            cross join lateral (
              select coalesce((select pb.balance_tyiyn from party_balances pb
                               where pb.party_id = parties.id and pb.branch_id = $1), 0) as here) h
            cross join lateral (
-             select case when parties.role = 'customer' or $10 then parties.balance_tyiyn else h.here end as bal,
+             -- Долги клиента раздельно по филиалам (задача 036): баланс — долг этого филиала.
+             select case when (parties.role = 'customer' and not $11) or $10 then parties.balance_tyiyn else h.here end as bal,
                     h.here) b
            where ($2::text is null or role = $2)
              and ($3::text is null or kind = $3)
@@ -232,7 +239,8 @@ pub(crate) async fn search_parties(
         phone_digits,
         f.owes,
         f.branch_debtors,
-        f.all_branches
+        f.all_branches,
+        separate
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -382,6 +390,18 @@ pub(crate) async fn load_party(
     branch_id: Uuid,
     id: Uuid,
 ) -> AppResult<PartyOut> {
+    let separate = separate_debts(&mut *conn, branch_id).await?;
+    load_party_as(conn, branch_id, id, separate).await
+}
+
+/// Карточка контрагента; `separate` — баланс клиента только этого филиала (задача 036), иначе
+/// общий. Кабинет юрлица и бот клиента видят общий долг и разбивку по филиалам.
+pub(crate) async fn load_party_as(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+    separate: bool,
+) -> AppResult<PartyOut> {
     sqlx::query_as!(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
@@ -391,26 +411,29 @@ pub(crate) async fn load_party(
                     greatest(0, b.bal - coalesce((
                       select sum(l.amount_tyiyn) from party_ledger l
                       where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
-                        and (parties.role = 'customer' or l.branch_id = $2)
+                        and ((parties.role = 'customer' and not $3) or l.branch_id = $2)
                         and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))
                   else 0 end::bigint as "overdue_tyiyn!",
                   b.here as "branch_balance_tyiyn!",
                   (select coalesce(jsonb_agg(jsonb_build_object('branch_id', pb.branch_id, 'name', br.name,
-                                                                'balance_tyiyn', pb.balance_tyiyn)
+                                                                'balance_tyiyn', pb.balance_tyiyn,
+                                                                'here', pb.branch_id = $2)
                                              order by br.is_main desc, br.created_at), '[]'::jsonb)
                    from party_balances pb join branches br on br.id = pb.branch_id
                    where pb.party_id = parties.id and pb.balance_tyiyn <> 0
-                     and parties.role = 'customer') as "branch_balances!"
+                     and parties.role = 'customer') as "branch_balances!",
+                  (parties.role = 'customer' and $3) as "debts_separate!"
            from parties
            cross join lateral (
              select coalesce((select pb.balance_tyiyn from party_balances pb
                               where pb.party_id = parties.id and pb.branch_id = $2), 0) as here) h
            cross join lateral (
-             select case when parties.role = 'customer' then parties.balance_tyiyn else h.here end as bal,
+             select case when parties.role = 'customer' and not $3 then parties.balance_tyiyn else h.here end as bal,
                     h.here) b
            where id = $1"#,
         id,
-        branch_id
+        branch_id,
+        separate
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -1293,15 +1316,54 @@ pub async fn check_sale_party(
 }
 
 /// Остаток лимита: сколько ещё можно отдать в долг. `None` — лимит не задан.
-pub async fn credit_limit_left(conn: &mut PgConnection, party_id: Uuid) -> AppResult<Option<i64>> {
-    let r = sqlx::query!(
-        "select credit_limit_tyiyn, balance_tyiyn from parties where id = $1",
+pub async fn credit_limit_left(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    branch_id: Uuid,
+) -> AppResult<Option<i64>> {
+    let lim = sqlx::query_scalar!(
+        "select credit_limit_tyiyn from parties where id = $1",
         party_id
     )
     .fetch_one(&mut *conn)
     .await?;
-    Ok(r.credit_limit_tyiyn
-        .map(|lim| lim.saturating_sub(r.balance_tyiyn)))
+    let Some(lim) = lim else {
+        return Ok(None);
+    };
+    // Долги раздельно (задача 036) — лимит по долгу этого филиала, иначе по общему (SPEC-33).
+    let balance = customer_balance(conn, party_id, branch_id).await?;
+    Ok(Some(lim.saturating_sub(balance)))
+}
+
+/// Долги клиента раздельно по филиалам (задача 036, ADR-197): в филиале выключено «Принимать
+/// долг других филиалов» — баланс, лимит и погашение клиента только этого филиала.
+pub async fn separate_debts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<bool> {
+    Ok(!crate::api::cashier_settings::load(conn, branch_id)
+        .await?
+        .repay_other_branches)
+}
+
+/// Баланс клиента, как его видит филиал: долг этого филиала, если долги раздельно, иначе общий.
+pub async fn customer_balance(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    branch_id: Uuid,
+) -> AppResult<i64> {
+    if separate_debts(conn, branch_id).await? {
+        return Ok(sqlx::query_scalar!(
+            "select balance_tyiyn from party_balances where party_id = $1 and branch_id = $2",
+            party_id,
+            branch_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(0));
+    }
+    Ok(
+        sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", party_id)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
 }
 
 #[derive(Deserialize)]
@@ -1355,7 +1417,7 @@ async fn reconciliation(
     // (задача 003 Н8, ADR-151).
     crate::auth::require_permission(&mut conn, &user, "reconciliation").await?;
     Ok(Json(
-        reconciliation_data(&mut conn, user.branch_id, id, q.from, q.to).await?,
+        reconciliation_data(&mut conn, user.branch_id, id, q.from, q.to, None).await?,
     ))
 }
 
@@ -1366,6 +1428,7 @@ pub(crate) async fn reconciliation_data(
     id: Uuid,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    customer_branch: Option<Uuid>,
 ) -> AppResult<ReconOut> {
     let p = sqlx::query!(
         "select name, kind, role, inn, phone from parties where id = $1",
@@ -1376,7 +1439,12 @@ pub(crate) async fn reconciliation_data(
     .ok_or(AppError::NotFound)?;
     // Клиент общий: его акт — по всем филиалам, с названием филиала у строки. Поставщик общий,
     // а долг ему — у каждого филиала свой: акт — только филиала запроса (SPEC-33 §2).
-    let only: Option<Uuid> = (p.role == "supplier").then_some(branch_id);
+    // Кабинет юрлица выбирает филиал (задача 036) — акт клиента только этого филиала.
+    let only: Option<Uuid> = if p.role == "supplier" {
+        Some(branch_id)
+    } else {
+        customer_branch
+    };
     let several = crate::api::branches::several(&mut *conn).await? && only.is_none();
     let bounds = sqlx::query!(
         r#"select coalesce(min(business_date), (now() at time zone 'Asia/Bishkek')::date) as "first!",
@@ -1818,6 +1886,10 @@ pub async fn post_repayment_tx(
     }
     let ledger_id =
         first_ledger.ok_or_else(|| AppError::Internal("погашение без записи".into()))?;
+    // Долги раздельно (задача 036): клиенту — долг этого филиала, как в его карточке.
+    if !supplier {
+        balance = customer_balance(&mut *conn, req.party_id, branch_id).await?;
+    }
     ops::audit(
         &mut *conn,
         ctx,
@@ -1853,6 +1925,10 @@ pub(crate) async fn repayment_parts(
     branch_id: Uuid,
     amount: i64,
 ) -> AppResult<Vec<(Uuid, i64)>> {
+    // Долги раздельно (задача 036): всё — в долг этого филиала, переплата — аванс здесь же.
+    if separate_debts(&mut *conn, branch_id).await? {
+        return Ok(vec![(branch_id, amount)]);
+    }
     let balances = sqlx::query!(
         r#"select branch_id, balance_tyiyn from party_balances
            where party_id = $1 and balance_tyiyn > 0"#,

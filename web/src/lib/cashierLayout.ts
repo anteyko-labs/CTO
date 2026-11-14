@@ -115,6 +115,11 @@ export interface CashierSettings {
   barrel_pour_over_l: number
   /** Данные клиента в чеке «В сервис» обязательны (задача 032); мастер и вид замены — всегда. */
   service_client_required: boolean
+  /** «Принимать долг других филиалов» (задача 036): нет — погашение закрывает только долг этого
+   *  филиала, долг в других — в скобках (по умолчанию нет — просьба заказчика). */
+  repay_other_branches: boolean
+  /** «Услуги бесплатно для клиента» (задача 036): услуги в чеке — 0 с, мастеру — его ставка. */
+  services_free: boolean
 }
 
 export const DEFAULT_CASHIER: CashierSettings = {
@@ -134,6 +139,8 @@ export const DEFAULT_CASHIER: CashierSettings = {
   sale_allow_negative: false,
   service_client_required: true,
   barrel_pour_over_l: 150,
+  repay_other_branches: false,
+  services_free: false,
 }
 
 export const buttonDef = (id: ButtonId): ButtonDef | undefined => BUTTONS.find((b) => b.id === id)
