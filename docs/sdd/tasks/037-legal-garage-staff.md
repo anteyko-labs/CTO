@@ -15,10 +15,10 @@
 7. **Торговый агент** (ответ 10а, с возможностью б). Справочник «Агенты» (общий на филиалы: имя, телефон, «Процент агенту» — по умолчанию 0). В кассе — необязательное поле «Кто направил». Отчёт «Агенты» (владелец): по агенту — чеков, сумма; если процент > 0 — «Агенту причитается N с»; выплата — расходом «Агенту» из существующих расходов.
 
 ## Данные, маршруты, права
-- Миграции 0111–0113: `vehicles.status` (`active`/`pending`/`rejected`, по умолчанию `active`), `vehicles.paid_by_party_id`, `vehicle_requests` (кто, откуда, решение, причина; append-only); `employee_days_off(employee_id, day, branch_id)`, `employees.active_until date null`; `agents` и `sales.agent_id null`.
+- Миграции 0112–0114 (0111 занята задачей 038): `vehicles.status` (`active`/`pending`/`rejected`, по умолчанию `active`), `vehicles.paid_by_party_id`, `vehicle_requests` (кто, откуда, решение, причина; append-only); `employee_days_off(employee_id, day, branch_id)`, `employees.active_until date null`; `agents` и `sales.agent_id null`.
 - `POST /client/vehicles`, `GET /client/requests`, `POST /client/requests/{id}/approve|reject`; `GET /parties/{id}/requests`, `POST /parties/{id}/requests/{id}/approve|reject`; `POST /parties/{id}/recount` (владелец); `GET|PUT /staff/days-off`; `GET|POST|PATCH /agents`, `GET /reports/agents`. Всё — с `op_id`, в обход `branches.rs`.
 - Право `staff_schedule` «График выходных» (группа «Справочники», не по умолчанию; прав 36, по умолчанию 26). События: `party.vehicle_request`, `party.recount`, `staff.day_off`.
-- ADR-198: машина с оплатой фирмой и подтверждение.
+- ADR-199: машина с оплатой фирмой и подтверждение (ADR-198 занят задачей 038).
 
 ## Не входит
 Свой бот на филиал; выплата агенту отдельной ведомостью; график смен по часам; QR на доп. экране (есть).

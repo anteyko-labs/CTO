@@ -183,6 +183,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
   const writeoff = t.defect_writeoff_tyiyn ?? 0
   const defectDiff = t.defect_diff_tyiyn ?? 0
   const returnDiff = t.return_diff_tyiyn ?? 0
+  const ownUse = t.own_use_tyiyn ?? 0
   const branchOf = (b?: string) => (r.all_branches ? b : undefined)
   const basis = basisOf(r)
 
@@ -366,7 +367,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
   const losses: PnlNode = {
     id: 'writeoff',
     label: 'Списание и брак',
-    amount: writeoff - defectDiff - returnDiff,
+    amount: writeoff - defectDiff - returnDiff + ownUse,
     children: [
       ...(writeoff
         ? [
@@ -412,6 +413,21 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
                 id: `writeoff.return.${x.id}`,
                 label: `Возврат № ${x.number}${x.supplier ? `: ${x.supplier}` : ''}`,
                 amount: -x.diff_tyiyn,
+                doc: { date: x.date, at: x.created_at, user: x.user_name, branch: branchOf(x.branch), mark: x.reversal_of ? 'сторно' : undefined },
+              })),
+            },
+          ]
+        : []),
+      ...(ownUse
+        ? [
+            {
+              id: 'writeoff.own_use',
+              label: 'Товар на нужды магазина',
+              amount: ownUse,
+              children: (d.own_use ?? []).map((x) => ({
+                id: `writeoff.own_use.${x.id}`,
+                label: `№ ${x.number}: ${x.product} — ${unitsText(Math.abs(x.qty), x.unit)}${x.comment ? ` (${x.comment})` : ''}`,
+                amount: x.cost_tyiyn,
                 doc: { date: x.date, at: x.created_at, user: x.user_name, branch: branchOf(x.branch), mark: x.reversal_of ? 'сторно' : undefined },
               })),
             },
@@ -583,7 +599,7 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string; 
   const days: Sheet = {
     name: 'По дням',
     title: title.slice(0, 2),
-    columns: ['День', 'Выручка', 'Валовая', 'Оплата труда', 'Комиссия', 'Расходы', 'Баллы', 'Касса ±', 'Брак и возвраты', 'Чистая'].map((label) => ({ label })),
+    columns: ['День', 'Выручка', 'Валовая', 'Оплата труда', 'Комиссия', 'Расходы', 'Баллы', 'Касса ±', 'Брак, возвраты, нужды', 'Чистая'].map((label) => ({ label })),
     rows: [...r.days]
       .sort((a, b) => a.date.localeCompare(b.date))
       .map((x) => [
@@ -595,7 +611,7 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string; 
         xl.money(x.expenses_tyiyn),
         xl.money(x.bonus_tyiyn ?? 0),
         xl.money(x.cash_diff_tyiyn ?? 0),
-        xl.money((x.defect_diff_tyiyn ?? 0) - (x.defect_writeoff_tyiyn ?? 0) + (x.return_diff_tyiyn ?? 0)),
+        xl.money((x.defect_diff_tyiyn ?? 0) - (x.defect_writeoff_tyiyn ?? 0) + (x.return_diff_tyiyn ?? 0) - (x.own_use_tyiyn ?? 0)),
         xl.money(x.net_tyiyn),
       ]),
   }

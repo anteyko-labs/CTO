@@ -1,0 +1,91 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.id, w.number, w.product_id, p.name as product, p.unit, w.qty, w.cost_tyiyn,\n                  w.comment, w.reversal_of, w.created_at, coalesce(u.full_name, u.login) as \"user_name!\",\n                  exists (select 1 from own_use_writeoffs r where r.reversal_of = w.id) as \"reversed!\"\n           from own_use_writeoffs w\n           join products p on p.id = w.product_id\n           join users u on u.id = w.user_id\n           where w.branch_id = $1\n             and ($4::uuid is null and (w.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n                  or w.id = $4)\n           order by w.created_at desc\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "product",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "user_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "28b355fa14dfb1e31bcb66f29748b2d7ec890fbecad997ef483db2aa4622e631"
+}

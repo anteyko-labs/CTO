@@ -310,6 +310,23 @@ pub struct SupplierReturnRow {
     pub branch: String,
 }
 
+/// Свой товар на нужды магазина (задача 038): себестоимость списанного, сторно — с минусом.
+#[derive(Serialize)]
+pub struct OwnUseRow {
+    pub id: Uuid,
+    pub number: i64,
+    pub date: NaiveDate,
+    pub product: String,
+    pub unit: String,
+    pub qty: i64,
+    pub cost_tyiyn: i64,
+    pub comment: String,
+    pub reversal_of: Option<Uuid>,
+    pub user_name: String,
+    pub created_at: DateTime<Utc>,
+    pub branch: String,
+}
+
 /// Движение денег, которое прибыль не меняет (SPEC-08): оплата поставщику, изъятие, перевод.
 #[derive(Serialize)]
 pub struct MoneyRow {
@@ -347,6 +364,7 @@ pub struct PnlDetail {
     pub cash_diffs: Vec<CashDiffRow>,
     pub defects: Vec<DefectRow>,
     pub supplier_returns: Vec<SupplierReturnRow>,
+    pub own_use: Vec<OwnUseRow>,
     pub not_in_profit: Vec<MoneyRow>,
     /// Оклад за незаконченный период без начисления — справочно, в чистую не входит
     /// (задача 003 Н12б).
@@ -765,6 +783,42 @@ pub async fn detail(
     })
     .collect();
 
+    let own_use = sqlx::query!(
+        r#"select w.id, w.number, (w.created_at at time zone 'Asia/Bishkek')::date as "date!",
+                  p.name as product, p.unit, w.qty, w.cost_tyiyn, w.comment, w.reversal_of,
+                  u.full_name as user_name, w.created_at
+           from own_use_writeoffs w
+           join products p on p.id = w.product_id
+           join users u on u.id = w.user_id
+           where w.branch_id = $1
+             and (w.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(w.created_at, $4, $5)
+           order by w.created_at"#,
+        b,
+        from,
+        to,
+        w.start,
+        w.end
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| OwnUseRow {
+        id: r.id,
+        number: r.number,
+        date: r.date,
+        product: r.product,
+        unit: r.unit,
+        qty: r.qty,
+        cost_tyiyn: r.cost_tyiyn,
+        comment: r.comment,
+        reversal_of: r.reversal_of,
+        user_name: r.user_name,
+        created_at: r.created_at,
+        branch: branch.clone(),
+    })
+    .collect();
+
     let not_in_profit = sqlx::query!(
         r#"select m.id, m.kind, (m.created_at at time zone 'Asia/Bishkek')::date as "date!",
                   m.amount_tyiyn, c.name as account_name, sup.name as "payee?", m.comment,
@@ -820,6 +874,7 @@ pub async fn detail(
         cash_diffs,
         defects,
         supplier_returns,
+        own_use,
         not_in_profit,
         salary_expected,
     })

@@ -179,7 +179,7 @@ export default function Profit() {
               <Empty>За период нет ни продаж, ни расходов</Empty>
             ) : (
               <ReportTable
-                cols={['День', 'Выручка', 'Валовая', 'Оплата труда', 'Комиссия', 'Расходы', 'Баллы', 'Касса ±', 'Брак, возвраты', 'Чистая']}
+                cols={['День', 'Выручка', 'Валовая', 'Оплата труда', 'Комиссия', 'Расходы', 'Баллы', 'Касса ±', 'Брак, возвраты, нужды', 'Чистая']}
                 rows={r.data.days.map((x) => ({
                   key: x.date,
                   cells: [
@@ -191,7 +191,7 @@ export default function Profit() {
                     <Money key="exp" value={x.expenses_tyiyn} tone="negative" />,
                     <Money key="bonus" value={x.bonus_tyiyn ?? 0} tone="negative" />,
                     <Money key="cash" value={x.cash_diff_tyiyn ?? 0} tone="negative" zero="—" />,
-                    <Money key="defect" value={(x.defect_diff_tyiyn ?? 0) - (x.defect_writeoff_tyiyn ?? 0) + (x.return_diff_tyiyn ?? 0)} tone="negative" zero="—" />,
+                    <Money key="defect" value={(x.defect_diff_tyiyn ?? 0) - (x.defect_writeoff_tyiyn ?? 0) + (x.return_diff_tyiyn ?? 0) - (x.own_use_tyiyn ?? 0)} tone="negative" zero="—" />,
                     <Money key="net" value={x.net_tyiyn} tone="negative" className="font-semibold" />,
                   ],
                 }))}

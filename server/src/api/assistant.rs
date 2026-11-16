@@ -1687,7 +1687,7 @@ async fn totals_text(
     let t = crate::api::reports::totals_for(conn, branch_id, from, to).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
     Ok(format!(
-        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\n{}: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nВозврат поставщику: разница: {}\nЧистая прибыль: {}",
+        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\n{}: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nВозврат поставщику: разница: {}\nТовар на нужды магазина: {}\nЧистая прибыль: {}",
         period_label(from, to),
         t.sales_count,
         format_som(revenue),
@@ -1708,6 +1708,7 @@ async fn totals_text(
         format_som(t.defect_writeoff_tyiyn),
         format_som_signed(t.defect_diff_tyiyn),
         format_som_signed(t.return_diff_tyiyn),
+        format_som(t.own_use_tyiyn),
         format_som(t.net_tyiyn),
     ))
 }
@@ -1724,7 +1725,7 @@ async fn by_day_text(
         let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
         let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
         lines.push(format!(
-            "{} ({}): чеков {}, выручка {}, валовая {}, {} {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, возврат поставщику: разница {}, чистая прибыль {}",
+            "{} ({}): чеков {}, выручка {}, валовая {}, {} {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, возврат поставщику: разница {}, товар на нужды магазина {}, чистая прибыль {}",
             day.format("%d.%m.%Y"),
             weekday(day),
             t.sales_count,
@@ -1743,6 +1744,7 @@ async fn by_day_text(
             format_som(t.defect_writeoff_tyiyn),
             format_som_signed(t.defect_diff_tyiyn),
             format_som_signed(t.return_diff_tyiyn),
+            format_som(t.own_use_tyiyn),
             format_som(t.net_tyiyn),
         ));
         let Some(next) = day.succ_opt() else { break };

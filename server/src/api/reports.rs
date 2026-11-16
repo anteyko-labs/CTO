@@ -55,6 +55,9 @@ pub struct Totals {
     /// «Возврат поставщику: разница»: сумма возврата минус себестоимость возвращённого товара —
     /// минус убыток, плюс доход (SPEC-29 §9).
     pub return_diff_tyiyn: i64,
+    /// «Товар на нужды магазина»: себестоимость своего товара, списанного на нужды (задача 038).
+    #[serde(default)]
+    pub own_use_tyiyn: i64,
     pub net_tyiyn: i64,
     pub margin_bp: Option<i64>,
     pub sales_count: i64,
@@ -85,6 +88,8 @@ pub(crate) struct DayRow {
     pub(crate) defect_diff_tyiyn: i64,
     /// Возврат поставщику: разница (SPEC-29 §9).
     pub(crate) return_diff_tyiyn: i64,
+    /// Товар на нужды магазина (задача 038).
+    pub(crate) own_use_tyiyn: i64,
     pub(crate) net_tyiyn: i64,
 }
 
@@ -505,6 +510,19 @@ async fn totals_in(
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Свой товар на нужды магазина (задача 038) — по дню записи; сторно — со своим знаком.
+    let own_use = sqlx::query_scalar!(
+        r#"select coalesce(sum(cost_tyiyn), 0)::bigint as "v!" from own_use_writeoffs
+           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+             and public.pnl_in_window(created_at, $4, $5)"#,
+        branch_id,
+        from,
+        to,
+        w.start,
+        w.end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     Ok(assemble(Parts {
         goods: lines.goods,
         services: lines.services,
@@ -520,6 +538,7 @@ async fn totals_in(
         defect_writeoff: defects.writeoff,
         defect_diff: defects.diff,
         return_diff,
+        own_use,
         count,
     }))
 }
@@ -540,6 +559,7 @@ struct Parts {
     defect_writeoff: i64,
     defect_diff: i64,
     return_diff: i64,
+    own_use: i64,
     count: i64,
 }
 
@@ -565,6 +585,7 @@ fn assemble(p: Parts) -> Totals {
         defect_writeoff_tyiyn: p.defect_writeoff,
         defect_diff_tyiyn: p.defect_diff,
         return_diff_tyiyn: p.return_diff,
+        own_use_tyiyn: p.own_use,
         net_tyiyn: gross
             .saturating_sub(p.payroll)
             .saturating_sub(p.fee)
@@ -573,7 +594,8 @@ fn assemble(p: Parts) -> Totals {
             .saturating_add(p.cash_diff)
             .saturating_sub(p.defect_writeoff)
             .saturating_add(p.defect_diff)
-            .saturating_add(p.return_diff),
+            .saturating_add(p.return_diff)
+            .saturating_sub(p.own_use),
         margin_bp: (revenue != 0)
             .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
             .flatten(),
@@ -703,6 +725,15 @@ pub async fn totals_between(
     )
     .fetch_one(&mut *conn)
     .await?;
+    let own_use = sqlx::query_scalar!(
+        r#"select coalesce(sum(cost_tyiyn), 0)::bigint as "v!" from own_use_writeoffs
+           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     Ok(assemble(Parts {
         goods: lines.goods,
         services: lines.services,
@@ -718,6 +749,7 @@ pub async fn totals_between(
         defect_writeoff: defects.writeoff,
         defect_diff: defects.diff,
         return_diff,
+        own_use,
         count: lines.count,
     }))
 }
@@ -792,6 +824,7 @@ pub async fn fixes_totals(
         defect_writeoff: 0,
         defect_diff: 0,
         return_diff: 0,
+        own_use: 0,
         count: 0,
     }))
 }
@@ -982,6 +1015,11 @@ async fn profit_in(
                   from supplier_returns x
                   where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
                     and public.pnl_in_window(x.created_at, $4, $5)
+                  group by 1),
+           ou as (select (x.created_at at time zone 'Asia/Bishkek')::date as day, sum(x.cost_tyiyn) as v
+                  from own_use_writeoffs x
+                  where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                    and public.pnl_in_window(x.created_at, $4, $5)
                   group by 1)
            select d.day as "day!",
              coalesce(sl.revenue, 0)::bigint as "revenue!",
@@ -993,7 +1031,8 @@ async fn profit_in(
              coalesce(cd.v, 0)::bigint as "cash_diff!",
              coalesce(dr.writeoff, 0)::bigint as "defect_writeoff!",
              coalesce(dr.diff, 0)::bigint as "defect_diff!",
-             coalesce(sr.v, 0)::bigint as "return_diff!"
+             coalesce(sr.v, 0)::bigint as "return_diff!",
+             coalesce(ou.v, 0)::bigint as "own_use!"
            from d
            left join sl on sl.day = d.day
            left join rv on rv.day = d.day
@@ -1005,6 +1044,7 @@ async fn profit_in(
            left join cd on cd.day = d.day
            left join dr on dr.day = d.day
            left join sr on sr.day = d.day
+           left join ou on ou.day = d.day
            order by d.day desc"#,
         branch_id,
         from,
@@ -1028,6 +1068,7 @@ async fn profit_in(
         defect_writeoff_tyiyn: r.defect_writeoff,
         defect_diff_tyiyn: r.defect_diff,
         return_diff_tyiyn: r.return_diff,
+        own_use_tyiyn: r.own_use,
         net_tyiyn: r
             .gross
             .saturating_sub(r.payroll)
@@ -1037,7 +1078,8 @@ async fn profit_in(
             .saturating_add(r.cash_diff)
             .saturating_sub(r.defect_writeoff)
             .saturating_add(r.defect_diff)
-            .saturating_add(r.return_diff),
+            .saturating_add(r.return_diff)
+            .saturating_sub(r.own_use),
     })
     .collect();
 

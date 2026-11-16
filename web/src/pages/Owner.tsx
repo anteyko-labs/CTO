@@ -421,6 +421,7 @@ export function OwnerDashboard() {
               {(t.cash_diff_tyiyn ?? 0) !== 0 && <Step label="Недостача / излишек кассы" value={t.cash_diff_tyiyn ?? 0} signed />}
               {(t.defect_writeoff_tyiyn ?? 0) !== 0 && <Step label="Списание брака" value={t.defect_writeoff_tyiyn ?? 0} minus />}
               {(t.defect_diff_tyiyn ?? 0) !== 0 && <Step label="Брак: разница возмещения" value={t.defect_diff_tyiyn ?? 0} signed />}
+              {(t.own_use_tyiyn ?? 0) !== 0 && <Step label="Товар на нужды магазина" value={t.own_use_tyiyn ?? 0} minus />}
               {(t.return_diff_tyiyn ?? 0) !== 0 && <Step label="Возврат поставщику: разница" value={t.return_diff_tyiyn ?? 0} signed />}
               <Step label="Чистая прибыль" value={t.net_tyiyn} strong />
             </div>
@@ -518,6 +519,7 @@ function ownerSheets(data: Dashboard, report: ProfitReport | null, o: { title: s
     ...opt('Недостача / излишек кассы', t.cash_diff_tyiyn, 0),
     ...opt('Списание брака', t.defect_writeoff_tyiyn ? -t.defect_writeoff_tyiyn : 0, 0),
     ...opt('Брак: разница возмещения', t.defect_diff_tyiyn, 0),
+    ...opt('Товар на нужды магазина', t.own_use_tyiyn ? -t.own_use_tyiyn : 0, 0),
     ...opt('Возврат поставщику: разница', t.return_diff_tyiyn, 0),
     line('Чистая прибыль', t.net_tyiyn, true),
     { cells: ['Чеков', xl.int(t.sales_count)] as Cell[] },

@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.id, w.number, (w.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  p.name as product, p.unit, w.qty, w.cost_tyiyn, w.comment, w.reversal_of,\n                  u.full_name as user_name, w.created_at\n           from own_use_writeoffs w\n           join products p on p.id = w.product_id\n           join users u on u.id = w.user_id\n           where w.branch_id = $1\n             and (w.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n             and public.pnl_in_window(w.created_at, $4, $5)\n           order by w.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "date!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "product",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "cf7012da51d0b1ae20cf466cb9c44c9a0df51198b66ee24a9574b0267c3b57ad"
+}

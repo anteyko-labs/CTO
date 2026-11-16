@@ -362,7 +362,10 @@ const OLD_PROFIT_DAYS: &str = r#"with d as (select generate_series($2::date, $3:
                          and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_diff!",
              coalesce((select sum(x.diff_tyiyn) from supplier_returns x
                        where x.branch_id = $1
-                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "return_diff!"
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "return_diff!",
+             coalesce((select sum(x.cost_tyiyn) from own_use_writeoffs x
+                       where x.branch_id = $1
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "own_use!"
            from d order by d.day desc"#;
 
 /// Прибыль по дням одной сводкой на источник даёт те же числа, что прежний расчёт по дням.
@@ -389,6 +392,7 @@ async fn assert_profit_days_as_before(w: &World, from: chrono::NaiveDate, to: ch
         i64,
         i64,
         i64,
+        i64,
     );
     let rows: Vec<Row> = sqlx::query_as(OLD_PROFIT_DAYS)
         .bind(branch)
@@ -400,11 +404,11 @@ async fn assert_profit_days_as_before(w: &World, from: chrono::NaiveDate, to: ch
     let old: Vec<Value> = rows
         .into_iter()
         .map(|r| {
-            let net = r.2 - r.3 - r.4 - r.5 - r.6 + r.7 - r.8 + r.9 + r.10;
+            let net = r.2 - r.3 - r.4 - r.5 - r.6 + r.7 - r.8 + r.9 + r.10 - r.11;
             json!({
                 "date": r.0, "revenue_tyiyn": r.1, "gross_tyiyn": r.2, "payroll_tyiyn": r.3,
                 "expenses_tyiyn": r.4, "fee_tyiyn": r.5, "bonus_tyiyn": r.6, "cash_diff_tyiyn": r.7,
-                "defect_writeoff_tyiyn": r.8, "defect_diff_tyiyn": r.9, "return_diff_tyiyn": r.10,
+                "defect_writeoff_tyiyn": r.8, "defect_diff_tyiyn": r.9, "return_diff_tyiyn": r.10, "own_use_tyiyn": r.11,
                 "net_tyiyn": net
             })
         })

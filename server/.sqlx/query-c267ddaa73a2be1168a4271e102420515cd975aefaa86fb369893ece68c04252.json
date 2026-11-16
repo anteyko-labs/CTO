@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.number, w.product_id, w.qty, w.cost_tyiyn, w.reversal_of, w.user_id,\n                  (w.created_at at time zone 'Asia/Bishkek')::date as \"day!\", p.name, p.unit,\n                  exists (select 1 from own_use_writeoffs r where r.reversal_of = w.id) as \"reversed!\"\n           from own_use_writeoffs w join products p on p.id = w.product_id\n           where w.id = $1 and w.branch_id = $2\n           for update of w",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 7,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "c267ddaa73a2be1168a4271e102420515cd975aefaa86fb369893ece68c04252"
+}

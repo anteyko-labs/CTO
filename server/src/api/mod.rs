@@ -46,6 +46,7 @@ pub mod oil;
 pub mod oil_book;
 pub mod old_catalog;
 pub mod optima;
+pub mod own_use;
 pub mod paging;
 pub mod parties;
 pub mod pay_fix;
@@ -99,6 +100,7 @@ pub fn routes() -> Router<AppState> {
         .merge(defects::routes())
         .merge(deliveries::routes())
         .merge(expenses::routes())
+        .merge(own_use::routes())
         .merge(favorites::routes())
         .merge(label_jobs::routes())
         .merge(fees::routes())

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into own_use_writeoffs (id, branch_id, number, product_id, qty, cost_tyiyn, comment,\n                                          reversal_of, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "66dfcb50e53d416259db40c1de625219e4e0d7bb11fa488c12bc51675539980c"
+}

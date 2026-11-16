@@ -214,3 +214,8 @@ payment_method_fees               -- прежние ставки по спосо
 - **Время у документов.** В раскрытии — дата и время проведения; проведён не в свой день — «<дата>, проведено <дата и время>». В выгрузке — столбец «Проведено».
 - Проверка: `server/tests/pnl.rs` (`payroll_enters_profit_when_paid`, `withheld_shortage_comes_back_with_a_smaller_payout`, `profit_period_by_hours`, `shift_report_counts_payouts_of_its_time`), `server/tests/pay_fix.rs` (`closed_shift_fix_counts_only_the_shortage_when_paid_basis`), `web/src/lib/pnl.test.ts`, e2e `web/e2e/profit-pnl.spec.ts`.
 
+
+## Дополнено задачей 038 (16.11.2026): «Товар на нужды магазина» (ADR-198)
+
+- Новая строка `own_use_tyiyn` — себестоимость своего товара, списанного на нужды магазина (SPEC-06), по дню записи (Бишкек), сторно — со своим знаком. Чистая прибыль = … − «Товар на нужды магазина».
+- На экране — в группе «Списание и брак», документы списаний — в раскрытии (`detail.own_use`). В таблице по дням — в колонке «Брак, возвраты, нужды». Та же строка — в прибыли смены (ключ `own_use`), в итоге дня бота владельца и в ответах помощника.

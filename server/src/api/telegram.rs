@@ -2564,6 +2564,12 @@ async fn day_report(
             format_som_signed(t.return_diff_tyiyn)
         ));
     }
+    if t.own_use_tyiyn != 0 {
+        minus.push(format!(
+            "  − товар на нужды магазина: {}",
+            format_som(t.own_use_tyiyn)
+        ));
+    }
     let (head, earned) = if is_today {
         ("📊 Сегодня", "👥 Заработали сегодня")
     } else {

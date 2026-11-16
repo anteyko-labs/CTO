@@ -870,7 +870,7 @@ async fn sales_part(
 /// чистая прибыль.
 fn profit_lines(t: &crate::api::reports::Totals) -> Vec<Line> {
     let gross = t.gross_tyiyn.saturating_add(t.revaluation_tyiyn);
-    let parts: [(&str, &str, i64); 10] = [
+    let parts: [(&str, &str, i64); 11] = [
         ("gross", "Валовая прибыль", gross),
         ("revaluation", "Переоценка и ревизия", -t.revaluation_tyiyn),
         (
@@ -905,6 +905,7 @@ fn profit_lines(t: &crate::api::reports::Totals) -> Vec<Line> {
             "Возврат поставщику: разница",
             t.return_diff_tyiyn,
         ),
+        ("own_use", "Товар на нужды магазина", -t.own_use_tyiyn),
     ];
     parts
         .into_iter()

@@ -1044,6 +1044,8 @@ export interface ProfitTotals {
   defect_diff_tyiyn?: number
   /** «Возврат поставщику: разница»: минус — убыток, плюс — доход (SPEC-29 §9). */
   return_diff_tyiyn?: number
+  /** «Товар на нужды магазина» — себестоимость своего товара, списанного на нужды (задача 038). */
+  own_use_tyiyn?: number
   net_tyiyn: number
   margin_bp: number | null
   sales_count: number
@@ -1066,6 +1068,7 @@ export interface ProfitReport {
     defect_writeoff_tyiyn?: number
     defect_diff_tyiyn?: number
     return_diff_tyiyn?: number
+    own_use_tyiyn?: number
     net_tyiyn: number
   }[]
   articles: { name: string; amount_tyiyn: number }[]
@@ -1133,6 +1136,8 @@ export interface ProfitDetail {
     branch: string
   }[]
   supplier_returns: { id: string; number: number; date: string; supplier: string | null; diff_tyiyn: number; reversal_of: string | null; user_name: string; created_at?: string; branch: string }[]
+  /** Свой товар на нужды магазина (задача 038); в старых ответах поля нет. */
+  own_use?: { id: string; number: number; date: string; product: string; unit: StockUnit; qty: number; cost_tyiyn: number; comment: string; reversal_of: string | null; user_name: string; created_at?: string; branch: string }[]
   not_in_profit: {
     id: string
     kind: 'supplier_payment' | 'cash_out' | 'transfer_out'
