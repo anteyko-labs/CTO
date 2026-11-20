@@ -415,8 +415,11 @@ pub enum Keys {
     /// Владелец в режиме вопросов: «✖ Закончить» и кнопки владельца.
     OwnerAsking,
     Customer,
-    /// Работник (SPEC-23): «Сегодня», «Месяц», «Удержания и премии», «Мои работы».
+    /// Работник (SPEC-23): «Сегодня», «Месяц», «Удержания и премии», «Мои работы» и
+    /// «▶️ Начать рабочий день» (задача 039).
     Employee,
+    /// Работник с начатым рабочим днём: вместо «Начать» — «⏹ Закончить рабочий день».
+    EmployeeWorking,
     /// Номер и у работника, и у клиента: «Мой заработок» и кнопки клиента.
     Both,
     ConfirmLeave,
@@ -451,6 +454,13 @@ impl Keys {
                 vec![json!(BTN_LEAVE)],
             ],
             Keys::Employee => vec![
+                vec![json!(bot_staff::BTN_WORK_START)],
+                vec![json!(bot_staff::BTN_DAY), json!(bot_staff::BTN_MONTH)],
+                vec![json!(bot_staff::BTN_ADJUST), json!(bot_staff::BTN_WORKS)],
+                vec![json!(BTN_LEAVE)],
+            ],
+            Keys::EmployeeWorking => vec![
+                vec![json!(bot_staff::BTN_WORK_STOP)],
                 vec![json!(bot_staff::BTN_DAY), json!(bot_staff::BTN_MONTH)],
                 vec![json!(bot_staff::BTN_ADJUST), json!(bot_staff::BTN_WORKS)],
                 vec![json!(BTN_LEAVE)],
@@ -1113,6 +1123,10 @@ async fn fit_keys(conn: &mut PgConnection, chat_id: i64, mut r: Reply) -> AppRes
         .await?;
         if both {
             r.keys = Keys::Both;
+        } else if r.keys == Keys::Employee
+            && crate::api::faceid::chat_working(conn, chat_id).await?
+        {
+            r.keys = Keys::EmployeeWorking;
         }
     }
     Ok(r)
@@ -1210,6 +1224,20 @@ async fn message(
     } else {
         None
     };
+    // «▶️ Начать / ⏹ Закончить рабочий день» (задача 039, ADR-200): заявка ждёт лица на терминале.
+    if let Some(e) = &employee
+        && let Some(start) = bot_staff::workday_button(text)
+    {
+        let mut r = crate::api::faceid::press(conn, e, chat_id, start).await?;
+        if let Some((user, _)) = &staff_admin {
+            r.keys = Keys::Admin(
+                crate::api::bot_admin::menu(conn, user)
+                    .await?
+                    .with_earnings(),
+            );
+        }
+        return Ok(r);
+    }
     if let Some(e) = &employee
         && let Some(s) = bot_staff::section(text)
     {
@@ -4592,7 +4620,7 @@ impl Api {
         self.deliver(chat_id, text, None, true).await
     }
 
-    async fn push_with(&self, chat_id: i64, text: &str, markup: Value) -> Delivery {
+    pub async fn push_with(&self, chat_id: i64, text: &str, markup: Value) -> Delivery {
         self.deliver(chat_id, text, Some(markup), true).await
     }
 
@@ -5029,7 +5057,7 @@ pub struct PassOutcome {
 }
 
 impl PassOutcome {
-    fn retry(&mut self, after: Duration, all: bool) {
+    pub(crate) fn retry(&mut self, after: Duration, all: bool) {
         self.pause = Some(self.pause.map_or(after, |p| p.max(after)));
         self.stopped |= all;
     }
@@ -5165,6 +5193,11 @@ pub async fn notify_pass(
         out.pause = out.pause.max(b.pause);
     }
     let a = acceptance_pass(conn, api).await?;
+    if a.stopped {
+        return Ok(a);
+    }
+    out.pause = out.pause.max(a.pause);
+    let a = crate::api::faceid::notify_pass(conn, api).await?;
     if a.stopped {
         return Ok(a);
     }

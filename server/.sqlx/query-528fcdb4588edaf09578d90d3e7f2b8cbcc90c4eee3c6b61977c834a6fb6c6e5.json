@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update employees set faceid_user_id = $2 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "528fcdb4588edaf09578d90d3e7f2b8cbcc90c4eee3c6b61977c834a6fb6c6e5"
+}

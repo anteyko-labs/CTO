@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.id, w.employee_id, e.full_name, w.started_at, w.ended_at, w.close_reason,\n                  u.full_name as \"closed_by?\",\n                  (w.started_at at time zone 'Asia/Bishkek')::date as \"day!\",\n                  case when w.ended_at is null then null\n                       else (extract(epoch from w.ended_at - w.started_at) / 60)::bigint end as minutes,\n                  (w.started_at at time zone 'Asia/Bishkek')::date\n                      < (now() at time zone 'Asia/Bishkek')::date as \"past!\"\n           from work_sessions w join employees e on e.id = w.employee_id\n           left join users u on u.id = w.closed_by\n           where w.branch_id = $1\n             and (w.started_at at time zone 'Asia/Bishkek')::date >= $2\n             and (w.started_at at time zone 'Asia/Bishkek')::date < $3\n           order by e.full_name, w.started_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "ended_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "close_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "closed_by?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 8,
+        "name": "minutes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "past!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0995e7bb053421ce77856e6bdb2c456b9d8888b9cedcfd79c4144caefd463a84"
+}

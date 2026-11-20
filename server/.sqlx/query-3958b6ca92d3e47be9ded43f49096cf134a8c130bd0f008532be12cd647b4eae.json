@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into faceid_events (id, branch_id, dedup, user_id, employee_id, outcome, payload)\n           values ($1, $2, $3, $4, $5, $6, $7) on conflict (dedup) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3958b6ca92d3e47be9ded43f49096cf134a8c130bd0f008532be12cd647b4eae"
+}

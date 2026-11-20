@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update workday_requests set status = 'done', done_at = now() where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d32ff6a3a3552ce0d061d47f2301d4e5cd824ad32abfc8a4a8053d8e8a7436f"
+}

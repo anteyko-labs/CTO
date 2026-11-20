@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update workday_requests set notified_at = now() where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "407ee69f1274739c6152ddf2b620c7660f382ce9dd4f2b7ec2ecb607e4c4d61d"
+}

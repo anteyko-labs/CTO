@@ -45,8 +45,8 @@ test('владелец выбирает, что можно администра�
   await page.getByRole('link', { name: 'Настройки' }).click()
   await page.getByRole('link', { name: 'Пользователи и права', exact: true }).click()
   const row = page.getByRole('row', { name: new RegExp(admin) })
-  await expect(row.getByRole('button', { name: '26 из 35' })).toBeVisible()
-  await row.getByRole('button', { name: '26 из 35' }).click()
+  await expect(row.getByRole('button', { name: '26 из 36' })).toBeVisible()
+  await row.getByRole('button', { name: '26 из 36' }).click()
   const box = page.getByTestId('permissions')
   for (const group of ['Разделы', 'Касса', 'Деньги', 'Склад', 'Справочники']) await expect(box.getByRole('group', { name: group })).toBeVisible()
   await expect(box.getByTestId('owner-only')).toContainText('Себестоимость')
@@ -59,7 +59,7 @@ test('владелец выбирает, что можно администра�
   await box.getByLabel('Скидка в чеке').check()
   await page.getByRole('button', { name: 'Сохранить' }).click()
   await expect(page.getByText('Права сохранены')).toBeVisible()
-  await expect(row.getByRole('button', { name: '25 из 35' })).toBeVisible()
+  await expect(row.getByRole('button', { name: '25 из 36' })).toBeVisible()
 
   // Администратор без права: пунктов меню нет, сервер отвечает «Нет права: Расходы».
   const { ctx, page: a } = await adminPage(browser, admin, password)
@@ -109,27 +109,27 @@ test('группа целиком, «Как у…» и разделы меню; 
   // Пункт меню «Пользователи и права» ведёт на тот же экран.
   await page.getByRole('link', { name: 'Пользователи и права' }).click()
   const rowA = page.getByRole('row', { name: new RegExp(a.login) })
-  await rowA.getByRole('button', { name: '26 из 35' }).click()
+  await rowA.getByRole('button', { name: '26 из 36' }).click()
   const box = page.getByTestId('permissions')
   // «Деньги»: «Включить всё», затем «Выключить всё».
   await box.getByTestId('permission-group-Деньги').click()
-  await expect(box.getByTestId('permission-count')).toHaveText('30 из 35')
+  await expect(box.getByTestId('permission-count')).toHaveText('30 из 36')
   await expect(box.getByTestId('permission-group-Деньги')).toHaveText('Выключить всё')
   await box.getByTestId('permission-group-Деньги').click()
-  await expect(box.getByTestId('permission-count')).toHaveText('23 из 35')
+  await expect(box.getByTestId('permission-count')).toHaveText('23 из 36')
   await box.getByLabel('Поступления').uncheck()
   await box.getByLabel('Долги: должники и долги поставщикам').uncheck()
-  await expect(box.getByTestId('permission-count')).toHaveText('21 из 35')
+  await expect(box.getByTestId('permission-count')).toHaveText('21 из 36')
   // Набор «По умолчанию» расставляет флажки, но сохраняет только «Сохранить».
   await box.getByRole('button', { name: 'По умолчанию' }).click()
-  await expect(box.getByTestId('permission-count')).toHaveText('26 из 35')
+  await expect(box.getByTestId('permission-count')).toHaveText('26 из 36')
   await box.getByTestId('permission-group-Деньги').click()
   await box.getByTestId('permission-group-Деньги').click()
   await box.getByLabel('Поступления').uncheck()
   await box.getByLabel('Долги: должники и долги поставщикам').uncheck()
   await page.getByRole('button', { name: 'Сохранить' }).click()
   await expect(page.getByText('Права сохранены')).toBeVisible()
-  await expect(rowA.getByRole('button', { name: '21 из 35' })).toBeVisible()
+  await expect(rowA.getByRole('button', { name: '21 из 36' })).toBeVisible()
 
   // Администратор А: ни денег, ни «Поступлений», ни «Долгов»; прямой адрес уводит на кассу.
   {
@@ -146,11 +146,11 @@ test('группа целиком, «Как у…» и разделы меню; 
 
   // «Как у…» — администратору Б тот же набор.
   const rowB = page.getByRole('row', { name: new RegExp(b.login) })
-  await rowB.getByRole('button', { name: '26 из 35' }).click()
+  await rowB.getByRole('button', { name: '26 из 36' }).click()
   await box.getByTestId('permission-copy').selectOption({ label: `razdel ${RUN} (${a.login})` })
-  await expect(box.getByTestId('permission-count')).toHaveText('21 из 35')
+  await expect(box.getByTestId('permission-count')).toHaveText('21 из 36')
   await page.getByRole('button', { name: 'Сохранить' }).click()
-  await expect(rowB.getByRole('button', { name: '21 из 35' })).toBeVisible()
+  await expect(rowB.getByRole('button', { name: '21 из 36' })).toBeVisible()
 
   // Открытая касса Б: права перечитываются при возврате на вкладку (и раз в минуту) — без перезагрузки.
   await second.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))

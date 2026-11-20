@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.created_at, f.user_id, e.full_name as \"employee?\", f.outcome\n           from faceid_events f left join employees e on e.id = f.employee_id\n           where f.branch_id = $1 order by f.created_at desc limit 20",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "employee?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "outcome",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c5cd2c8183e4c0225f74538bd25ab2e1c5dec0fe71ed2083c9343f9ac7193b6a"
+}

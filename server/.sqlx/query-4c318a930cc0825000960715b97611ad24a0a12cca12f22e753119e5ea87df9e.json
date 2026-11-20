@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from telegram_employees t\n                          join work_sessions w on w.employee_id = t.employee_id and w.ended_at is null\n                          where t.chat_id = $1) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4c318a930cc0825000960715b97611ad24a0a12cca12f22e753119e5ea87df9e"
+}

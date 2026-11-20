@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 82] = [
+pub(crate) const WATCHED: [&str; 83] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -109,6 +109,8 @@ pub(crate) const WATCHED: [&str; 82] = [
     "telegram.admin_unlink",
     // Цена закупки в карточке товара: владелец или администратор с правом (задача 031).
     "stock.purchase_price",
+    // Рабочий день начат или закончен по лицу на терминале (задача 039); в бот по умолчанию не идёт.
+    "staff.workday",
 ];
 
 #[derive(Serialize)]
@@ -658,6 +660,14 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 money(num("old_price_tyiyn")),
                 money(num("price_tyiyn"))
             ),
+        ),
+        "staff.workday" => (
+            if text("kind") == "stop" {
+                "Рабочий день закончен".into()
+            } else {
+                "Рабочий день начат".into()
+            },
+            format!("{}: по лицу на терминале", text("name")),
         ),
         "product.barcode" => (
             "К товару привязан код".into(),

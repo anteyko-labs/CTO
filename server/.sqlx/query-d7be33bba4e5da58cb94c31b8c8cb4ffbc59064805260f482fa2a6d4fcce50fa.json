@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update work_sessions set ended_at = $2, closed_by = $3, close_reason = $4 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7be33bba4e5da58cb94c31b8c8cb4ffbc59064805260f482fa2a6d4fcce50fa"
+}

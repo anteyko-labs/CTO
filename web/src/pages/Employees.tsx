@@ -17,6 +17,7 @@ import { formatDate, formatPercentBp, formatSom, parsePercentBp, parseSom } from
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Employee, EmployeeLogin, UserRow } from '../lib/types'
+import type { FaceIdSettings } from '../lib/faceid'
 
 type RuleKind = 'revenue_percent' | 'monthly_salary' | 'per_shift'
 
@@ -360,8 +361,42 @@ const phoneOk = (phone: string) => {
 
 /** Признак «кассир» назначает оплату (2 % и оклад) — ставит только владелец; сервер проверяет сам (ADR-059).
  *  Телефон открывает работнику его начисления в боте — его тоже задаёт только владелец (SPEC-23). */
+/** «Номер в терминале» (задача 039): UserID лица в Dahua; уникален в филиале. Владелец и право «Табель». */
+function FaceIdField({ employee }: { employee: Employee }) {
+  const cur = useLoad(() => get<FaceIdSettings>('/settings/faceid'), [])
+  const saved = cur.data?.employees.find((e) => e.id === employee.id)?.faceid_user_id ?? ''
+  const [value, setValue] = useState<string | null>(null)
+  const act = useAction()
+  const v = value ?? saved
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Номер в терминале" hint="UserID, под которым лицо заведено в терминале Face ID">
+          <input id="employee-faceid" className="w-40" value={v} disabled={!cur.data} onChange={(e) => setValue(e.target.value)} />
+        </Field>
+        <Button
+          variant="secondary"
+          disabled={!cur.data || act.busy || v.trim() === saved}
+          onClick={() =>
+            void act.run(async () => {
+              await put(`/employees/${employee.id}/faceid`, { faceid_user_id: v.trim() || null })
+              setValue(null)
+              cur.reload()
+              toast('Номер в терминале сохранён')
+            })
+          }
+        >
+          Сохранить номер
+        </Button>
+      </div>
+      <ErrorBox error={cur.error ?? act.error} />
+    </div>
+  )
+}
+
 function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose: () => void; onSaved: () => void }) {
   const owner = useUser().role === 'owner'
+  const mayTimesheet = useCan()('timesheet')
   const [form, setForm] = useState({ ...employee, phone: employee.phone ?? '' })
   // Вписанный, но не сохранённый PIN общая «Сохранить» не теряет молча (проверка 20.10.2026):
   // верный — сохраняется вместе с карточкой, неполный — ошибка.
@@ -420,6 +455,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
             Сохранить
           </Button>
         </div>
+        {mayTimesheet && <FaceIdField employee={employee} />}
         {owner && <LoginBox employee={employee} />}
         {owner && employee.is_cashier && <PinBox employee={employee} pin={pin} setPin={setPin} />}
         {owner && employee.is_cashier && <CashierRights employee={employee} />}
@@ -433,6 +469,7 @@ export default function Employees() {
   const owner = useUser().role === 'owner'
   // Заводить и править — по праву «Сотрудники» (задача 003 Н8); без него список только для чтения.
   const mayEdit = useCan()('employees')
+  const mayTimesheet = useCan()('timesheet')
   const list = useLoad(() => get<Employee[]>('/employees'), [])
   const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true, phone: '', pin: '' })
   const [adding, setAdding] = useState(false)
@@ -488,6 +525,11 @@ export default function Employees() {
         }
         actions={
           <>
+            {mayTimesheet && (
+              <Link to="/timesheet" className="inline-flex min-h-[42px] items-center px-2 text-sm text-sky-700 hover:underline">
+                Табель
+              </Link>
+            )}
             {/* Все сотрудники отбора; телефон — только владельцу, как отдаёт сервер (задача 003 Н13). */}
             <ExportButton
               file="Сотрудники"

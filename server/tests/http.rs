@@ -11774,6 +11774,8 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                 | "acceptance"
                 | "payroll_view_all"
                 | "till_barcode"
+                // Табель — в tests/faceid.rs (admin_needs_timesheet_right).
+                | "timesheet"
         ) {
             assert!(cases.iter().any(|c| c.0 == p.key), "{} без проверки", p.key);
         }
@@ -12729,7 +12731,7 @@ async fn bot_feed_settings_are_owner_only(pool: PgPool) {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["sales"], "none", "чеки по умолчанию не присылаются");
     // Привязка кода к товару (задача 005 Н3) по умолчанию выключена.
-    assert_eq!(v["off"], json!(["product.barcode"]));
+    assert_eq!(v["off"], json!(["product.barcode", "staff.workday"]));
     for _ in 0..2 {
         let (s, _, v) = call(
             &app,

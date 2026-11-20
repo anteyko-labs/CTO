@@ -29,7 +29,27 @@ pub const BTN_MONTH: &str = "📅 Месяц";
 pub const BTN_ADJUST: &str = "🧾 Удержания и премии";
 pub const BTN_WORKS: &str = "🔧 Мои работы";
 pub const BTN_EARNINGS: &str = "💼 Мой заработок";
-pub const BUTTONS: [&str; 5] = [BTN_DAY, BTN_MONTH, BTN_ADJUST, BTN_WORKS, BTN_EARNINGS];
+// Рабочий день по лицу на терминале (задача 039, ADR-200): внизу — одна из двух, по состоянию.
+pub const BTN_WORK_START: &str = "▶️ Начать рабочий день";
+pub const BTN_WORK_STOP: &str = "⏹ Закончить рабочий день";
+pub const BUTTONS: [&str; 7] = [
+    BTN_DAY,
+    BTN_MONTH,
+    BTN_ADJUST,
+    BTN_WORKS,
+    BTN_EARNINGS,
+    BTN_WORK_START,
+    BTN_WORK_STOP,
+];
+
+/// Кнопка рабочего дня: `Some(true)` — начать, `Some(false)` — закончить.
+pub fn workday_button(text: &str) -> Option<bool> {
+    match text.trim() {
+        BTN_WORK_START => Some(true),
+        BTN_WORK_STOP => Some(false),
+        _ => None,
+    }
+}
 
 /// Чат работника отвязан проверкой: карточка отключена или телефон в ней другой.
 pub const RESHARE: &str = "Номер в карточке изменился — поделитесь номером снова: нажмите «📱 Поделиться номером». Если вашу карточку отключили, обратитесь к владельцу.";

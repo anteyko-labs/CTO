@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select window_min from faceid_devices where branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "window_min",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3967d8876b7a5c082ec20de039dec6b4957966529ebfc4641956ae6ada4dbe41"
+}
