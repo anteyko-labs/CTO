@@ -252,12 +252,14 @@ function Shell() {
   }, [touch])
   if (!user) return <Navigate to="/login" replace />
   const owner = user.role === 'owner'
-  const roleLabel = owner ? 'Владелец' : 'Администратор'
+  // Бухгалтер (ADR-201): экраны владельца без прибыли, только просмотр.
+  const accountant = Boolean(user.accountant)
+  const roleLabel = accountant ? 'Бухгалтер' : owner ? 'Владелец' : 'Администратор'
 
   // Пункт по праву (ADR-097): без права администратор его не видит.
   const allowed = (p?: Permission | Permission[]) => !p || (Array.isArray(p) ? p : [p]).some((x) => can(user, x))
   const items = (list: NavItem[]) =>
-    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.employeeOnly || Boolean(user.employee_id)) && allowed(it.permission))
+    list.filter((it) => !(accountant && it.to === '/profit') && (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.employeeOnly || Boolean(user.employee_id)) && allowed(it.permission))
   const badge = (to: string) =>
     to === '/notifications' && unseen > 0 ? (
       <span className="ml-auto rounded-full bg-rose-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{unseen > 99 ? '99+' : unseen}</span>
@@ -339,6 +341,11 @@ function Shell() {
       {/* Режим кассы на широком экране — ровно во весь экран без прокрутки страницы (ui-rules §9). */}
       <main className={`min-w-0 flex-1 ${touch ? 'pb-3' : 'pb-24'} ${fitScreen ? 'lg:flex lg:h-dvh lg:flex-col lg:overflow-hidden lg:pb-0' : ''}`}>
         <UpdateBanner />
+        {accountant && (
+          <div className="no-print bg-sky-50 px-4 py-1.5 text-xs text-sky-800" data-testid="accountant-banner">
+            Бухгалтер: только просмотр — изменения недоступны, прибыль скрыта.
+          </div>
+        )}
         {!owner && !touch && <BotHint userId={user.id} />}
         <OfflineBar />
         <OfflineBookPrints />
@@ -389,7 +396,7 @@ function Shell() {
           {can(user, 'expenses') && <Route path="/expenses" element={<Expenses />} />}
           {can(user, 'view_payroll') && <Route path="/payroll" element={<Payroll />} />}
           {owner && <Route path="/summary" element={<OwnerDashboard />} />}
-          {owner && <Route path="/profit" element={<Profit />} />}
+          {owner && !accountant && <Route path="/profit" element={<Profit />} />}
           {owner && <Route path="/bank" element={<Bank />} />}
           {owner && <Route path="/bank/reconcile" element={<BankRecon />} />}
           {can(user, 'view_income') && <Route path="/income" element={<Income />} />}
@@ -420,7 +427,7 @@ function Shell() {
           {owner && <Route path="/settings/cross-pick" element={<CrossPickSettings />} />}
           {owner && <Route path="/settings/cashier" element={<CashierSettingsPage />} />}
           {owner && <Route path="/settings/payroll" element={<PayrollSettings />} />}
-          {owner && <Route path="/settings/profit-report" element={<ProfitSettings />} />}
+          {owner && !accountant && <Route path="/settings/profit-report" element={<ProfitSettings />} />}
           {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
           {owner && <Route path="/settings/client-messages" element={<ClientMessages />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}

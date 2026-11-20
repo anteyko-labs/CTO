@@ -19,6 +19,7 @@ import type { Permission, Role, UserRow } from '../lib/types'
 const ROLE_LABELS: Record<Role, string> = {
   owner: 'Владелец',
   admin: 'Администратор',
+  accountant: 'Бухгалтер',
 }
 
 const MIN_PASSWORD = 8

@@ -534,6 +534,8 @@ struct MeOut {
     /// Чат Телеграма привязан к этому пользователю: подсказка «присылайте накладные в бот»
     /// (задача 003, Н6).
     telegram_linked: bool,
+    /// Бухгалтер (ADR-201): экраны владельца, только просмотр, без прибыли.
+    accountant: bool,
 }
 
 async fn me_out(conn: &mut sqlx::PgConnection, user: CurrentUser) -> AppResult<MeOut> {
@@ -555,6 +557,7 @@ async fn me_out(conn: &mut sqlx::PgConnection, user: CurrentUser) -> AppResult<M
         .map(|b| b.name.clone())
         .unwrap_or_default();
     Ok(MeOut {
+        accountant: user.is_accountant(),
         user,
         permissions,
         home_branch_id,

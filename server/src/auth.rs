@@ -20,6 +20,10 @@ pub const SESSION_DAYS: i64 = 30;
 pub enum Role {
     Owner,
     Admin,
+    /// Бухгалтер (задача 039, ADR-201): видит всё как владелец, только чтение, без прибыли.
+    /// Экрану отдаётся как `owner` с признаком `accountant` — экраны владельца те же.
+    #[serde(rename = "owner")]
+    Accountant,
 }
 
 impl Role {
@@ -27,6 +31,7 @@ impl Role {
         match s {
             "owner" => Ok(Self::Owner),
             "admin" => Ok(Self::Admin),
+            "accountant" => Ok(Self::Accountant),
             _ => Err(invalid("неизвестная роль")),
         }
     }
@@ -35,6 +40,7 @@ impl Role {
         match self {
             Self::Owner => "owner",
             Self::Admin => "admin",
+            Self::Accountant => "accountant",
         }
     }
 }
@@ -64,7 +70,11 @@ impl CurrentUser {
     }
 
     pub fn is_owner(&self) -> bool {
-        self.role == Role::Owner
+        matches!(self.role, Role::Owner | Role::Accountant)
+    }
+
+    pub fn is_accountant(&self) -> bool {
+        self.role == Role::Accountant
     }
 
     pub fn require_owner(&self) -> AppResult<()> {
@@ -573,6 +583,9 @@ impl FromRequestParts<AppState> for CurrentUser {
         .await?
         .ok_or(AppError::Unauthorized)?;
         let role = Role::parse(&row.role)?;
+        if role == Role::Accountant {
+            accountant_gate(&parts.method, parts.uri.path())?;
+        }
         let branch_id = request_branch(parts, state, role, row.branch_id).await?;
         Ok(Self {
             id: row.id,
@@ -583,6 +596,24 @@ impl FromRequestParts<AppState> for CurrentUser {
             employee_id: row.employee_id,
             employee_name: row.employee_name,
         })
+    }
+}
+
+/// Пути с чистой прибылью — бухгалтеру закрыты (ADR-201). Все в одном месте.
+pub const PROFIT_PATHS: [&str; 2] = ["/reports/profit", "/settings/profit-report"];
+
+/// Бухгалтер (ADR-201): только чтение, кроме выхода и смены своего пароля; без прибыли.
+pub fn accountant_gate(method: &axum::http::Method, path: &str) -> AppResult<()> {
+    let path = path.strip_prefix("/api/v1").unwrap_or(path);
+    if PROFIT_PATHS.iter().any(|p| path.starts_with(p)) {
+        return Err(AppError::Forbidden);
+    }
+    let read = matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD);
+    let own = matches!(path, "/auth/logout" | "/auth/password" | "/auth/login");
+    if read || own {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden)
     }
 }
 
@@ -601,7 +632,7 @@ async fn request_branch(
     home: Uuid,
 ) -> AppResult<Uuid> {
     let picked = match parts.headers.get(BRANCH_HEADER) {
-        Some(v) if role == Role::Owner => Some(
+        Some(v) if matches!(role, Role::Owner | Role::Accountant) => Some(
             v.to_str()
                 .ok()
                 .and_then(|v| Uuid::parse_str(v.trim()).ok())

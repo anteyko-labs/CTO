@@ -157,7 +157,11 @@ export function OwnerDashboard() {
   const [all, setAll] = useAllBranches(Boolean(user.several_branches))
   const scope = branchParam(all)
   const d = useLoad(() => get<AllBranches<Dashboard>>(`/owner/dashboard${qs({ from, to, ...scope })}`), [from, to, all])
-  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to, ...scope })}`), [from, to, all])
+  // Бухгалтеру прибыль не показывается (ADR-201): отчёт не запрашивается.
+  const r = useLoad(
+    () => (user.accountant ? Promise.resolve(null as unknown as ProfitReport) : get<ProfitReport>(`/reports/profit${qs({ from, to, ...scope })}`)),
+    [from, to, all],
+  )
   // Один день — карта за последние 4 недели (по одному дню она пуста), период — за период.
   const heat = useLoad(
     () => get<HeatCell[] | { items: HeatCell[] }>(`/reports/heatmap${qs(single ? { days: 28, ...scope } : { from, to, ...scope })}`).then(rowsOf),

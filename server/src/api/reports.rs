@@ -1355,12 +1355,26 @@ async fn dashboard(
 ) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
     let (from, to) = (q.from, q.to);
-    Ok(Json(
-        branches::report(&mut conn, &user, &scope, |c, u| {
-            Box::pin(async move { branches::to_json(&dashboard_data(c, &u, from, to).await?) })
-        })
-        .await?,
-    ))
+    let mut out = branches::report(&mut conn, &user, &scope, |c, u| {
+        Box::pin(async move { branches::to_json(&dashboard_data(c, &u, from, to).await?) })
+    })
+    .await?;
+    if user.is_accountant() {
+        drop_net(&mut out);
+    }
+    Ok(Json(out))
+}
+
+/// Бухгалтеру чистая прибыль не отдаётся (ADR-201): поля `net_*` и `*_net_*` убираются.
+pub(crate) fn drop_net(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            m.retain(|k, _| !(k.starts_with("net_") || k.contains("_net_")));
+            m.values_mut().for_each(drop_net);
+        }
+        Value::Array(a) => a.iter_mut().for_each(drop_net),
+        _ => {}
+    }
 }
 
 /// Сводка владельца за день или период (без дат — сегодня) — экран и бот владельца (SPEC-24,

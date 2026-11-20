@@ -3,7 +3,7 @@ import type { StockUnit } from './units'
 
 export type { StockUnit }
 
-export type Role = 'owner' | 'admin'
+export type Role = 'owner' | 'admin' | 'accountant'
 
 /** Права администратора, которые выбирает владелец (ADR-082, ADR-097); список — lib/permissions.ts. */
 export type Permission =
@@ -62,6 +62,8 @@ export interface User {
   login: string
   full_name: string
   role: Role
+  /** Бухгалтер (ADR-201): экраны владельца, только просмотр, без прибыли. role — 'owner'. */
+  accountant?: boolean
   /** Права администратора (ADR-082, ADR-097); у старого ответа сервера — нет. */
   permissions?: Permission[]
   /** Свой филиал пользователя и что он видит (SPEC-33); у старого ответа сервера — нет. */
