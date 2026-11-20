@@ -1194,7 +1194,7 @@
   {"alters":["sales"],"creates":[],"file":"server/migrations/0118_vehicle_kind.sql","lines":13,"name":"vehicle_kind","num":"0118"},
   {"alters":["categories","oil_change_items","sale_lines","services","vehicle_book_intervals"],"creates":[],"file":"server/migrations/0119_filter_slots.sql","lines":36,"name":"filter_slots","num":"0119"},
   {"alters":["bot_input","party_contacts","sale_approvals"],"creates":["contact_requests"],"file":"server/migrations/0120_legal_tails.sql","lines":65,"name":"legal_tails","num":"0120"},
-  {"alters":["old_catalog"],"creates":[],"file":"server/migrations/0121_umag_intake.sql","lines":12,"name":"umag_intake","num":"0121"}
+  {"alters":["old_catalog"],"creates":[],"file":"server/migrations/0122_umag_intake.sql","lines":12,"name":"umag_intake","num":"0122"}
  ],
  "tables": [
   {"altered_in":[],"created_in":["0001"],"table":"audit_log"},
@@ -1254,7 +1254,7 @@
   {"altered_in":["0039"],"created_in":["0022"],"table":"oil_reminders"},
   {"altered_in":[],"created_in":["0023"],"table":"oil_transfer_reversals"},
   {"altered_in":[],"created_in":["0012"],"table":"oil_transfers"},
-  {"altered_in":["0065","0067","0121"],"created_in":["0027"],"table":"old_catalog"},
+  {"altered_in":["0065","0067","0122"],"created_in":["0027"],"table":"old_catalog"},
   {"altered_in":[],"created_in":["0065"],"table":"old_catalog_link_rejects"},
   {"altered_in":[],"created_in":["0001"],"table":"operations"},
   {"altered_in":[],"created_in":["0111"],"table":"own_use_writeoffs"},
