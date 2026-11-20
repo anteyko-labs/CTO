@@ -39,6 +39,7 @@ pub mod fees;
 pub mod gifts;
 pub mod income;
 pub mod label_jobs;
+pub mod legal_garage;
 pub mod loyalty;
 pub mod my_earnings;
 pub mod my_telegram;
@@ -133,6 +134,7 @@ pub fn routes() -> Router<AppState> {
         .merge(reports::routes())
         .merge(revisions::routes())
         .merge(sale_approvals::routes())
+        .merge(legal_garage::routes())
         .merge(sales::routes())
         .merge(shift_report::routes())
         .merge(stock_in::routes())

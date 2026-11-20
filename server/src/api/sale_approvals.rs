@@ -350,9 +350,11 @@ async fn create(
     ctx: Ctx,
     Json(req): Json<CreateIn>,
 ) -> AppResult<Json<ApprovalOut>> {
-    let sale: SaleReq =
+    let mut sale: SaleReq =
         serde_json::from_value(req.draft.clone()).map_err(|e| invalid(format!("чек: {e}")))?;
     let mut tx = state.pool.begin().await?;
+    // Личная машина работника — запрос фирме, которая платит (задача 037, ADR-199).
+    crate::api::legal_garage::payer_rewrite(&mut tx, &mut sale).await?;
     sqlx::query!(
         "select pg_advisory_xact_lock(hashtextextended($1::text, 1))",
         sale.op_id.to_string()

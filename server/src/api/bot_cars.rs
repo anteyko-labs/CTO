@@ -244,8 +244,13 @@ pub async fn on_input(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            brand_entered(conn, &c, chat_id, &plate, text).await?
+            brand_entered(conn, &c, chat_id, &plate, text, None).await?
         }
+        // Ждём кнопку «Оплачивает фирма» / «Плачу сам» — текст не подходит.
+        "payer" => Reply::with_buttons(
+            "Кто оплачивает обслуживание? Нажмите кнопку.",
+            payer_buttons(&employer(conn, &c).await?),
+        ),
         "note" => match p.vehicle_id {
             Some(id) => note_entered(conn, &c, chat_id, id, text).await?,
             None => {
@@ -503,10 +508,15 @@ pub async fn callback(
     let c = customer(conn, party_id).await?;
     let (verb, arg) = data.split_once(':').unwrap_or((data, ""));
     // Кнопка — тоже меню: ожидание ввода отменяется, кроме «Пропустить» марку.
-    if verb != "skip" {
+    if !matches!(verb, "skip" | "payf" | "pays") {
         clear_input(conn, chat_id).await?;
     }
-    if c.company && matches!(verb, "add" | "skip" | "note" | "rm" | "rmy" | "dn") {
+    if c.company
+        && matches!(
+            verb,
+            "add" | "skip" | "note" | "rm" | "rmy" | "dn" | "payf" | "pays"
+        )
+    {
         return Ok(Reply::new(COMPANY, Keys::Customer));
     }
     let id = || arg.split(':').next().and_then(|s| Uuid::parse_str(s).ok());
@@ -530,7 +540,30 @@ pub async fn callback(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                brand_entered(conn, &c, chat_id, &plate, "").await
+                brand_entered(conn, &c, chat_id, &plate, "", None).await
+            }
+            _ => cars(conn, &c, chat_id, None).await,
+        },
+        // «Оплачивает фирма: …» / «Плачу сам» (задача 037 п. 2, ADR-199).
+        ("payf" | "pays", _) => match pending(conn, chat_id).await? {
+            Some(p) if p.kind == "payer" => {
+                let get = |k: &str| {
+                    p.data
+                        .get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                let firms = employer(conn, &c).await?;
+                let payer = if verb == "payf" {
+                    match firms.iter().find(|(f, _)| Some(*f) == id()) {
+                        Some((f, n)) => Some(Some((*f, n.clone()))),
+                        None => return cars(conn, &c, chat_id, None).await,
+                    }
+                } else {
+                    Some(None)
+                };
+                brand_entered(conn, &c, chat_id, &get("plate"), &get("brand"), payer).await
             }
             _ => cars(conn, &c, chat_id, None).await,
         },
@@ -721,6 +754,8 @@ async fn brand_entered(
     chat_id: i64,
     plate: &str,
     text: &str,
+    // `None` — ещё не спрашивали, кто платит; `Some(None)` — сам; `Some(Some(фирма))` — фирма.
+    payer: Option<Option<(Uuid, String)>>,
 ) -> AppResult<Reply> {
     let Some(norm) = plate::parse(plate) else {
         clear_input(conn, chat_id).await?;
@@ -733,6 +768,29 @@ async fn brand_entered(
             vec![vec![button("Пропустить", "skip")]],
         ));
     }
+    // Работник фирмы-клиента: спросить, оплачивает ли фирма (задача 037 п. 2).
+    let payer = match payer {
+        Some(p) => p,
+        None => {
+            let firms = employer(conn, c).await?;
+            if !firms.is_empty() {
+                wait_for(
+                    conn,
+                    c.branch_id,
+                    chat_id,
+                    "payer",
+                    None,
+                    json!({ "plate": norm, "brand": text }),
+                )
+                .await?;
+                return Ok(Reply::with_buttons(
+                    "Кто оплачивает обслуживание этой машины?",
+                    payer_buttons(&firms),
+                ));
+            }
+            None
+        }
+    };
     let (brand, model) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     let mut tx = conn.begin().await?;
     lock_customer(&mut tx, c).await?;
@@ -761,17 +819,33 @@ async fn brand_entered(
     }
     let id = new_id();
     sqlx::query!(
-        r#"insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, brand, model, added_by)
-           values ($1, $2, $3, $4, $4, $5, $6, 'client')"#,
+        r#"insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, brand, model, added_by,
+                                       paid_by_party_id, status)
+           values ($1, $2, $3, $4, $4, $5, $6, 'client', $7,
+                   case when $7::uuid is null then 'active' else 'pending' end)"#,
         id,
         c.branch_id,
         c.party_id,
         norm,
         brand,
-        model.trim()
+        model.trim(),
+        payer.as_ref().map(|(f, _)| *f)
     )
     .execute(&mut *tx)
     .await?;
+    if let Some((firm, _)) = &payer {
+        crate::api::legal_garage::open_request(
+            &mut tx,
+            c.branch_id,
+            id,
+            *firm,
+            "bot",
+            &c.name,
+            Some(chat_id),
+            None,
+        )
+        .await?;
+    }
     // Номер есть у другого клиента точки: новая машина без истории, разбирается владелец.
     let others = sqlx::query_scalar!(
         r#"select distinct p.name from party_vehicles v join parties p on p.id = v.party_id
@@ -818,7 +892,36 @@ async fn brand_entered(
     .await?;
     clear_input(&mut tx, chat_id).await?;
     tx.commit().await?;
-    card(conn, c, id, Some(&added_text(&norm))).await
+    let text = match &payer {
+        Some((_, firm)) => format!(
+            "{} Оплачивает фирма «{firm}» — ждёт подтверждения фирмы, ответ придёт сюда.",
+            added_text(&norm)
+        ),
+        None => added_text(&norm),
+    };
+    card(conn, c, id, Some(&text)).await
+}
+
+/// Фирмы, где работает клиент (его номер — у работника фирмы).
+async fn employer(conn: &mut PgConnection, c: &Customer) -> AppResult<Vec<(Uuid, String)>> {
+    if c.company {
+        return Ok(Vec::new());
+    }
+    crate::api::legal_garage::employer_firms(conn, c.party_id).await
+}
+
+fn payer_buttons(firms: &[(Uuid, String)]) -> Vec<Vec<Button>> {
+    let mut rows: Vec<Vec<Button>> = firms
+        .iter()
+        .map(|(id, name)| {
+            vec![button(
+                cut(&format!("Оплачивает фирма: {name}"), 60),
+                format!("payf:{id}"),
+            )]
+        })
+        .collect();
+    rows.push(vec![button("Плачу сам", "pays")]);
+    rows
 }
 
 // ---------- Убрать машину ----------

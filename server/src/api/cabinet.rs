@@ -95,7 +95,7 @@ impl Client {
     }
 
     /// Разделы клиента (покупки, работники, машины, сообщения) поставщику закрыты.
-    fn customer(&self) -> AppResult<()> {
+    pub(crate) fn customer(&self) -> AppResult<()> {
         self.ready()?;
         if self.role != "customer" {
             return Err(AppError::Forbidden);
@@ -114,7 +114,7 @@ impl Client {
 }
 
 /// Запись в журнал от имени кабинета: пользователя точки здесь нет.
-async fn audit(
+pub(crate) async fn audit(
     conn: &mut sqlx::PgConnection,
     branch_id: Uuid,
     party_id: Uuid,
@@ -426,6 +426,8 @@ struct SaleOut {
     created_at: DateTime<Utc>,
     contact_name: Option<String>,
     vehicle_plate: Option<String>,
+    /// Личная машина работника, оплачивает фирма (задача 037 п. 2): «личная машина <имя>».
+    personal_of: Option<String>,
     total_tyiyn: i64,
     debt_tyiyn: i64,
     /// Оплачено «По счёту» — перечислением фирмы (ADR-095).
@@ -447,6 +449,8 @@ async fn sales(
     let heads = sqlx::query!(
         r#"select s.id, s.number, s.kind, s.business_date, s.created_at, s.total_tyiyn,
                   c.full_name as "contact_name?", v.plate as "vehicle_plate?",
+                  (select o.name from parties o where o.id = v.party_id and v.party_id <> s.party_id)
+                      as "personal_of?",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
                             where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
@@ -503,6 +507,7 @@ async fn sales(
             created_at: h.created_at,
             contact_name: h.contact_name,
             vehicle_plate: h.vehicle_plate,
+            personal_of: h.personal_of,
             total_tyiyn: h.total_tyiyn,
             debt_tyiyn: h.debt,
             invoice_tyiyn: h.invoice,

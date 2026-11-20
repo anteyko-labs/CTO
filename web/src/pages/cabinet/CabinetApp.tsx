@@ -168,6 +168,7 @@ function Purchases({ branch }: { branch: string }) {
             <div className="text-sm text-slate-600">
               {s.contact_name ? `Брал: ${s.contact_name}` : 'Работник не указан'}
               {s.vehicle_plate && ` · машина ${s.vehicle_plate}`}
+              {s.personal_of && ` (личная машина ${s.personal_of})`}
               {s.branch_name && ` · ${s.branch_name}`}
               {s.debt_tyiyn !== 0 && (
                 <span className="ml-2">
@@ -356,6 +357,98 @@ function Approvals() {
   )
 }
 
+/** Запрос на подтверждение машины (задача 037, ADR-199). */
+export interface VehicleRequest {
+  id: string
+  plate: string
+  brand: string
+  model: string
+  personal_of: string | null
+  source: 'cabinet' | 'bot'
+  author: string
+  status: 'pending' | 'approved' | 'rejected'
+  reason: string
+  decided_by: string
+  created_at: string
+}
+
+const REQUEST_STATUS: Record<string, [string, 'green' | 'amber' | 'rose']> = {
+  pending: ['Ждёт подтверждения', 'amber'],
+  approved: ['Подтверждена', 'green'],
+  rejected: ['Отклонена', 'rose'],
+}
+
+/** Гараж фирмы: добавить машину и подтвердить машины работников «Оплачивает фирма». */
+function Garage() {
+  const list = useLoad(() => get<VehicleRequest[]>('/client/requests'), [])
+  const { run, busy, error } = useAction()
+  const [plate, setPlate] = useState('')
+  const [brand, setBrand] = useState('')
+  const [model, setModel] = useState('')
+  const [rejecting, setRejecting] = useState<string | null>(null)
+  const [reason, setReason] = useState('')
+  const add = () =>
+    run(async () => {
+      await post('/client/vehicles', { op_id: crypto.randomUUID(), plate, brand, model })
+      setPlate('')
+      setBrand('')
+      setModel('')
+      toast('Машина добавлена — ждёт подтверждения')
+      list.reload()
+    })
+  const decide = (id: string, ok: boolean) =>
+    run(async () => {
+      if (ok) await post(`/client/requests/${id}/approve`, {})
+      else await post(`/client/requests/${id}/reject`, { reason })
+      setRejecting(null)
+      setReason('')
+      toast(ok ? 'Подтверждено' : 'Отклонено')
+      list.reload()
+    })
+  const rows = list.data ?? []
+  return (
+    <Card className="flex flex-col gap-2" data-testid="cabinet-garage">
+      <ErrorBox error={list.error ?? error} />
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Госномер" required><input value={plate} onChange={(e) => setPlate(e.target.value)} placeholder="01KG123ABC" /></Field>
+        <Field label="Марка"><input value={brand} onChange={(e) => setBrand(e.target.value)} maxLength={60} /></Field>
+        <Field label="Модель"><input value={model} onChange={(e) => setModel(e.target.value)} maxLength={60} /></Field>
+        <Button disabled={busy || !plate.trim()} onClick={() => void add()}>Добавить машину</Button>
+      </div>
+      {rows.length > 0 && (
+        <ul className="flex flex-col divide-y divide-slate-100" data-testid="cabinet-requests">
+          {rows.map((r) => {
+            const [label, tone] = REQUEST_STATUS[r.status] ?? [r.status, 'amber' as const]
+            return (
+              <li key={r.id} className="flex flex-col gap-1 py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{r.plate}</span>
+                  <span>{[r.brand, r.model].filter(Boolean).join(' ')}</span>
+                  <Badge tone={tone}>{label}</Badge>
+                  {r.personal_of && <span className="text-slate-500">личная машина {r.personal_of}</span>}
+                </div>
+                {r.reason && <div className="text-rose-700">Причина: {r.reason}</div>}
+                {r.status === 'pending' && (rejecting === r.id ? (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field label="Причина отказа" required><input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} /></Field>
+                    <Button variant="danger" disabled={busy || !reason.trim()} onClick={() => void decide(r.id, false)}>Отклонить</Button>
+                    <Button variant="secondary" onClick={() => setRejecting(null)}>Отмена</Button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button disabled={busy} onClick={() => void decide(r.id, true)}>Подтвердить</Button>
+                    <Button variant="secondary" disabled={busy} onClick={() => setRejecting(r.id)}>Отклонить</Button>
+                  </div>
+                ))}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
 /** Акт сверки — тот же экран, что в программе (задача 003): периоды, сальдо, строки, обороты,
  *  вывод, «Печать» и «Скачать»; без ссылок на документы точки. */
 function Act({ me, branch = '' }: { me: Me; branch?: string }) {
@@ -504,6 +597,7 @@ export default function CabinetApp() {
         )}
         {tab === 'sales' && <Purchases branch={branch} />}
         {tab === 'contacts' && <Contacts />}
+        {tab === 'cars' && <Garage />}
         {tab === 'cars' && <OilBookList path="/client/oil-book" editable={false} />}
         {tab === 'act' && <Act me={m} branch={branch} />}
         {tab === 'messages' && <Messages />}

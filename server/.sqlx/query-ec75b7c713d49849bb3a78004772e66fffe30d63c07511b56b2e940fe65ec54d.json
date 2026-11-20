@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct p.id, p.name, c.phone from party_contacts c join parties p on p.id = c.party_id\n           where c.active and c.phone <> '' and p.active and p.kind = 'company' and p.role = 'customer'\n           order by p.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "phone",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ec75b7c713d49849bb3a78004772e66fffe30d63c07511b56b2e940fe65ec54d"
+}

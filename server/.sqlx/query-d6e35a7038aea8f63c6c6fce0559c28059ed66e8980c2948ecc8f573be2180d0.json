@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update vehicle_requests set status = $2, reason = $3, decided_by = $4, decided_at = now()\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d6e35a7038aea8f63c6c6fce0559c28059ed66e8980c2948ecc8f573be2180d0"
+}

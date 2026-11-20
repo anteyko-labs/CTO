@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, brand, model, added_by,\n                                       paid_by_party_id, status)\n           values ($1, $2, $3, $4, $4, $5, $6, 'client', $7,\n                   case when $7::uuid is null then 'active' else 'pending' end)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0a7d05c2be6f65c929522b8e2fffc962b37ba8c31f1e4044fb5a69e2ec61efc"
+}

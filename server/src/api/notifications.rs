@@ -19,7 +19,10 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 85] = [
+pub(crate) const WATCHED: [&str; 87] = [
+    // Машина фирмы ждёт подтверждения или решена; пересчёт долга клиента (задача 037).
+    "party.vehicle_request",
+    "party.recount",
     // Ответ фирмы на запрос «Подтвердите обслуживание» (задача 039 C, ADR-202).
     "party.sale_approval",
     "party.limit_request",
@@ -597,6 +600,41 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .and_then(Value::as_str)
                     .map(ru_date)
                     .unwrap_or_default()
+            ),
+        ),
+        "party.vehicle_request" => {
+            let s = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let what = match s("decision").as_str() {
+                "approved" => "машина подтверждена",
+                "rejected" => "машина отклонена",
+                _ => "машина ждёт подтверждения",
+            };
+            let personal = data
+                .get("personal_of")
+                .and_then(Value::as_str)
+                .map(|n| format!(", личная машина {n}"))
+                .unwrap_or_default();
+            (
+                format!("Фирма {}: {what}", s("name")),
+                format!(
+                    "{}{personal}{}",
+                    s("plate"),
+                    Some(s("reason"))
+                        .filter(|c| !c.is_empty())
+                        .map(|c| format!(" — {c}"))
+                        .unwrap_or_default()
+                ),
+            )
+        }
+        "party.recount" => (
+            format!(
+                "Пересчитан долг клиента {}",
+                data.get("name").and_then(Value::as_str).unwrap_or("")
+            ),
+            format!(
+                "было {}, по журналу долга {}",
+                money(num("before_tyiyn")),
+                money(num("after_tyiyn"))
             ),
         ),
         "party.sale_approval" => {

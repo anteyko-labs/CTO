@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.branch_id, r.party_id, p.name, v.plate, r.source, r.author, r.reason, r.decided_by,\n                  (select o.name from parties o where o.id = v.party_id and v.party_id <> r.party_id)\n                      as \"personal_of?\"\n           from vehicle_requests r join parties p on p.id = r.party_id\n           join party_vehicles v on v.id = r.vehicle_id where r.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "author",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "decided_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "personal_of?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "474a28fa57cfe5d727b63cf7db1b9126af75f51fc6536ff3b447122f9f36ead7"
+}

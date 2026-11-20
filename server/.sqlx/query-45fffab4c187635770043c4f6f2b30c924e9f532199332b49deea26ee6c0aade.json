@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.vehicle_id, v.plate, v.brand, v.model,\n                  (select o.name from parties o where o.id = v.party_id and v.party_id <> r.party_id)\n                      as \"personal_of?\",\n                  r.source, r.author, r.status, r.reason, r.decided_by, r.created_at, r.decided_at\n           from vehicle_requests r join party_vehicles v on v.id = r.vehicle_id\n           where r.party_id = $1 and ($2::uuid is null or r.id = $2)\n           order by (r.status = 'pending') desc, r.created_at desc limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "vehicle_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "personal_of?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "author",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "decided_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "decided_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "45fffab4c187635770043c4f6f2b30c924e9f532199332b49deea26ee6c0aade"
+}

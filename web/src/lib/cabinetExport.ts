@@ -23,6 +23,7 @@ export interface CabinetSale {
   created_at: string
   contact_name: string | null
   vehicle_plate: string | null
+  personal_of?: string | null
   total_tyiyn: number
   debt_tyiyn: number
   /** Оплачено «По счёту» — перечислением фирмы (ADR-095). */

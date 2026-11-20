@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select b.id, b.name,\n                  coalesce((select pb.balance_tyiyn from party_balances pb\n                            where pb.party_id = $1 and pb.branch_id = b.id), 0)::bigint as \"cached!\",\n                  coalesce((select sum(l.amount_tyiyn) from party_ledger l\n                            where l.party_id = $1 and l.branch_id = b.id), 0)::bigint as \"ledger!\"\n           from branches b order by b.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "cached!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "ledger!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "ff4a29c573bdd030599722ea32d8979a5387eb24bb03057be9aec842ff0c252e"
+}
