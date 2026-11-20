@@ -136,6 +136,34 @@ describe('чек книжки после чека — только этот че
     expect(slotsOfSale(book, 'другой')).toEqual([])
   })
 
+  it('грузовая (задача 040 A): строка «Грузовая», два фильтра одной строки — две строки со своей заменой', async () => {
+    const truck: VehicleBook = {
+      ...book,
+      records: [
+        rec({
+          id: 'r10',
+          change_date: '2026-11-20',
+          mileage_km: 252_000,
+          sale_id: 's10',
+          sale_number: 10,
+          vehicle_kind: 'truck',
+          lines: [
+            { slot: 'fuel_filter', text: 'WK 820 · 1 шт', title: 'WK 820 (топливный) · 1 шт', next_mileage: 262_000, next_unit: 'km', target_set: true },
+            { slot: 'fuel_filter', text: 'PP 879 · 1 шт', title: 'PP 879 (топливный) · 1 шт', next_mileage: 272_000, next_unit: 'km', target_set: true },
+          ],
+        }),
+        ...book.records,
+      ],
+    }
+    const text = plain(await oilBookHtml(truck, { saleId: 's10' }))
+    expect(text).toContain('Машина Грузовая')
+    expect(text).toContain('WK 820 (топливный) · 1 шт — на 262 000 км')
+    expect(text).toContain('PP 879 (топливный) · 1 шт — на 272 000 км')
+    const statement = plain(await oilBookHtml(truck))
+    expect(statement).toContain('Машина Грузовая')
+    expect(statement).toContain('PP 879 (топливный) · 1 шт на 272 000 км')
+  })
+
   it('после чека без записи книжки — не печатаем, прошлых замен нет (ADR-130)', async () => {
     expect(await oilBookHtml(book, { saleId: 'другой' })).toBeNull()
   })

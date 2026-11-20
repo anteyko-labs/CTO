@@ -9,11 +9,13 @@ import QRCode from 'qrcode'
 import { get, newOpId, post } from './api'
 import { toast } from '../components/ui'
 import { formatDate } from './format'
+import { vehicleKindText } from './types'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, type OilBookSettings } from './oilBookSettings'
 import {
   bookGroups,
   isFluid,
   lineGroup,
+  lineNextText,
   lineTitle,
   recordLines,
   recordMileage,
@@ -124,7 +126,12 @@ function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, s: BookPrin
   const printed = printedLine(r, s)
   const all = recordLines(r)
   const next = new Map(slotsOfSale(b, saleId).map((n) => [slotKey(n), slotNextText(n)]))
-  const items = all.filter(printed).map((l) => ({ title: lineTitle(l), group: lineGroup(l, all), next: next.get(slotKey(l)) ?? '' }))
+  // Задача 040 A: каждый фильтр — своей строкой со своей следующей заменой.
+  const items = all.filter(printed).map((l) => ({
+    title: lineTitle(l),
+    group: lineGroup(l, all),
+    next: isFilter(l.slot) && l.next_mileage != null ? slotNextText({ next_km: l.next_km ?? null, next_mileage: l.next_mileage, unit: l.next_unit ?? 'km' }) : (next.get(slotKey(l)) ?? ''),
+  }))
   const { filled, next: nexts } = labelLines(items)
   const mileage = recordMileage(r)
   const car = [b.brand, b.model].filter(Boolean).join(' ')
@@ -136,6 +143,7 @@ function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, s: BookPrin
       <div class="car">${esc(car)}</div>
       ${row('Дата', formatDate(r.change_date))}
       ${mileage !== null ? row('Пробег', mileage ?? '') : ''}
+      ${r.vehicle_kind ? row('Машина', vehicleKindText(r.vehicle_kind)) : ''}
     </div>
     <div class="lbl">
       <div class="ttl">Залито и заменено · ${esc(b.plate)}</div>
@@ -189,8 +197,13 @@ export function oilBookHtml(
       last
         ? `${row('Замена', formatDate(last.change_date))}
     ${recordMileage(last) !== null ? row('Пробег', recordMileage(last) ?? '') : ''}
+    ${last.vehicle_kind ? row('Машина', vehicleKindText(last.vehicle_kind)) : ''}
     ${recordLines(last)
-      .map((l) => `<div class="row"><span>${esc(lineTitle(l))}</span></div>`)
+      .map((l) => {
+        // Задача 040 A: у каждого фильтра — своя следующая замена.
+        const own = isFilter(l.slot) ? lineNextText(l) : ''
+        return own ? row(lineTitle(l), own.replace('следующая замена ', '')) : `<div class="row"><span>${esc(lineTitle(l))}</span></div>`
+      })
       .join('')}
     ${opts.master ? row('Мастер', opts.master) : ''}
     ${last.declined?.trim() ? row('Рекомендовано', last.declined.trim()) : ''}`

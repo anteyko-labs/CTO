@@ -4,7 +4,7 @@ import { salePriceSuffix, saleQtyText } from '../lib/units'
 import { paymentLabel } from '../lib/battery'
 import { printInFrame } from '../lib/printFrame'
 import { lineSum } from '../lib/discount'
-import type { Sale, SaleLine } from '../lib/types'
+import { vehicleKindText, type Sale, type SaleLine } from '../lib/types'
 import { branchLabel } from '../lib/branch'
 import { mileageText } from '../lib/mileage'
 import { cachedOilBookSettings } from '../lib/oilBookSettings'
@@ -73,6 +73,7 @@ export function saleHtml(sale: Sale, change: number | null, opts: { bookBlock?: 
     <div>${title} № ${sale.number}</div>
     <div>${esc(saleWhen(sale))}</div>
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}
+    ${sale.kind === 'sale' ? `<div>${vehicleKindText(sale.vehicle_kind)}</div>` : ''}
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
     ${sale.kind === 'return' && sale.comment ? `<div>Причина: ${esc(sale.comment)}</div>` : ''}
     <table>${rows}${discountRow}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
@@ -90,19 +91,22 @@ export function bookHtml(sale: Pick<Sale, 'sale_type' | 'kind' | 'book'>): strin
   const car = [b.brand, b.model].map((x) => x.trim()).filter(Boolean).join(' ')
   const same = (x: { slot?: string; service_id?: string | null }, y: { slot?: string; service_id?: string | null }) =>
     x.slot === y.slot && (x.service_id ?? null) === (y.service_id ?? null)
-  const nextOf = (x: { slot?: string; service_id?: string | null }) => {
-    const l = b.lines.find((l) => same(l, x))
+  // Задача 040 A: у каждого фильтра своя строка следующей замены — по его подписи (у любой машины).
+  const nextOf = (x: { slot?: string; service_id?: string | null; label?: string }) => {
+    const apart = Boolean(x.slot?.endsWith('_filter'))
+    const l = b.lines.find((l) => same(l, x) && (!apart || l.label === x.label))
     return l ? `на ${mileageText(l.next_mileage, l.unit)}` : ''
   }
   const filled = b.filled ?? []
   const items = [
     ...filled.map((f) => ({ title: f.label, group: f.group ?? null, next: nextOf(f) })),
     // Следующая замена без строки «что залито» (чек из очереди старой кассы) — своей строкой.
-    ...b.lines.filter((l) => !filled.some((f) => same(f, l))).map((l) => ({ title: l.label, group: l.group ?? null, next: nextOf(l) })),
+    ...b.lines.filter((l) => !filled.some((f) => same(f, l) && (!l.slot?.endsWith('_filter') || f.label === l.label))).map((l) => ({ title: l.label, group: l.group ?? null, next: nextOf(l) })),
   ]
   if (items.length === 0) return ''
   return `<div class="book"><b>Масляная книжка</b>
     <div>Машина: ${esc([car, b.plate.trim()].filter(Boolean).join(', '))}</div>
+    <div>${vehicleKindText(b.vehicle_kind)}</div>
     ${b.mileage !== null ? `<div>Пробег сейчас: ${esc(mileageText(b.mileage, b.mileage_unit))}</div>` : ''}
     ${bookGroupsHtml(bookGroups(items))}</div>`
 }

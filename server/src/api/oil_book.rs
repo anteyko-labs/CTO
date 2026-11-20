@@ -483,6 +483,8 @@ pub struct OilRecord {
     pub sale_number: Option<i64>,
     /// Итог чека за вычетом возвратов по нему; у записи из тетради — пусто (SPEC-22).
     pub sale_total_tyiyn: Option<i64>,
+    /// «Грузовая» / «Легковая» чека записи (задача 040 A); у записи из тетради — пусто.
+    pub vehicle_kind: Option<String>,
 }
 
 /// Пометка клиента к машине из бота (SPEC-22): точка видит, но не правит.
@@ -1122,6 +1124,9 @@ pub struct SaleBook {
     /// Что залито и поставлено: товар с количеством, у масла клиента — «масло клиента» (ADR-116).
     #[serde(default)]
     pub filled: Vec<SaleBookFill>,
+    /// «Грузовая» / «Легковая» чека (задача 040 A): у грузовой каждый фильтр — своей строкой.
+    #[serde(default)]
+    pub vehicle_kind: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1172,8 +1177,9 @@ fn own_fluid(slot: &str) -> &'static str {
 pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option<SaleBook>> {
     let Some(h) = sqlx::query!(
         r#"select o.id, o.branch_id, o.vehicle_id, v.brand, v.model, v.plate, o.mileage_value,
-                  o.mileage_km, o.mileage_unit
+                  o.mileage_km, o.mileage_unit, s.vehicle_kind
            from oil_changes o join party_vehicles v on v.id = o.vehicle_id
+           join sales s on s.id = o.sale_id
            where o.sale_id = $1"#,
         sale_id
     )
@@ -1223,8 +1229,11 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
     let now = h.mileage_value.or(h.mileage_km);
     let mut lines: Vec<SaleBookLine> = Vec::new();
     let mut filled: Vec<SaleBookFill> = Vec::new();
-    let mut decided: Vec<(String, Option<Uuid>)> = Vec::new();
-    for i in all.iter().filter(|l| printed(l)) {
+    let mut decided: Vec<(String, Option<Uuid>, Option<usize>)> = Vec::new();
+    // Задача 040 A: фильтров одной строки бывает несколько (до трёх масляных и больше) — у любой
+    // машины каждый своей строкой со своей следующей заменой (по своей цели или интервалу своей
+    // категории), не сливаются.
+    for (pos, i) in all.iter().enumerate().filter(|(_, l)| printed(l)) {
         // У «прочего» — своя строка у каждой услуги (ADR-131).
         let other = i.service_id.filter(|_| i.slot == "other");
         // Строка товара — «название · количество»; строка услуги без товара — масло клиента. Услуга
@@ -1240,7 +1249,8 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
             service_id: other,
             group: i.group.clone(),
         });
-        let key = (i.slot.clone(), other);
+        let apart = i.slot.ends_with("_filter");
+        let key = (i.slot.clone(), other, apart.then_some(pos));
         if decided.contains(&key) {
             continue;
         }
@@ -1269,11 +1279,15 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
         };
         if let Some((next_mileage, unit, next_date)) = next {
             // Подпись — все товары этой строки чека: «Mobil ATF 3309 · 1 л, Shell ATF · 1 л».
-            let same = all.iter().filter(|l| {
-                printed(l) && l.slot == key.0 && (other.is_none() || l.service_id == other)
-            });
+            let label = if apart {
+                titles(std::iter::once(i))
+            } else {
+                titles(all.iter().filter(|l| {
+                    printed(l) && l.slot == key.0 && (other.is_none() || l.service_id == other)
+                }))
+            };
             lines.push(SaleBookLine {
-                label: titles(same),
+                label,
                 next_mileage,
                 unit,
                 next_date,
@@ -1291,6 +1305,7 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
         mileage_unit: h.mileage_unit,
         lines,
         filled,
+        vehicle_kind: h.vehicle_kind,
     }))
 }
 
@@ -1375,7 +1390,8 @@ pub async fn books_with_removed(
                   o.declined, o.sale_id, s.number as "sale_number?",
                   -- Возврат — чек с минусом и ссылкой на исходный: как в фильтре ниже.
                   (s.total_tyiyn + coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0))::bigint
-                    as "sale_total_tyiyn?"
+                    as "sale_total_tyiyn?",
+                  s.vehicle_kind as "vehicle_kind?"
            from oil_changes o
            left join sales s on s.id = o.sale_id
            where o.vehicle_id = any($1)
@@ -1463,6 +1479,7 @@ pub async fn books_with_removed(
                 sale_id: r.sale_id,
                 sale_number: r.sale_number,
                 sale_total_tyiyn: r.sale_id.and(r.sale_total_tyiyn),
+                vehicle_kind: r.vehicle_kind.clone(),
             })
             .collect();
         let client_notes = notes

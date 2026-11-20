@@ -79,6 +79,8 @@ export interface OilRecord {
   sale_number: number | null
   /** Итог чека за вычетом возвратов по нему; у записи из тетради — null (SPEC-22). */
   sale_total_tyiyn?: number | null
+  /** «Грузовая» / «Легковая» чека записи (задача 040 A); у записи из тетради — нет. */
+  vehicle_kind?: 'car' | 'truck' | null
 }
 
 export interface VehicleBook {

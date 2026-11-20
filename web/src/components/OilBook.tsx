@@ -283,6 +283,11 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 {recordMileage(r) !== null && <span className="ml-2">{recordMileage(r)}</span>}
                 <span className="ml-2 text-slate-600">{r.sale_total_tyiyn != null ? formatSom(r.sale_total_tyiyn) : '—'}</span>
                 {r.comment && <span className="ml-2 text-slate-500">— {r.comment}</span>}
+                {r.vehicle_kind && (
+                  <span className="ml-2" data-testid="book-vehicle-kind">
+                    <Badge tone={r.vehicle_kind === 'truck' ? 'amber' : 'slate'}>{r.vehicle_kind === 'truck' ? '🚚 Грузовая' : '🚗 Легковая'}</Badge>
+                  </span>
+                )}
                 {r.sale_number === null && (
                   <span className="ml-2">
                     <Badge tone="slate">из тетради</Badge>

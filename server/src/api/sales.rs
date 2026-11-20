@@ -159,6 +159,10 @@ pub struct SaleReq {
     /// учётный день — заданный. С экрана не приходит.
     #[serde(skip)]
     pub correction: Option<SaleCorrection>,
+    /// «Грузовая / Легковая» (задача 040 A, ADR-205): `car` или `truck`; нет — значение кассы
+    /// филиала (у исправленного чека — исходного). Только отметка: цены и состав не меняются.
+    #[serde(default)]
+    pub vehicle_kind: Option<String>,
 }
 
 /// Как проводится исправленный чек (SPEC-29 §24, ADR-085).
@@ -257,6 +261,9 @@ pub struct SaleOut {
     /// Машина чека «В сервис»: по ней экран чека открывает её книжку («Печать книжки», задача 003 Н5).
     #[serde(default)]
     pub vehicle_id: Option<Uuid>,
+    /// «Грузовая» / «Легковая» (задача 040 A): `truck` или `car`.
+    #[serde(default = "car_kind")]
+    pub vehicle_kind: String,
     /// Баланс клиента после чека: сколько он теперь должен.
     pub party_balance_tyiyn: Option<i64>,
     pub total_tyiyn: i64,
@@ -292,6 +299,10 @@ pub struct SaleOut {
     pub approval: Option<crate::api::sale_approvals::SaleMark>,
 }
 
+fn car_kind() -> String {
+    "car".into()
+}
+
 pub async fn load_sale(
     conn: &mut PgConnection,
     user: &CurrentUser,
@@ -303,7 +314,7 @@ pub async fn load_sale(
                   s.comment, s.delivery_address, s.reversal_of, s.no_receipt,
                   s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
                   pc.full_name as "contact_name?", pv.plate as "vehicle_plate?", pv.id as "vehicle_id?",
-                  u.full_name as user_name, s.created_at, s.business_date,
+                  s.vehicle_kind, u.full_name as user_name, s.created_at, s.business_date,
                   exists (select 1 from sale_signatures g where g.sale_id = s.id) as "has_debt_signature!"
            from sales s
            join employees c on c.id = s.cashier_id
@@ -398,6 +409,7 @@ pub async fn load_sale(
         contact_name: h.contact_name,
         vehicle_plate: h.vehicle_plate,
         vehicle_id: h.vehicle_id,
+        vehicle_kind: h.vehicle_kind,
         party_balance_tyiyn: h.party_balance_tyiyn,
         total_tyiyn: h.total_tyiyn,
         master_fee_tyiyn: h.master_fee_tyiyn,
@@ -1296,6 +1308,34 @@ async fn insert_payments(
     Ok(())
 }
 
+/// «Грузовая / Легковая» чека (задача 040 A): присланное; нет — исходного чека у исправления,
+/// иначе значение кассы филиала. Неверное онлайн — отказ; чек без сети уже состоялся — значение
+/// филиала (I10).
+async fn sale_vehicle_kind(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    req: &SaleReq,
+) -> AppResult<String> {
+    if let Some(k) = req.vehicle_kind.as_deref() {
+        if crate::api::cashier_settings::is_vehicle_kind(k) {
+            return Ok(k.to_string());
+        }
+        if !req.offline {
+            return Err(invalid("вид машины — car или truck"));
+        }
+    }
+    if let Some(from) = req.correction.as_ref().and_then(|c| c.signature_from)
+        && let Some(k) = sqlx::query_scalar!("select vehicle_kind from sales where id = $1", from)
+            .fetch_optional(&mut *conn)
+            .await?
+    {
+        return Ok(k);
+    }
+    Ok(crate::api::cashier_settings::load(conn, branch_id)
+        .await?
+        .vehicle_kind_default)
+}
+
 pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> AppResult<SaleOut> {
     post_sale_core(conn, ctx, req, None).await
 }
@@ -1847,19 +1887,21 @@ pub async fn post_sale_core(
             }
         }
     }
+    let vehicle_kind = sale_vehicle_kind(conn, branch_id, &req).await?;
     let number = ops::next_counter(conn, branch_id, "sale").await?;
     let id = new_id();
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
-                              user_id, device_id, client_time, delivery_address, business_date)
+                              user_id, device_id, client_time, delivery_address, business_date,
+                              vehicle_kind)
            values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                    coalesce($17::date,
                    case when $15::timestamptz is not null
                          and $15::timestamptz > now() - interval '2 days'
                          and $15::timestamptz < now() + interval '5 minutes'
                         then ($15::timestamptz at time zone 'Asia/Bishkek')::date
-                        else (now() at time zone 'Asia/Bishkek')::date end))"#,
+                        else (now() at time zone 'Asia/Bishkek')::date end), $18)"#,
         id,
         branch_id,
         number,
@@ -1878,7 +1920,8 @@ pub async fn post_sale_core(
         // числом в закрытый день не проводится (SPEC-08).
         if offline { req.client_time } else { None },
         req.delivery_address.trim(),
-        req.correction.as_ref().map(|c| c.business_date)
+        req.correction.as_ref().map(|c| c.business_date),
+        vehicle_kind
     )
     .execute(&mut *conn)
     .await?;
@@ -3061,9 +3104,10 @@ pub async fn return_sale_core(
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
-                              reversal_of, user_id, device_id, business_date)
+                              reversal_of, user_id, device_id, business_date, vehicle_kind)
            values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                   coalesce($16::date, (now() at time zone 'Asia/Bishkek')::date))"#,
+                   coalesce($16::date, (now() at time zone 'Asia/Bishkek')::date),
+                   (select vehicle_kind from sales where id = $13))"#,
         rid,
         branch_id,
         number,

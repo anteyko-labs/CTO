@@ -116,6 +116,9 @@ pub struct CashierSettings {
     /// «Услуги бесплатно для клиента» (задача 036): цена услуг в чеке филиала — 0 с, ставка
     /// мастера за услугу начисляется как обычно. По умолчанию выключено — как было.
     pub services_free: bool,
+    /// «Грузовая / Легковая» нового чека (задача 040 A, ADR-205): `car` или `truck`; кассир
+    /// переключает на каждом чеке. По умолчанию — легковая (как было).
+    pub vehicle_kind_default: String,
 }
 
 impl Default for CashierSettings {
@@ -145,6 +148,7 @@ impl Default for CashierSettings {
             service_client_required: true,
             repay_other_branches: false,
             services_free: false,
+            vehicle_kind_default: "car".into(),
         }
     }
 }
@@ -196,6 +200,9 @@ pub fn normalize(mut s: CashierSettings) -> AppResult<CashierSettings> {
     if !(0..=10_000).contains(&s.barrel_pour_over_l) {
         return Err(invalid("порог бочки — от 0 до 10 000 л"));
     }
+    if !is_vehicle_kind(&s.vehicle_kind_default) {
+        return Err(invalid("вид машины — car или truck"));
+    }
     s.discount_quick.sort_unstable();
     s.discount_quick.dedup();
     if s.admin_limit_pct.is_some_and(|p| !(0..=100).contains(&p)) {
@@ -208,6 +215,11 @@ pub fn normalize(mut s: CashierSettings) -> AppResult<CashierSettings> {
         ops::check_amount(t)?;
     }
     Ok(s)
+}
+
+/// Вид машины чека (задача 040 A): легковая или грузовая.
+pub fn is_vehicle_kind(k: &str) -> bool {
+    k == "car" || k == "truck"
 }
 
 /// Настройка кассы филиала; нет записи или она не читается — по умолчанию.
@@ -313,6 +325,14 @@ mod tests {
         assert_eq!(d.barrel_pour_over_l, 150);
         assert!(!d.repay_other_branches);
         assert!(!d.services_free);
+        assert_eq!(d.vehicle_kind_default, "car");
+        assert!(
+            normalize(CashierSettings {
+                vehicle_kind_default: "bus".into(),
+                ..CashierSettings::default()
+            })
+            .is_err()
+        );
         let parsed: CashierSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(normalize(parsed).unwrap(), d);
     }
