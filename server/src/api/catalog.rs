@@ -38,6 +38,7 @@ pub fn routes() -> Router<AppState> {
             "/products/{id}",
             routing::get(get_product).patch(update_product),
         )
+        .route("/products/{id}/similar", routing::get(similar_in_base))
         .route("/products/{id}/prices", routing::patch(update_prices))
         .route(
             "/products/{id}/branches",
@@ -1445,6 +1446,166 @@ async fn similar_products(
     .await?;
     found.sort_by_key(|p| ids.iter().position(|id| *id == p.id));
     Ok(Json(found))
+}
+
+/// Остаток похожего товара в одном филиале.
+#[derive(Serialize)]
+struct SimilarStock {
+    branch_id: Uuid,
+    branch_name: String,
+    stock_qty: i64,
+}
+
+/// Похожий товар общей базы (задача 041 §5): категория, цена и остаток по филиалам.
+#[derive(Serialize)]
+struct SimilarItem {
+    id: Uuid,
+    name: String,
+    article: String,
+    unit: String,
+    category_id: Uuid,
+    category_name: String,
+    sale_price_tyiyn: i64,
+    barcodes: Vec<String>,
+    stocks: Vec<SimilarStock>,
+    /// Почему похож: `code` — тот же штрихкод или артикул, `name` — общие слова и числа.
+    reason: &'static str,
+}
+
+/// Слова названия для сравнения (задача 041 §7): без регистра и знаков, без слова «фильтр»;
+/// числа и коды с цифрами весомее слов.
+fn name_tokens(name: &str) -> Vec<String> {
+    const STOP: [&str; 6] = ["фильтр", "фильтры", "фильтра", "filter", "для", "шт"];
+    let mut out: Vec<String> = name
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| {
+            let n = w.chars().count();
+            !STOP.contains(w) && (n >= 3 || (n >= 2 && w.chars().any(|c| c.is_ascii_digit())))
+        })
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Код без знаков и регистра: «W 712/75» и «w71275» — одно.
+fn code_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Оценка похожести названий: общее число или код — 3, общее слово — 1.
+fn name_score(a: &[String], b: &[String]) -> i32 {
+    a.iter()
+        .filter(|t| b.contains(t))
+        .map(|t| {
+            if t.chars().any(|c| c.is_ascii_digit()) {
+                3
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+/// `GET /products/{id}/similar` — до 10 похожих товаров общей базы, кроме самого товара
+/// (задача 041 §5–7). Права — как у правки товара.
+async fn similar_in_base(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<Vec<SimilarItem>>> {
+    let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "products").await?;
+    let me = sqlx::query!(
+        r#"select name, article,
+                  coalesce((select array_agg(b.code) from product_barcodes b where b.product_id = p.id), '{}')
+                    as "barcodes!: Vec<String>"
+           from products p where id = $1"#,
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let my_tokens = name_tokens(&me.name);
+    let my_article = code_key(&me.article);
+    let patterns: Vec<String> = my_tokens
+        .iter()
+        .map(|t| format!("%{}%", escape_like(t)))
+        .collect();
+    let rows = sqlx::query!(
+        r#"select p.id, p.name, p.article, p.unit, p.category_id, c.name as category_name,
+                  p.sale_price_tyiyn,
+                  coalesce((select array_agg(b.code order by b.created_at) from product_barcodes b
+                            where b.product_id = p.id), '{}') as "barcodes!: Vec<String>"
+           from products p
+           join categories c on c.id = p.category_id
+           where p.id <> $1 and not p.archived
+             and (lower(p.name) like any($2::text[])
+                  or ($3 <> '' and lower(regexp_replace(p.article, '[^[:alnum:]]', '', 'g')) = $3)
+                  or ($3 <> '' and lower(regexp_replace(p.name, '[^[:alnum:]]', '', 'g')) like '%' || $3 || '%')
+                  or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code = any($4)))
+           limit 300"#,
+        id,
+        &patterns,
+        my_article,
+        &me.barcodes
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let my_name_key = code_key(&me.name);
+    let mut scored: Vec<_> = rows
+        .into_iter()
+        .filter_map(|r| {
+            let other_article = code_key(&r.article);
+            let by_code = r.barcodes.iter().any(|b| me.barcodes.contains(b))
+                || (!my_article.is_empty()
+                    && (other_article == my_article || code_key(&r.name).contains(&my_article)))
+                || (other_article.chars().count() >= 3 && my_name_key.contains(&other_article));
+            let score = name_score(&my_tokens, &name_tokens(&r.name));
+            (by_code || score >= 2).then_some((if by_code { 100 } else { 0 } + score, by_code, r))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.name.cmp(&b.2.name)));
+    scored.truncate(10);
+    let ids: Vec<Uuid> = scored.iter().map(|s| s.2.id).collect();
+    let stocks = sqlx::query!(
+        r#"select bp.product_id, b.id as branch_id, b.name as branch_name, bp.stock_qty
+           from branch_products bp join branches b on b.id = bp.branch_id
+           where bp.product_id = any($1) order by b.name"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(Json(
+        scored
+            .into_iter()
+            .map(|(_, by_code, r)| SimilarItem {
+                stocks: stocks
+                    .iter()
+                    .filter(|s| s.product_id == r.id)
+                    .map(|s| SimilarStock {
+                        branch_id: s.branch_id,
+                        branch_name: s.branch_name.clone(),
+                        stock_qty: s.stock_qty,
+                    })
+                    .collect(),
+                id: r.id,
+                name: r.name,
+                article: r.article,
+                unit: r.unit,
+                category_id: r.category_id,
+                category_name: r.category_name,
+                sale_price_tyiyn: r.sale_price_tyiyn,
+                barcodes: r.barcodes,
+                reason: if by_code { "code" } else { "name" },
+            })
+            .collect(),
+    ))
 }
 
 /// Товар в продаже не кладётся в скрытую категорию (задача 003 Н10): её нет в выборе.

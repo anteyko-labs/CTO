@@ -25,6 +25,7 @@ import { unitText } from '../lib/unitChange'
 import { isKgM, isMilli, parseQty, perWord, unitShort, type StockUnit } from '../lib/units'
 import { ProductCostBlock } from './ProductCostBlock'
 import { ProductBranchesBlock } from './ProductBranchesBlock'
+import { ProductSimilarBlock } from './ProductSimilarBlock'
 import { PurchasePriceInput } from './PurchasePriceInput'
 
 interface Form {
@@ -120,6 +121,8 @@ export function ProductFormModal({
   const [newCodes, setNewCodes] = useState<string[]>([])
   const [newCategory, setNewCategory] = useState<{ name: string; kind: CategoryKind } | null>(null)
   const [merging, setMerging] = useState(false)
+  /** Похожий товар, открытый из «Похожие в базе» (задача 041 §5). */
+  const [opened, setOpened] = useState<Product | null>(null)
   const [mergeQuery, setMergeQuery] = useState('')
   const merge = useAction()
   const categoryAction = useAction()
@@ -736,6 +739,19 @@ export function ProductFormModal({
       {/* Связанная строка старой базы Умаг (SPEC-35 §3): после связывания у товара новые коды. */}
       {product && <ProductCostBlock productId={product.id} />}
       {product && <ProductBranchesBlock productId={product.id} />}
+      {product && mayEdit && (
+        <ProductSimilarBlock
+          productId={product.id}
+          categories={categories.data ?? []}
+          onTakeCategory={async (categoryId) => {
+            const p = await patch<Product>(`/products/${product.id}`, { category_id: categoryId })
+            set('category_id', p.category_id)
+            toast('Категория поставлена')
+          }}
+          onOpen={(id) => void get<Product>(`/products/${id}`).then(setOpened, () => toast('Карточка не открылась'))}
+        />
+      )}
+      {opened && <ProductFormModal product={opened} onClose={() => setOpened(null)} onSaved={() => setOpened(null)} />}
       {product && <UmagCard productId={product.id} codes={codes} mayEdit={mayEdit} onProduct={(p) => setCodes(p.barcodes)} />}
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />

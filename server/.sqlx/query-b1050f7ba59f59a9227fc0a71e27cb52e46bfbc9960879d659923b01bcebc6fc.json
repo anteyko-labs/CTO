@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bp.product_id, b.id as branch_id, b.name as branch_name, bp.stock_qty\n           from branch_products bp join branches b on b.id = bp.branch_id\n           where bp.product_id = any($1) order by b.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "branch_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "stock_qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b1050f7ba59f59a9227fc0a71e27cb52e46bfbc9960879d659923b01bcebc6fc"
+}
