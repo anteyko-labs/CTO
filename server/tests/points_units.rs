@@ -275,6 +275,7 @@ fn takeaway(w: &World, party: Option<Uuid>, lines: Vec<SaleLineReq>, total: i64)
         removed_lines: serde_json::Value::Null,
         debt_signature_png: None,
         correction: None,
+        vehicle_kind: None,
     }
 }
 

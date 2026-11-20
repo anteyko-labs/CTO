@@ -266,6 +266,18 @@ impl Point {
         services: &[&str],
         next: Value,
     ) -> Value {
+        let body = self.sale_body(mileage, goods, services, next);
+        ok(&self.app, "POST", "/api/v1/sales", &self.owner, body).await
+    }
+
+    /// Тело чека «В сервис» — как `sell`, без отправки.
+    fn sale_body(
+        &self,
+        mileage: i64,
+        goods: &[(&str, &str, i64)],
+        services: &[&str],
+        next: Value,
+    ) -> Value {
         let mut lines = Vec::new();
         let mut total = 0i64;
         for (key, kind, qty) in goods {
@@ -284,27 +296,20 @@ impl Point {
             lines.push(json!({ "kind": "service", "gift": false, "service_id": s["id"], "qty": 1, "unit_price_tyiyn": s["price_tyiyn"] }));
             total += s["price_tyiyn"].as_i64().unwrap();
         }
-        ok(
-            &self.app,
-            "POST",
-            "/api/v1/sales",
-            &self.owner,
-            json!({
-                "op_id": Uuid::now_v7(),
-                "client_time": chrono::Utc::now(),
-                "sale_type": "service",
-                "cashier_id": self.cashier["id"],
-                "master_id": self.master["id"],
-                "party_id": self.party["id"],
-                "vehicle_id": self.vehicle["id"],
-                "mileage": mileage,
-                "mileage_unit": "km",
-                "lines": lines,
-                "next_changes": next,
-                "payments": [{ "method": "cash", "amount_tyiyn": total }],
-            }),
-        )
-        .await
+        json!({
+            "op_id": Uuid::now_v7(),
+            "client_time": chrono::Utc::now(),
+            "sale_type": "service",
+            "cashier_id": self.cashier["id"],
+            "master_id": self.master["id"],
+            "party_id": self.party["id"],
+            "vehicle_id": self.vehicle["id"],
+            "mileage": mileage,
+            "mileage_unit": "km",
+            "lines": lines,
+            "next_changes": next,
+            "payments": [{ "method": "cash", "amount_tyiyn": total }],
+        })
     }
 
     async fn book(&self) -> Value {
@@ -1681,4 +1686,164 @@ async fn allow_negative(pool: &PgPool) {
     .execute(pool)
     .await
     .unwrap();
+}
+
+/// Задача 040 A: «Грузовая / Легковая» — значение кассы филиала у чека без поля, присланное —
+/// как есть, неверное — 422; в книжке у грузовой каждый фильтр своей строкой, у легковой — одной.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn truck_sale_marks_check_and_splits_filters(pool: PgPool) {
+    let mut p = Point::new(pool).await;
+    let (s, cats) = call(&p.app, "GET", "/api/v1/categories", &p.owner, None).await;
+    assert_eq!(s, StatusCode::OK, "{cats}");
+    let filters = cats
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Фильтры")
+        .unwrap()["id"]
+        .clone();
+    let second = ok(
+        &p.app,
+        "POST",
+        "/api/v1/products",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "category_id": filters, "name": "Фильтр PP-879",
+                "attrs": { "filter_type": "топливный" }, "sale_price_tyiyn": 90_000 }),
+    )
+    .await;
+    p.goods.insert("fuel_f2", (second["id"].clone(), 90_000));
+    let settings = ok(
+        &p.app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "vehicle_kind_default": "truck", "sale_allow_negative": true }),
+    )
+    .await;
+    assert_eq!(settings["vehicle_kind_default"], "truck");
+    let goods = [
+        ("oil", "container", 1),
+        ("fuel_f", "piece", 1),
+        ("fuel_f2", "piece", 1),
+    ];
+    let next = || json!([{ "service_id": p.services["oil"]["id"], "next_mileage": 260_000 }]);
+    // Без поля — значение филиала: грузовая.
+    let truck = p.sell(250_000, &goods, &["oil"], next()).await;
+    assert_eq!(truck["vehicle_kind"], "truck");
+    assert_eq!(truck["book"]["vehicle_kind"], "truck");
+    let fuel: Vec<Value> = truck["book"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["slot"] == "fuel_filter")
+        .map(|l| l["label"].clone())
+        .collect();
+    assert_eq!(
+        fuel,
+        vec![
+            json!("Фильтр WK-842 (топливный) · 1 шт"),
+            json!("Фильтр PP-879 (топливный) · 1 шт")
+        ],
+        "у грузовой каждый фильтр — своей строкой"
+    );
+    let b = p.book().await;
+    let rec = b["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["sale_id"] == truck["id"])
+        .unwrap();
+    assert_eq!(rec["vehicle_kind"], "truck");
+    // Присланное — как есть: легковая, фильтры одной строки — вместе.
+    let mut body = p.sale_body(251_000, &goods, &["oil"], next());
+    body["vehicle_kind"] = json!("car");
+    let car = ok(&p.app, "POST", "/api/v1/sales", &p.owner, body).await;
+    assert_eq!(car["vehicle_kind"], "car");
+    let fuel = car["book"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["slot"] == "fuel_filter")
+        .count();
+    assert_eq!(fuel, 2, "и у легковой фильтры не сливаются");
+    // Неверное — 422.
+    let mut body = p.sale_body(252_000, &goods, &["oil"], next());
+    body["vehicle_kind"] = json!("bus");
+    let (s, v) = call(&p.app, "POST", "/api/v1/sales", &p.owner, Some(body)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, v) = call(
+        &p.app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        &p.owner,
+        Some(json!({ "op_id": Uuid::now_v7(), "vehicle_kind_default": "bus" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+/// Задача 040 A (уточнение владельца): три масляных фильтра одной категории в одном чеке легковой —
+/// три строки книжки чека, каждая со своей следующей заменой; ничего не сливается.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn three_oil_filters_are_three_lines(pool: PgPool) {
+    let mut p = Point::new(pool).await;
+    let (s, cats) = call(&p.app, "GET", "/api/v1/categories", &p.owner, None).await;
+    assert_eq!(s, StatusCode::OK, "{cats}");
+    let filters = cats
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Фильтры")
+        .unwrap()["id"]
+        .clone();
+    for (key, name) in [("oil_f2", "Фильтр W610"), ("oil_f3", "Фильтр W920")] {
+        let prod = ok(
+            &p.app,
+            "POST",
+            "/api/v1/products",
+            &p.owner,
+            json!({ "op_id": Uuid::now_v7(), "category_id": filters, "name": name,
+                    "attrs": { "filter_type": "масляный" }, "sale_price_tyiyn": 50_000 }),
+        )
+        .await;
+        p.goods.insert(key, (prod["id"].clone(), 50_000));
+    }
+    let sale = p
+        .sell(
+            250_000,
+            &[
+                ("oil", "container", 1),
+                ("oil_f", "piece", 1),
+                ("oil_f2", "piece", 1),
+                ("oil_f3", "piece", 1),
+            ],
+            &["oil"],
+            json!([{ "service_id": p.services["oil"]["id"], "next_mileage": 258_000 }]),
+        )
+        .await;
+    assert_eq!(sale["vehicle_kind"], "car");
+    let rows: Vec<(Value, Value)> = sale["book"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["slot"] == "oil_filter")
+        .map(|l| (l["label"].clone(), l["next_mileage"].clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (json!("Фильтр W712 (масляный) · 1 шт"), json!(258_000)),
+            (json!("Фильтр W610 (масляный) · 1 шт"), json!(258_000)),
+            (json!("Фильтр W920 (масляный) · 1 шт"), json!(258_000)),
+        ]
+    );
+    let filled = sale["book"]["filled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["slot"] == "oil_filter")
+        .count();
+    assert_eq!(filled, 3);
+    let rec = p.record(&sale).await.unwrap();
+    assert_eq!(rec.iter().filter(|l| l.0 == "oil_filter").count(), 3);
 }

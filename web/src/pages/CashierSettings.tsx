@@ -294,6 +294,22 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
           <p className="mt-2 text-sm text-slate-500">
             Только в этом филиале: услуги в чеке идут по 0 с, цену не поменять. Мастер получает свою ставку за услугу, как обычно.
           </p>
+          <label className="mt-3 flex items-center gap-2 text-sm" htmlFor="vehicle-kind-default">
+            Новый чек — машина
+            <select
+              id="vehicle-kind-default"
+              className="rounded border border-slate-300 px-2 py-1"
+              value={s.vehicle_kind_default}
+              onChange={(e) => set({ vehicle_kind_default: e.target.value === 'truck' ? 'truck' : 'car' })}
+            >
+              <option value="car">🚗 Легковая</option>
+              <option value="truck">🚚 Грузовая</option>
+            </select>
+          </label>
+          <p className="mt-2 text-sm text-slate-500">
+            С этого значения начинается каждый чек в этом филиале; кассир переключает ползунок «Грузовая / Легковая» на кассе для каждого чека. Только
+            отметка в чеке и масляной книжке: цены не меняются.
+          </p>
           <label className="mt-3 inline-flex items-center gap-2 text-sm">
             <input
               id="repay-other-branches"

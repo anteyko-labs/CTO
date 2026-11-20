@@ -544,6 +544,8 @@ export interface Sale {
   vehicle_plate: string | null
   /** Машина чека «В сервис»: по ней экран чека печатает её книжку (задача 003 Н5). */
   vehicle_id?: string | null
+  /** «Грузовая» / «Легковая» (задача 040 A); у старого ответа нет — легковая. */
+  vehicle_kind?: VehicleKind
   /** Баланс клиента после чека: сколько он теперь должен. */
   party_balance_tyiyn: number | null
   /** Адрес доставки; пусто — забрали сами. */
@@ -593,7 +595,15 @@ export function approvalMarkText(a: SaleApprovalMark): string {
 }
 
 /** Масляная книжка в печатном чеке: машина, пробег сейчас и следующие замены (SPEC-34 §4). */
+/** Вид машины чека (задача 040 A, ADR-205): только отметка в чеке и книжке. */
+export type VehicleKind = 'car' | 'truck'
+
+/** «Грузовая» / «Легковая» — строка чека и книжки. */
+export const vehicleKindText = (k: VehicleKind | null | undefined): string => (k === 'truck' ? 'Грузовая' : 'Легковая')
+
 export interface SaleBook {
+  /** «Грузовая» / «Легковая» чека: у грузовой каждый фильтр — своей строкой. */
+  vehicle_kind?: VehicleKind
   brand: string
   model: string
   plate: string

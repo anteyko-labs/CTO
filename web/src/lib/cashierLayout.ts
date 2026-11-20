@@ -120,6 +120,8 @@ export interface CashierSettings {
   repay_other_branches: boolean
   /** «Услуги бесплатно для клиента» (задача 036): услуги в чеке — 0 с, мастеру — его ставка. */
   services_free: boolean
+  /** «Грузовая / Легковая» нового чека (задача 040 A): кассир переключает на каждом чеке. */
+  vehicle_kind_default: 'car' | 'truck'
 }
 
 export const DEFAULT_CASHIER: CashierSettings = {
@@ -141,6 +143,7 @@ export const DEFAULT_CASHIER: CashierSettings = {
   barrel_pour_over_l: 150,
   repay_other_branches: false,
   services_free: false,
+  vehicle_kind_default: 'car',
 }
 
 export const buttonDef = (id: ButtonId): ButtonDef | undefined => BUTTONS.find((b) => b.id === id)

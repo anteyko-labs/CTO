@@ -341,6 +341,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         removed_lines: serde_json::Value::Null,
         debt_signature_png: Some("iVBORw0KGgpzaWctb25lIQ==".into()),
         correction: None,
+        vehicle_kind: None,
     }
 }
 

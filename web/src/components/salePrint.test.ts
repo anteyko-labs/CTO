@@ -136,3 +136,41 @@ describe('ширина товарного чека по ленте принте�
     expect(html).toContain('overflow-wrap: anywhere')
   })
 })
+
+describe('«Грузовая / Легковая» в чеке (задача 040 A)', () => {
+  it('строка в чеке и в блоке книжки; без поля — легковая', () => {
+    expect(plain(saleHtml(sale({ vehicle_kind: 'truck', book: { ...book, vehicle_kind: 'truck' } }), null))).toContain('Грузовая')
+    expect(plain(saleHtml(sale({}), null))).toContain('Легковая')
+    expect(plain(saleHtml(sale({ kind: 'return' }), null))).not.toContain('Легковая')
+  })
+
+  it('у грузовой два фильтра одной строки — две строки, каждая со своей заменой', () => {
+    const two = {
+      ...book,
+      vehicle_kind: 'truck' as const,
+      lines: [
+        { label: 'WK 820 (топливный) · 1 шт', slot: 'fuel_filter' as const, next_mileage: 160000, unit: 'km' as const, next_date: null, group: null },
+        { label: 'PP 879 (топливный) · 1 шт', slot: 'fuel_filter' as const, next_mileage: 170000, unit: 'km' as const, next_date: null, group: null },
+      ],
+      filled: [
+        { slot: 'fuel_filter' as const, label: 'WK 820 (топливный) · 1 шт', product: 'WK 820 · 1 шт', group: null },
+        { slot: 'fuel_filter' as const, label: 'PP 879 (топливный) · 1 шт', product: 'PP 879 · 1 шт', group: null },
+      ],
+    }
+    const t = plain(bookHtml(sale({ book: two })))
+    expect(t).toContain('WK 820 (топливный) · 1 шт Следующая замена — на 160 000 км')
+    expect(t).toContain('PP 879 (топливный) · 1 шт Следующая замена — на 170 000 км')
+  })
+
+  it('три масляных фильтра одной категории у легковой — три строки, ничего не сливается', () => {
+    const names = ['W712', 'W610', 'W920']
+    const three = {
+      ...book,
+      lines: names.map((n) => ({ label: `${n} (масляный) · 1 шт`, slot: 'oil_filter' as const, next_mileage: 138000, unit: 'km' as const, next_date: null, group: MOTOR })),
+      filled: names.map((n) => ({ slot: 'oil_filter' as const, label: `${n} (масляный) · 1 шт`, product: `${n} · 1 шт`, group: MOTOR })),
+    }
+    const t = plain(bookHtml(sale({ book: three })))
+    for (const n of names) expect(t.split(`${n} (масляный) · 1 шт`).length - 1).toBe(1)
+    expect(t).toContain('Легковая')
+  })
+})

@@ -83,7 +83,7 @@ import { focusScanField, useScanToPicker } from '../lib/scanner'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
-import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
+import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift, type VehicleKind } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -467,6 +467,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [businessDate, setBusinessDate] = useState(fix?.state.businessDate ?? '')
   const [fixComment, setFixComment] = useState('')
   const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
+  // «Грузовая / Легковая» (задача 040 A, ADR-205): на каждый чек; не трогали — значение кассы филиала.
+  const [vehicleKindPick, setVehicleKind] = useState<VehicleKind | null>(null)
+  const vehicleKind: VehicleKind = vehicleKindPick ?? cs.vehicle_kind_default
   const [cashierId, setCashierId] = useState(() => fix?.state.cashierId ?? remembered(CASHIER_KEY))
   const [masterId, setMasterId] = useState(draft?.masterId ?? '')
   const [lines, setLines] = useState<CartLine[]>(draft?.lines ?? [])
@@ -1031,6 +1034,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setBankPick(NO_BANK_PICK)
     setMasterId('')
     setSaleType('takeaway')
+    setVehicleKind(null)
     setParty(null)
     setContactId('')
     setVehicleId('')
@@ -1394,6 +1398,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       mileage: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
       mileage_unit: party && vehicleId && saleType === 'service' && mileage ? carUnit : null,
       delivery_address: delivery?.trim() ?? '',
+      // Исправление без переключения — как у исходного чека (сервер).
+      ...(vehicleKindPick || !fix ? { vehicle_kind: vehicleKind } : {}),
       declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
       // Следующая замена по услугам — в единице пробега чека (SPEC-34).
       next_changes: nextOn ? nextPayload(nextList) : [],
@@ -2652,6 +2658,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </span>
             </div>
           )}
+          <div className="flex shrink-0 items-center gap-2 px-1 py-1" role="radiogroup" aria-label="Грузовая или легковая" data-testid="vehicle-kind">
+            {(['truck', 'car'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={vehicleKind === k}
+                data-testid={`vehicle-kind-${k}`}
+                className={`flex-1 rounded-lg border-2 px-3 font-semibold ${touch ? 'py-3 text-lg' : 'py-2 text-base'} ${
+                  vehicleKind === k ? (k === 'truck' ? 'border-amber-500 bg-amber-100 text-amber-900' : 'border-sky-500 bg-sky-100 text-sky-900') : 'border-slate-200 bg-white text-slate-500'
+                }`}
+                onClick={() => setVehicleKind(k)}
+              >
+                {k === 'truck' ? '🚚 Грузовая' : '🚗 Легковая'}
+              </button>
+            ))}
+          </div>
           <div
             ref={cartRef}
             className={touch ? 'relative lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : ''}

@@ -24,7 +24,7 @@ import { returnDebtCap, splitReturn } from '../lib/returnSplit'
 import type { VehicleBook } from '../lib/oilBook'
 import { printBotQr, printOilBook, saleCheckOf } from '../lib/oilBookPrint'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, shouldAutoReceipt } from '../lib/oilBookSettings'
-import { PAYMENT_LABELS, approvalMarkText, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
+import { PAYMENT_LABELS, approvalMarkText, vehicleKindText, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
   qty: number
@@ -435,6 +435,7 @@ export default function SaleView() {
       <Card className="grid gap-2 text-sm sm:grid-cols-2">
         <div>Дата: {formatDateTime(sale.created_at)}</div>
         <div>Тип: {sale.sale_type === 'service' ? 'В сервис' : 'На вынос'}</div>
+        <div data-testid="sale-vehicle-kind">Машина: {vehicleKindText(sale.vehicle_kind)}</div>
         <div>Кассир: {sale.cashier_name}</div>
         <div>Мастер: {sale.master_name ?? '—'}</div>
         {sale.party_name && (
