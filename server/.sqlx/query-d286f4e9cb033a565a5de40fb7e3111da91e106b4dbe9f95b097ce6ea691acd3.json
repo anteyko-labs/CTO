@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select party_id, paid_by_party_id, status from party_vehicles where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "paid_by_party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "d286f4e9cb033a565a5de40fb7e3111da91e106b4dbe9f95b097ce6ea691acd3"
+}

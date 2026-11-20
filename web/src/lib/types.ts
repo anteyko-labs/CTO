@@ -735,6 +735,8 @@ export interface PartyVehicle {
   active: boolean
   /** Пробег в км или милях (ADR-084). */
   mileage_unit?: 'km' | 'mi'
+  status?: 'active' | 'pending' | 'rejected'
+  personal_of?: string | null
 }
 
 /** Справочник марок и моделей (ADR-083). */

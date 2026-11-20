@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select phone from parties where id = $1 and kind = 'person'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "phone",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7894846e0e2d5303e3063f8cefb48f42d80309094b05b0f7dc747ffcac5bb95d"
+}

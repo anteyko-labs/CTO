@@ -5288,6 +5288,24 @@ pub async fn approval_pass(conn: &mut PgConnection, api: &Api) -> AppResult<Pass
             Delivery::Retry { after, all } => {
                 out.retry(after, all);
                 if all {
+                    return Ok(out);
+                }
+                blocked.insert(n.chat_id);
+            }
+        }
+    }
+    // Решение фирмы по машине из бота — автору (задача 037 п. 3).
+    for n in crate::api::legal_garage::notices(conn).await? {
+        if blocked.contains(&n.chat_id) {
+            continue;
+        }
+        match api.push(n.chat_id, &n.text).await {
+            Delivery::Sent | Delivery::Skip => {
+                crate::api::legal_garage::mark_notice(conn, &n).await?
+            }
+            Delivery::Retry { after, all } => {
+                out.retry(after, all);
+                if all {
                     break;
                 }
                 blocked.insert(n.chat_id);

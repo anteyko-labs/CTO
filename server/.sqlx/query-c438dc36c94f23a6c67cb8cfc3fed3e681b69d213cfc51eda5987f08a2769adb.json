@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_balances (party_id, branch_id, balance_tyiyn) values ($1, $2, $3)\n                   on conflict (party_id, branch_id) do update set balance_tyiyn = excluded.balance_tyiyn",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c438dc36c94f23a6c67cb8cfc3fed3e681b69d213cfc51eda5987f08a2769adb"
+}

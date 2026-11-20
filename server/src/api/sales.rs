@@ -1507,6 +1507,10 @@ pub async fn post_sale_core(
     )
     .await?;
 
+    // Личная машина работника, которую оплачивает фирма: долг — на фирму (задача 037, ADR-199).
+    if replay.is_none() {
+        crate::api::legal_garage::payer_rewrite(conn, &mut req).await?;
+    }
     let debt_total: i64 = req
         .payments
         .iter()

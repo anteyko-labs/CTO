@@ -109,6 +109,10 @@ pub(crate) struct VehicleOut {
     pub(crate) active: bool,
     /// Единица пробега машины: `km` или `mi` (ADR-084).
     pub(crate) mileage_unit: String,
+    /// `active`, `pending` — ждёт подтверждения фирмы, `rejected` (задача 037, ADR-199).
+    pub(crate) status: String,
+    /// Личная машина работника, которую оплачивает фирма: имя работника.
+    pub(crate) personal_of: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -794,7 +798,8 @@ async fn create_vehicle(
     // Убранную (клиентом в боте или точкой) — возвращаем в список (ADR-062).
     let own = sqlx::query_as!(
         VehicleOut,
-        r#"select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
+        r#"select id, plate, brand, model, comment, active, mileage_unit, status,
+                  null::text as "personal_of?" from party_vehicles
            where party_id = $1 and plate_norm = $2
            order by active desc, created_at limit 1"#,
         id,
@@ -873,6 +878,8 @@ async fn create_vehicle(
         comment: req.comment.trim().into(),
         active: true,
         mileage_unit: unit,
+        status: "active".into(),
+        personal_of: None,
     }))
 }
 
@@ -919,7 +926,8 @@ async fn restore_vehicle(
     restore_vehicle_tx(&mut tx, &ctx, id, vehicle_id, "card").await?;
     let row = sqlx::query_as!(
         VehicleOut,
-        r#"select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
+        r#"select id, plate, brand, model, comment, active, mileage_unit, status,
+                  null::text as "personal_of?" from party_vehicles
            where id = $1 and party_id = $2"#,
         vehicle_id,
         id
@@ -963,7 +971,8 @@ async fn update_vehicle(
                active = coalesce($7, active),
                mileage_unit = coalesce($9, mileage_unit)
            where id = $1 and party_id = $2
-           returning id, plate, brand, model, comment, active, mileage_unit"#,
+           returning id, plate, brand, model, comment, active, mileage_unit, status,
+                     null::text as "personal_of?""#,
         vehicle_id,
         id,
         req.plate,
@@ -1288,14 +1297,33 @@ pub async fn check_sale_party(
         }
     }
     if let Some(vid) = vehicle_id {
+        // Личная машина работника, которую оплачивает фирма, — тоже машина фирмы (ADR-199).
         let v = sqlx::query!(
-            "select plate, active from party_vehicles where id = $1 and party_id = $2",
+            "select plate, active, status from party_vehicles
+             where id = $1 and (party_id = $2 or paid_by_party_id = $2)",
             vid,
             party_id
         )
         .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| invalid("машина не из этой фирмы"))?;
+        // Машина ждёт подтверждения фирмы (или отклонена) — в долг фирмы её не провести (п. 3).
+        if on_debt && v.status != "active" {
+            if !offline {
+                return Err(AppError::ConflictCode(
+                    "vehicle_pending",
+                    if v.status == "pending" {
+                        format!(
+                            "машина {} ждёт подтверждения фирмы — в долг нельзя",
+                            v.plate
+                        )
+                    } else {
+                        format!("фирма не подтвердила машину {} — в долг нельзя", v.plate)
+                    },
+                ));
+            }
+            bypass.push(format!("в долг на неподтверждённой машине {}", v.plate));
+        }
         if !v.active {
             // Клиент убрал машину в боте (или её убрали в карточке): замена на ней — повод
             // вернуть её осознанно, а не молча (ADR-062).
@@ -2411,8 +2439,12 @@ pub(crate) async fn party_card_data(
     .await?;
     let vehicles = sqlx::query_as!(
         VehicleOut,
-        "select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
-         where party_id = $1 order by active desc, plate",
+        r#"select v.id, v.plate, v.brand, v.model, v.comment, v.active, v.mileage_unit, v.status,
+                  (select o.name from parties o where o.id = v.party_id and v.party_id <> $1)
+                      as "personal_of?"
+           from party_vehicles v
+           where v.party_id = $1 or (v.paid_by_party_id = $1 and v.status <> 'rejected')
+           order by v.active desc, v.plate"#,
         id
     )
     .fetch_all(&mut *conn)

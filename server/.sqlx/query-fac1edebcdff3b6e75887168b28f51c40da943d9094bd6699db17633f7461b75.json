@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_vehicles\n           set plate = coalesce(nullif(upper(trim($3)), ''), plate),\n               plate_norm = coalesce($8, plate_norm),\n               brand = $4, model = $5, comment = $6,\n               active = coalesce($7, active),\n               mileage_unit = coalesce($9, mileage_unit)\n           where id = $1 and party_id = $2\n           returning id, plate, brand, model, comment, active, mileage_unit, status,\n                     null::text as \"personal_of?\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "mileage_unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "personal_of?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "fac1edebcdff3b6e75887168b28f51c40da943d9094bd6699db17633f7461b75"
+}

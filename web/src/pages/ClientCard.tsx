@@ -142,6 +142,78 @@ export function CabinetBox({ partyId, supplier = false }: { partyId: string; sup
   )
 }
 
+interface VehicleRequest {
+  id: string
+  plate: string
+  brand: string
+  model: string
+  personal_of: string | null
+  author: string
+  status: 'pending' | 'approved' | 'rejected'
+  reason: string
+}
+
+/** «Запросы»: машины фирмы, ждущие подтверждения (задача 037, ADR-199). */
+function VehicleRequestsBox({ partyId }: { partyId: string }) {
+  const list = useLoad(() => get<VehicleRequest[]>(`/parties/${partyId}/requests`), [partyId])
+  const act = useAction()
+  const open = (list.data ?? []).filter((r) => r.status === 'pending')
+  if (open.length === 0) return null
+  const decide = (id: string, ok: boolean) =>
+    void act.run(async () => {
+      let reason = ''
+      if (!ok) {
+        reason = window.prompt('Причина отказа')?.trim() ?? ''
+        if (!reason) return
+      }
+      await post(`/parties/${partyId}/requests/${id}/${ok ? 'approve' : 'reject'}`, { op_id: newOpId(), reason })
+      toast(ok ? 'Машина подтверждена' : 'Отклонено')
+      list.reload()
+    })
+  return (
+    <Card className="flex flex-col gap-2 text-sm" data-testid="vehicle-requests">
+      <div className="font-medium">Запросы: машины ждут подтверждения</div>
+      <ErrorBox error={act.error ?? list.error} />
+      {open.map((r) => (
+        <div key={r.id} className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{r.plate}</span>
+          <span>{[r.brand, r.model].filter(Boolean).join(' ')}</span>
+          {r.personal_of && <span className="text-slate-500">личная машина {r.personal_of}</span>}
+          <Button disabled={act.busy} onClick={() => decide(r.id, true)}>Подтвердить</Button>
+          <Button variant="secondary" disabled={act.busy} onClick={() => decide(r.id, false)}>Отклонить</Button>
+        </div>
+      ))}
+    </Card>
+  )
+}
+
+/** «Пересчитать долг» (задача 037 п. 4): баланс — по журналу долга. Только владелец. */
+function RecountBox({ partyId, onDone }: { partyId: string; onDone: () => void }) {
+  const act = useAction()
+  return (
+    <Card className="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div className="text-slate-600">Долг клиента сверяется с журналом долга по филиалам.</div>
+      <ErrorBox error={act.error} />
+      <Button
+        variant="secondary"
+        disabled={act.busy}
+        onClick={() =>
+          void act.run(async () => {
+            const r = await post<{ matched: boolean; before_tyiyn: number; after_tyiyn: number }>(`/parties/${partyId}/recount`, { op_id: newOpId() })
+            if (r.matched) toast('Совпадает')
+            else {
+              toast(`Исправлено: было ${formatSom(r.before_tyiyn)}, стало ${formatSom(r.after_tyiyn)}`)
+              onDone()
+            }
+          })
+        }
+      >
+        Пересчитать долг
+      </Button>
+    </Card>
+  )
+}
+
 /** Ссылка на бот со скрытым кодом клиента (SPEC-32): «Старт» по ней сразу подключает чат.
  *  Видит только владелец; «Новая ссылка» — прежняя перестаёт работать. */
 function BotLinkBox({ partyId }: { partyId: string }) {
@@ -676,6 +748,8 @@ export default function ClientCard() {
       {owner && party.kind === 'company' && party.role === 'customer' && <CabinetBox partyId={party.id} />}
 
       {owner && party.role === 'customer' && <BotLinkBox partyId={party.id} />}
+      {mayEdit && party.kind === 'company' && party.role === 'customer' && <VehicleRequestsBox partyId={party.id} />}
+      {owner && party.role === 'customer' && <RecountBox partyId={party.id} onDone={() => card.reload()} />}
 
       {party.role === 'customer' && <BonusBox partyId={party.id} />}
 

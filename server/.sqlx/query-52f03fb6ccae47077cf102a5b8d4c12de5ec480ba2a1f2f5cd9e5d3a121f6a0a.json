@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, plate, brand, model, comment, active, mileage_unit from party_vehicles\n           where party_id = $1 and plate_norm = $2\n           order by active desc, created_at limit 1",
+  "query": "select v.id, v.plate, v.brand, v.model, v.comment, v.active, v.mileage_unit, v.status,\n                  (select o.name from parties o where o.id = v.party_id and v.party_id <> $1)\n                      as \"personal_of?\"\n           from party_vehicles v\n           where v.party_id = $1 or (v.paid_by_party_id = $1 and v.status <> 'rejected')\n           order by v.active desc, v.plate",
   "describe": {
     "columns": [
       {
@@ -37,12 +37,21 @@
         "ordinal": 6,
         "name": "mileage_unit",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "personal_of?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -52,8 +61,10 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      null
     ]
   },
-  "hash": "c4c7d346e49a7c683cf32f2555ef5257049c7b16e582cb0ed75c86140dcf28ee"
+  "hash": "52f03fb6ccae47077cf102a5b8d4c12de5ec480ba2a1f2f5cd9e5d3a121f6a0a"
 }

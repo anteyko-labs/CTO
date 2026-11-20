@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into vehicle_requests (id, branch_id, vehicle_id, party_id, source, author, chat_id, op_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eeb1fbcc14219fca38dec1eee8321cf6a27521c50d4ce5da2e4b6ba20a7d2c03"
+}

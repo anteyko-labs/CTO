@@ -1,17 +1,17 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select plate, active from party_vehicles where id = $1 and party_id = $2",
+  "query": "select status, vehicle_id from vehicle_requests where id = $1 and party_id = $2 for update",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "plate",
+        "name": "status",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "active",
-        "type_info": "Bool"
+        "name": "vehicle_id",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "7bdc009e235d429580bd088af9457614f32f4e184c6864ec5409cae71381004d"
+  "hash": "1d04c53f6e3198a5674d54323218464f48b5c44235b1cfaa784223e552eb6d42"
 }
