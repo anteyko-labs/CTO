@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.party_id, p.name from sale_approvals a join parties p on p.id = a.party_id\n           where a.status in ('pending', 'expired') and a.forced_at is null\n             and a.created_at > now() - interval '1 day'\n           order by a.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "afd548d3455f97aaa28367ac29efe9d79921d339c3fe2d6523d570b49ac63d8c"
+}

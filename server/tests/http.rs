@@ -12286,6 +12286,18 @@ async fn invoice_payment_lands_on_its_account(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
+    // Подтверждение фирмой (задача 039 C) здесь не проверяется — выключено.
+    let (st, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/legal",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "approval_mode": "off", "approval_timeout_min": 10 }),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
     let (_, card_bank, _) = accounts_of(&app, &owner).await;
     let cashier = cashier_employee(&app, &owner).await;
     let item = product(&app, &owner, "Фильтр по счёту", 50_000, 0).await;

@@ -287,6 +287,9 @@ pub struct SaleOut {
     /// замены.
     #[serde(default)]
     pub book: Option<crate::api::oil_book::SaleBook>,
+    /// Подтверждение фирмы по чеку в долг (задача 039 C): статус запроса или ничего.
+    #[serde(default)]
+    pub approval: Option<crate::api::sale_approvals::SaleMark>,
 }
 
 pub async fn load_sale(
@@ -410,6 +413,7 @@ pub async fn load_sale(
         returns,
         has_debt_signature: h.has_debt_signature,
         book: crate::api::oil_book::sale_book(conn, id).await?,
+        approval: crate::api::sale_approvals::mark_of(conn, id).await?,
     })
 }
 
@@ -2327,6 +2331,8 @@ pub async fn post_sale_core(
         crate::api::cancelled_lines::lines_of(&req.removed_lines),
     )
     .await?;
+    // Подтверждение заправки фирмой (задача 039 C, ADR-202).
+    crate::api::sale_approvals::on_sale(conn, ctx, id, &req, debt_total, offline).await?;
     ops::audit(
         conn,
         ctx,

@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.status, a.mode, a.sale_id, s.number as \"sale_number?\", a.summary,\n                  a.debt_tyiyn, a.created_at, a.expires_at, a.decided_at, a.decided_by, a.reason,\n                  a.forced_at\n           from sale_approvals a left join sales s on s.id = a.sale_id where a.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "summary",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "debt_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "decided_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "decided_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "forced_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "327ee4f5cd115b00f7855b42eccb8568f3550e2fe7334cbd2bcec468651b008c"
+}

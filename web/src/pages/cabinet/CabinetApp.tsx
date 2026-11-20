@@ -265,6 +265,97 @@ function Messages() {
   )
 }
 
+/** Запрос «Подтвердите обслуживание» (задача 039 C, ADR-202). */
+export interface Approval {
+  id: string | null
+  status: 'not_needed' | 'pending' | 'approved' | 'rejected' | 'expired' | 'skipped'
+  mode: string
+  sale_id: string | null
+  sale_number: number | null
+  summary: { plate?: string | null; contact?: string | null; cashier?: string; lines?: string[]; total_tyiyn?: number }
+  debt_tyiyn: number
+  created_at: string | null
+  expires_at: string | null
+  decided_by: string
+  reason: string
+  forced: boolean
+  can_force: boolean
+  can_post: boolean
+}
+
+const APPROVAL_STATUS: Record<string, [string, 'slate' | 'green' | 'amber' | 'rose']> = {
+  pending: ['Ждёт ответа', 'amber'],
+  expired: ['Ждёт ответа', 'amber'],
+  approved: ['Подтверждено', 'green'],
+  rejected: ['Отклонено', 'rose'],
+}
+
+/** «Запросы»: подтвердить или отклонить обслуживание по чеку в долг фирмы. */
+function Approvals() {
+  const list = useLoad(() => get<Approval[]>('/client/approvals'), [])
+  const { run, busy, error } = useAction()
+  const [rejecting, setRejecting] = useState<string | null>(null)
+  const [reason, setReason] = useState('')
+  const rows = list.data ?? []
+  const decide = (id: string, ok: boolean) =>
+    run(async () => {
+      if (ok) await post(`/client/approvals/${id}/approve`, {})
+      else await post(`/client/approvals/${id}/reject`, { reason })
+      setRejecting(null)
+      setReason('')
+      toast(ok ? 'Подтверждено' : 'Отклонено')
+      list.reload()
+    })
+  return (
+    <Card className="flex flex-col gap-2">
+      <ErrorBox error={list.error ?? error} />
+      {list.loading && !list.data ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>Запросов нет — здесь появятся просьбы подтвердить обслуживание в долг</Empty>
+      ) : (
+        <ul className="flex flex-col divide-y divide-slate-100" data-testid="cabinet-approvals">
+          {rows.map((a) => {
+            const open = (a.status === 'pending' || a.status === 'expired') && !a.forced && !(a.status === 'expired' && a.sale_id)
+            const [label, tone] = a.forced ? ['Проведено без подтверждения', 'slate' as const] : (APPROVAL_STATUS[a.status] ?? [a.status, 'slate' as const])
+            return (
+              <li key={a.id ?? ''} className="flex flex-col gap-1 py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-500">{a.created_at ? formatDateTime(a.created_at) : ''}</span>
+                  <Badge tone={tone}>{label}</Badge>
+                  {a.sale_number != null && <span className="text-xs text-slate-500">чек № {a.sale_number}</span>}
+                </div>
+                <div>
+                  {[a.summary.plate, a.summary.contact].filter(Boolean).join(' · ')}
+                  {(a.summary.lines?.length ?? 0) > 0 && <div className="text-slate-600">{a.summary.lines?.filter(Boolean).join(', ')}</div>}
+                </div>
+                <div className="font-medium">В долг: {formatSom(a.debt_tyiyn)}{a.summary.cashier ? <span className="font-normal text-slate-500"> · кассир {a.summary.cashier}</span> : null}</div>
+                {a.reason && <div className="text-rose-700">Причина: {a.reason}</div>}
+                {open && a.id && (
+                  rejecting === a.id ? (
+                    <div className="flex flex-wrap items-end gap-2">
+                      <Field label="Причина отказа" required>
+                        <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+                      </Field>
+                      <Button variant="danger" disabled={busy || !reason.trim()} onClick={() => a.id && void decide(a.id, false)}>Отклонить</Button>
+                      <Button variant="secondary" onClick={() => setRejecting(null)}>Отмена</Button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <Button disabled={busy} onClick={() => a.id && void decide(a.id, true)}>Подтвердить</Button>
+                      <Button variant="secondary" disabled={busy} onClick={() => setRejecting(a.id)}>Отклонить</Button>
+                    </div>
+                  )
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
 /** Акт сверки — тот же экран, что в программе (задача 003): периоды, сальдо, строки, обороты,
  *  вывод, «Печать» и «Скачать»; без ссылок на документы точки. */
 function Act({ me, branch = '' }: { me: Me; branch?: string }) {
@@ -286,7 +377,7 @@ export default function CabinetApp() {
       }),
     [],
   )
-  const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act' | 'messages'>('sales')
+  const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act' | 'messages' | 'approvals'>('sales')
   const [stab, setStab] = useState<SupplierTab>('invoices')
   /** Отбор кабинета юрлица по филиалу (задача 036): '' — все филиалы. */
   const [branch, setBranch] = useState('')
@@ -376,7 +467,7 @@ export default function CabinetApp() {
             </div>
           )}
         </Card>
-        <div className="inline-grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm sm:grid-cols-5">
+        <div className="inline-grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm sm:grid-cols-6">
           {(
             [
               ['sales', 'Покупки'],
@@ -384,6 +475,7 @@ export default function CabinetApp() {
               ['cars', 'Машины'],
               ['act', 'Акт сверки'],
               ['messages', 'Сообщения'],
+              ['approvals', 'Запросы'],
             ] as const
           ).map(([k, label]) => (
             <button
@@ -415,6 +507,7 @@ export default function CabinetApp() {
         {tab === 'cars' && <OilBookList path="/client/oil-book" editable={false} />}
         {tab === 'act' && <Act me={m} branch={branch} />}
         {tab === 'messages' && <Messages />}
+        {tab === 'approvals' && <Approvals />}
       </main>
       )}
       <Toaster />

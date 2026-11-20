@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into settings (branch_id, key, value) values ($1, 'legal', $2)\n           on conflict (branch_id, key) do update set value = excluded.value",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bf7afe8a9da9e35f835169e95469e9ef2a22634d3ab66a15ffbfee88e32a53fc"
+}

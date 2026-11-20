@@ -24,6 +24,7 @@ import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
 import { BankQrPanel, useBankQr, useOpenQrs } from '../components/BankQrPanel'
 import { SignaturePad } from '../components/SignaturePad'
+import { SaleApprovalWait, askApproval, type SaleApproval } from '../components/SaleApprovalWait'
 import { useCustomerScreen } from '../components/useCustomerScreen'
 import { toScreen } from '../lib/customerScreen'
 import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
@@ -624,6 +625,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
   // Цена в чеке сменилась в каталоге: что было и что стало.
   const [priceChanges, setPriceChanges] = useState<PriceChange[]>([])
+  // Чек в долг фирмы ждёт её подтверждения (задача 039 C, ADR-202).
+  const [approvalWait, setApprovalWait] = useState<SaleApproval | null>(null)
 
   // Исправление оставляет кассира и мастера исходного чека, даже если их уже отключили.
   const cashiers = employees.data?.filter((e) => e.is_cashier && (e.active || e.id === fix?.state.cashierId)) ?? []
@@ -1354,6 +1357,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         releaseHeld()
       }
     })
+  const submitRef = useRef(submit)
+  submitRef.current = submit
+
+  // Фирма подтвердила (или проведено без подтверждения) — тот же чек проводится заново.
+  const approvalReady = useCallback(() => {
+    setApprovalWait(null)
+    void submitRef.current()
+  }, [])
 
   const submitNow = async () => {
     // Долг — только с подписью клиента (задача 008): сначала подпись, чек — сразу после неё.
@@ -1461,6 +1472,21 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         payments,
         book: printableBook,
       }) as unknown as Sale
+    // Долг фирме — сначала запрос подтверждения фирме (задача 039 C): режимы «ждать» и «с
+    // таймаутом» держат чек, пока фирма не ответит; тот же op_id — тот же запрос. Нет связи — чек
+    // уходит как без сети.
+    if (debtAmount > 0 && party?.kind === 'company') {
+      let approval: SaleApproval | null = null
+      try {
+        approval = await askApproval(body)
+      } catch (e) {
+        if (!(e instanceof ApiError ? keepInQueue(e) : !navigator.onLine)) throw e
+      }
+      if (approval && !approval.can_post) {
+        setApprovalWait(approval)
+        return
+      }
+    }
     // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
     const queued = await enqueueSale(opId, body, { user, receipt })
     let sale: Sale
@@ -2577,6 +2603,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           <div className="shrink-0 rounded-md border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm text-sky-900" role="status">
             Чек проводится — {heldCount === 1 ? 'новая позиция встанет' : `${heldCount} новых поз. встанут`} в следующий чек
           </div>
+        )}
+        {approvalWait && (
+          <SaleApprovalWait
+            approval={approvalWait}
+            onClose={() => setApprovalWait(null)}
+            onReady={approvalReady}
+          />
         )}
         {priceChanges.length > 0 && (
           <div

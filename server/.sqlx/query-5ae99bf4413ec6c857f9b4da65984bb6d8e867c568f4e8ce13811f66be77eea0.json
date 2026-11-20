@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from settings where branch_id = $1 and key = 'legal'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5ae99bf4413ec6c857f9b4da65984bb6d8e867c568f4e8ce13811f66be77eea0"
+}

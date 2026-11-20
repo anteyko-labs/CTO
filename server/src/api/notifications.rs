@@ -19,7 +19,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 83] = [
+pub(crate) const WATCHED: [&str; 84] = [
+    // Ответ фирмы на запрос «Подтвердите обслуживание» (задача 039 C, ADR-202).
+    "party.sale_approval",
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -595,6 +597,33 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .unwrap_or_default()
             ),
         ),
+        "party.sale_approval" => {
+            let what = match data.get("decision").and_then(Value::as_str).unwrap_or("") {
+                "approved" => "подтвердила обслуживание",
+                "rejected" => "отклонила обслуживание",
+                _ => "не ответила — чек проведён без подтверждения",
+            };
+            (
+                format!(
+                    "Фирма {}: {}",
+                    data.get("name").and_then(Value::as_str).unwrap_or(""),
+                    what
+                ),
+                format!(
+                    "{}в долг {}{}",
+                    data.get("number")
+                        .and_then(Value::as_i64)
+                        .map(|n| format!("чек № {n}, "))
+                        .unwrap_or_default(),
+                    money(num("debt_tyiyn")),
+                    data.get("reason")
+                        .and_then(Value::as_str)
+                        .filter(|c| !c.is_empty())
+                        .map(|c| format!(" — {c}"))
+                        .unwrap_or_default()
+                ),
+            )
+        }
         "party.limit_request" => (
             "Просят поднять лимит долга".into(),
             format!(
