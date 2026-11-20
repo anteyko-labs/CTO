@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { Button, Card, CardTitle, ErrorBox, Field, Loading, Notice, PageHeader, toast } from '../components/ui'
 import { get, post, put, qs } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
-import { accountNumberProblem, type OptimaSettings as Settings, type SalePoint } from '../lib/optima'
+import { accountNumberProblem, keySourceLabel, type OptimaSettings as Settings, type SalePoint } from '../lib/optima'
 import type { CashAccount } from '../lib/types'
 
 export default function OptimaSettings() {
@@ -36,11 +36,14 @@ function OptimaForm({ s }: { s: Settings }) {
   return (
     <div className="flex max-w-3xl flex-col gap-4">
       <PageHeader title="Optima Business" subtitle="QR на сумму чека и сверка с выпиской банка с настоящей комиссией" />
+      <p className="text-sm" data-testid="optima-key-source">
+        Ключ банка: <b>{keySourceLabel(s.key_source)}</b>
+      </p>
       {!s.enabled && (
         <Notice>
           Ключ банка не задан на сервере: QR на сумму и сверка выключены, касса работает как раньше. Ключ создаёт первый подписант в Optima Business
           (категории: генерация QR, статус QR-платежа, список точек и касс, выписка по POS и QR); на точке его вписывают в <code>config.ps1</code>{' '}
-          (<code>$OptimaApiKey</code>) и перезапускают сервер.
+          (<code>$OptimaApiKey</code>) и перезапускают сервер; свой ключ филиала — в <code>OPTIMA_BRANCH_KEYS</code>.
         </Notice>
       )}
       <Card className="flex flex-col gap-3">

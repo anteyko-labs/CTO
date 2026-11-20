@@ -144,11 +144,10 @@ async fn create(
     ctx: Ctx,
     Json(req): Json<CreateReq>,
 ) -> AppResult<Json<BankQrOut>> {
-    let bank = state
-        .optima
-        .as_ref()
-        .ok_or_else(|| invalid("QR банка не настроен на сервере"))?;
     let branch_id = ctx.user.branch_id;
+    let bank = state
+        .optima_for(branch_id)
+        .ok_or_else(|| invalid("QR банка не настроен на сервере"))?;
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма QR больше нуля"));
     }
@@ -359,7 +358,9 @@ struct Pending {
 /// Один проход опроса: ждущие QR первыми, запросы в банк — параллельно (не больше 8), у
 /// каждого свой срок ответа: медленный ответ по одному QR не задерживает другие (ADR-130).
 /// Сбой по одному QR пишется в журнал сервера, проход продолжается.
-pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
+/// Каждый QR опрашивается ключом своего филиала (ADR-206); у филиала без ключа — пропуск.
+pub async fn poll_once(pool: &PgPool, bank: impl Into<optima::Banks>) -> AppResult<()> {
+    let banks: optima::Banks = bank.into();
     // Неоплаченный в срок, отменённый и отклонённый QR ещё LATE_MINUTES опрашивается: покупатель
     // может оплатить позже (тест банка 23.10.2026 — оплата через минуту после срока), у банка
     // отменённый на кассе QR живой. Неопрошенная оплата через 12 с становится у банка ошибкой,
@@ -402,7 +403,10 @@ pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
         while set.len() >= POLL_PARALLEL {
             reap(set.join_next().await);
         }
-        let (pool, bank) = (pool.clone(), bank.clone());
+        let Some(bank) = banks.for_branch(q.branch_id).cloned() else {
+            continue;
+        };
+        let pool = pool.clone();
         set.spawn(async move {
             let id = q.id;
             (id, poll_one(&pool, &bank, q).await)

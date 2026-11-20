@@ -17,7 +17,7 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use avtodom_server::api::optima::{Optima, bishkek};
+use avtodom_server::api::optima::{Banks, Optima, bishkek};
 use avtodom_server::api::{bank_qr, bank_recon};
 use avtodom_server::config::SecretKey;
 use avtodom_server::{app, auth::hash_password, bootstrap, build_state};
@@ -1418,4 +1418,99 @@ async fn open_qrs_of_device(pool: PgPool) {
     .await
     .unwrap();
     assert!(w.open_on(till).await.is_empty());
+}
+
+/// Состояние со своими ключами (ADR-206): `shared` — общий ключ, `branch` — ключ единственного
+/// филиала теста.
+async fn with_keys(
+    pool: PgPool,
+    shared: Option<&str>,
+    branch: Option<&str>,
+) -> (World, Bank, Banks) {
+    let (url, bank) = fake_bank().await;
+    let w = World::new(pool, None).await;
+    let branch_id: Uuid = sqlx::query_scalar("select id from branches")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    let banks = Banks::new(
+        shared.map(|k| SecretKey(k.into())),
+        branch
+            .map(|k| vec![(branch_id, SecretKey(k.into()))])
+            .unwrap_or_default(),
+        Some(url),
+    );
+    let mut s = build_state(w.pool.clone(), false).await.unwrap();
+    s.optima = banks.shared.clone();
+    s.optima_branches = banks.branches.clone();
+    let w = World {
+        app: app(s, None),
+        optima: None,
+        ..w
+    };
+    (w, bank, banks)
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn branch_key_wins_over_shared(pool: PgPool) {
+    // Общий ключ чужой, у филиала — верный: QR и опрос идут ключом филиала.
+    let (w, bank, banks) = with_keys(pool, Some("чужой-ключ"), Some(KEY)).await;
+    w.configure().await;
+    let s = get(&w.app, "/api/v1/settings/optima", &w.owner).await;
+    assert_eq!(s["key_source"], "branch");
+    assert_eq!(s["enabled"], true);
+    assert!(!s.to_string().contains(KEY));
+    let (code, qr) = w.new_qr(Uuid::now_v7(), 10_000).await;
+    assert_eq!(code, StatusCode::OK, "{qr}");
+    let id = qr["id"].as_str().unwrap().to_string();
+    bank.set_status("tx-1", 200, &paid("tx-1", "100.00", "op-1"));
+    bank_qr::poll_once(&w.pool, &banks).await.unwrap();
+    let st = get(&w.app, &format!("/api/v1/bank-qr/{id}"), &w.admin).await;
+    assert_eq!(st["status"], "paid", "{st}");
+    assert!(w.audit("optima.key").await.is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn without_branch_key_shared_is_used(pool: PgPool) {
+    let (w, _bank, _) = with_keys(pool, Some(KEY), None).await;
+    w.configure().await;
+    let s = get(&w.app, "/api/v1/settings/optima", &w.owner).await;
+    assert_eq!(s["key_source"], "shared");
+    let (code, qr) = w.new_qr(Uuid::now_v7(), 10_000).await;
+    assert_eq!(code, StatusCode::OK, "{qr}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn no_key_at_all_keeps_qr_off(pool: PgPool) {
+    let (w, bank, banks) = with_keys(pool, None, None).await;
+    assert!(banks.is_empty());
+    let s = get(&w.app, "/api/v1/settings/optima", &w.owner).await;
+    assert_eq!(s["key_source"], "none");
+    assert_eq!(s["enabled"], false);
+    let (code, _) = w.new_qr(Uuid::now_v7(), 10_000).await;
+    assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(bank.calls("generate").is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn other_branch_key_is_not_used(pool: PgPool) {
+    // Ключ задан только другому филиалу: у этого QR выключен.
+    let (url, bank) = fake_bank().await;
+    let banks = Banks::new(
+        None,
+        vec![(Uuid::now_v7(), SecretKey(KEY.into()))],
+        Some(url),
+    );
+    let w = World::new(pool, None).await;
+    let mut s = build_state(w.pool.clone(), false).await.unwrap();
+    s.optima_branches = banks.branches.clone();
+    let w = World {
+        app: app(s, None),
+        ..w
+    };
+    let st = get(&w.app, "/api/v1/settings/optima", &w.owner).await;
+    assert_eq!(st["key_source"], "none");
+    let (code, _) = w.new_qr(Uuid::now_v7(), 10_000).await;
+    assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(bank.calls("generate").is_empty());
 }

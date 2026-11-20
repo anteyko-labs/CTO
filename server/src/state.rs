@@ -20,10 +20,35 @@ pub struct AppState {
     /// API банка Optima Business по ключу `OPTIMA_API_KEY` (SPEC-31); `None` — QR на сумму и
     /// сверка с выпиской выключены, касса работает как раньше.
     pub optima: Option<crate::api::optima::Optima>,
+    /// Свои ключи филиалов из `OPTIMA_BRANCH_KEYS` (ADR-206): у филиала здесь — его клиент,
+    /// у остальных — общий `optima`.
+    pub optima_branches: Arc<std::collections::HashMap<uuid::Uuid, crate::api::optima::Optima>>,
     /// Отправка в Телеграм для сообщений клиентам (SPEC-32): есть, когда задан ключ бота.
     pub telegram_api: Option<crate::api::telegram::Api>,
     /// WhatsApp Business Platform (SPEC-32): `WHATSAPP_TOKEN` и `WHATSAPP_PHONE_ID`; `None` — выключен.
     pub whatsapp: Option<crate::api::client_messages::WhatsApp>,
     /// Внешний адрес программы `PUBLIC_URL` — для ссылки на кабинет юрлица в сообщениях.
     pub public_url: Option<String>,
+}
+
+impl AppState {
+    /// Клиент банка филиала: свой ключ (`OPTIMA_BRANCH_KEYS`), иначе общий; `None` — выключено.
+    pub fn optima_for(&self, branch_id: uuid::Uuid) -> Option<&crate::api::optima::Optima> {
+        self.optima_branches
+            .get(&branch_id)
+            .or(self.optima.as_ref())
+    }
+
+    /// Чей ключ у филиала — для «Настройки → Optima».
+    pub fn optima_source(&self, branch_id: uuid::Uuid) -> crate::api::optima::KeySource {
+        self.banks().source(branch_id)
+    }
+
+    /// Все ключи банка — для фонового опроса.
+    pub fn banks(&self) -> crate::api::optima::Banks {
+        crate::api::optima::Banks {
+            shared: self.optima.clone(),
+            branches: self.optima_branches.clone(),
+        }
+    }
 }

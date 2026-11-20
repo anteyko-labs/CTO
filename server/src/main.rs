@@ -60,10 +60,16 @@ async fn run() -> Result<(), String> {
     state.assistant = assistant.clone();
     // Optima Business (SPEC-31): QR на сумму чека, опрос статуса и сверка с выпиской — только
     // с ключом банка.
-    if let Some(key) = config.optima_key.clone() {
-        let optima = avtodom_server::api::optima::Optima::new(key, config.optima_url.clone());
-        state.optima = Some(optima.clone());
-        avtodom_server::api::optima::spawn(pool.clone(), optima);
+    // Свой ключ у филиала — из OPTIMA_BRANCH_KEYS (ADR-206), у остальных — общий.
+    let banks = avtodom_server::api::optima::Banks::new(
+        config.optima_key.clone(),
+        config.optima_branch_keys.clone(),
+        config.optima_url.clone(),
+    );
+    if !banks.is_empty() {
+        state.optima = banks.shared.clone();
+        state.optima_branches = banks.branches.clone();
+        avtodom_server::api::optima::spawn(pool.clone(), banks);
     }
     // Телеграм-бот владельца — только если задан ключ (ADR-050).
     if let Some(token) = config.telegram_token.clone() {

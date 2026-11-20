@@ -25,6 +25,8 @@ pub struct Config {
     pub optima_key: Option<SecretKey>,
     /// Адрес API банка; пусто — `https://api.optimabusiness.kg`.
     pub optima_url: Option<String>,
+    /// Свои ключи филиалов (ADR-206): `OPTIMA_BRANCH_KEYS=<id филиала>=<ключ>[,…]`.
+    pub optima_branch_keys: Vec<(uuid::Uuid, SecretKey)>,
     /// WhatsApp Business Platform (SPEC-32, ADR-107): постоянный ключ и ID номера отправителя;
     /// без обоих WhatsApp выключен.
     pub whatsapp_token: Option<SecretKey>,
@@ -49,6 +51,37 @@ impl std::fmt::Debug for SecretKey {
 pub const DEFAULT_ASSISTANT_DAILY_LIMIT: i64 = 100;
 
 /// Непустое значение переменной окружения без пробелов по краям.
+/// `OPTIMA_BRANCH_KEYS`: пары `<id филиала>=<ключ>` через запятую. Пара без «=», с неверным
+/// id или пустым ключом пропускается с предупреждением (ключ в журнал не пишется); повтор
+/// филиала — берётся последний.
+pub fn parse_branch_keys(raw: &str) -> Vec<(uuid::Uuid, SecretKey)> {
+    let mut out: Vec<(uuid::Uuid, SecretKey)> = Vec::new();
+    for (n, part) in raw.split(',').enumerate() {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let parsed = part.split_once('=').and_then(|(id, key)| {
+            let id = uuid::Uuid::parse_str(id.trim()).ok()?;
+            let key = key.trim();
+            (!key.is_empty()).then(|| (id, SecretKey(key.to_string())))
+        });
+        match parsed {
+            Some((id, key)) => {
+                out.retain(|(x, _)| *x != id);
+                out.push((id, key));
+            }
+            None => {
+                tracing::warn!(
+                    item = n + 1,
+                    "OPTIMA_BRANCH_KEYS: пара не разобрана, пропущена"
+                )
+            }
+        }
+    }
+    out
+}
+
 fn non_empty(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -91,10 +124,32 @@ impl Config {
             assistant_daily_limit,
             optima_key: non_empty("OPTIMA_API_KEY").map(SecretKey),
             optima_url: non_empty("OPTIMA_API_URL"),
+            optima_branch_keys: parse_branch_keys(
+                &env::var("OPTIMA_BRANCH_KEYS").unwrap_or_default(),
+            ),
             whatsapp_token: non_empty("WHATSAPP_TOKEN").map(SecretKey),
             whatsapp_phone_id: non_empty("WHATSAPP_PHONE_ID"),
             whatsapp_url: non_empty("WHATSAPP_API_URL"),
             public_url: non_empty("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_keys_parse() {
+        assert!(parse_branch_keys("").is_empty());
+        assert!(parse_branch_keys("  , ,").is_empty());
+        assert!(parse_branch_keys("мусор,не-uuid=ключ,=ключ").is_empty());
+        let a = "0190f000-0000-7000-8000-000000000001";
+        let b = "0190f000-0000-7000-8000-000000000002";
+        // Пустой ключ — пропуск; «=» внутри ключа остаётся; повтор филиала — последний.
+        let v = parse_branch_keys(&format!(" {a} = k1 ,{b}=, {b}=k=2 ,{a}=k3"));
+        let got: Vec<(String, String)> =
+            v.into_iter().map(|(id, k)| (id.to_string(), k.0)).collect();
+        assert_eq!(got, vec![(b.into(), "k=2".into()), (a.into(), "k3".into())]);
     }
 }

@@ -2302,3 +2302,16 @@ updated: 2026-10-06
   - «Пересчитать долг» (`POST /parties/{id}/recount`, владелец, `op_id`): баланс клиента и части по филиалам приводятся к сумме `party_ledger` (I6); расхождение — исправление и событие `party.recount`, без расхождения — «Совпадает», без записи.
 - **Причина:** перенос долга на сервере вместо выбора фирмы кассиром — кассир находит машину по номеру и не ошибается с плательщиком; одна точка проверки для кассы и запроса фирме.
 - **Последствие:** `api/legal_garage.rs`, `api/bot_cars.rs`, `api/parties.rs` (`check_sale_party`, `VehicleOut.status/personal_of`), `api/sales.rs`, `api/sale_approvals.rs`, `api/cabinet.rs`, `api/telegram.rs`, `api/notifications.rs`, `api/bot_feed.rs`; экраны `CabinetApp.tsx` (гараж и запросы), `ClientCard.tsx` (запросы, пересчёт); тест `server/tests/legal_garage.rs`.
+
+## ADR-206. Свой ключ Optima Business у филиала
+
+- **Дата:** 2026-11-20
+- **Статус:** принято (владелец 20.11.2026: «ключ API Optima — именно филиала Айкос»); задача 040 часть B
+- **Контекст:** у филиалов разные компании в банке; один общий `OPTIMA_API_KEY` не даёт филиалу Айкос принимать QR на свой счёт.
+- **Решение:**
+  - Переменная сервера `OPTIMA_BRANCH_KEYS=<id филиала>=<ключ>[,…]` (секрет — только в `/etc/avtodom/env`, не в базе). Пара без «=», с неверным id или пустым ключом пропускается с предупреждением в журнале без ключа; повтор филиала — последний.
+  - `AppState.optima_for(branch_id)`: свой ключ филиала, иначе общий `OPTIMA_API_KEY`, ни одного — QR, «Проверить связь» и сверка в филиале выключены, как без ключа. Адрес банка `OPTIMA_API_URL` — общий.
+  - Фоновый опрос QR — каждый QR клиентом своего филиала (`Banks::for_branch`), филиал без ключа пропускается; ежедневная сверка — так же по филиалу. Счётчик 5xx подряд — у каждого клиента свой.
+  - `GET|PUT /settings/optima` отдаёт `key_source`: `branch` | `shared` | `none`; экран «Настройки → Optima» пишет «Ключ филиала задан / Общий ключ сервера / Нет ключа», сам ключ не показывается.
+- **Причина:** секреты — в переменных сервера, как остальные ключи; таблица ключей в базе попала бы в резервные копии.
+- **Последствие:** `config.rs` (`parse_branch_keys`), `state.rs`, `main.rs`, `api/optima.rs` (`Banks`, `KeySource`), `api/bank_qr.rs`, `api/bank_recon.rs`; `web/src/pages/OptimaSettings.tsx`, `web/src/lib/optima.ts`; `deploy/cloud/env.example`; тесты `server/tests/optima.rs`, юнит в `config.rs`.

@@ -8,8 +8,10 @@ export interface OptimaStatus {
 }
 
 export interface OptimaSettings {
-  /** Ключ OPTIMA_API_KEY задан на сервере. */
+  /** У филиала есть ключ банка (свой или общий). */
   enabled: boolean
+  /** Чей ключ (ADR-206): свой у филиала (OPTIMA_BRANCH_KEYS), общий (OPTIMA_API_KEY) или нет. */
+  key_source: 'branch' | 'shared' | 'none'
   legal_party_id: number | null
   account_number: string
   sale_point_code: number | null
@@ -161,4 +163,9 @@ export const RECON_KIND: Record<ReconOurItem['kind'] | ReconBankItem['kind'], st
   card: 'карта',
   qr: 'QR',
   repayment: 'оплата долга картой',
+}
+
+/** Подпись «чей ключ» для «Настройки → Optima»; сам ключ не показывается. */
+export function keySourceLabel(k: OptimaSettings['key_source']): string {
+  return k === 'branch' ? 'Ключ филиала задан' : k === 'shared' ? 'Общий ключ сервера' : 'Нет ключа'
 }

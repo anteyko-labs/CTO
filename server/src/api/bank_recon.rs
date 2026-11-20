@@ -615,7 +615,7 @@ async fn get_report(
     let s = optima::load_settings(&mut conn, user.branch_id).await?;
     let account = optima::money_account(&mut conn, user.branch_id, &s).await?;
     let mut out = ReconOut {
-        enabled: state.optima.is_some(),
+        enabled: state.optima_for(user.branch_id).is_some(),
         configured: s.statement_ready(),
         account_id: account,
         account_name: None,
@@ -644,8 +644,7 @@ async fn run(
 ) -> AppResult<Json<ReconOut>> {
     ctx.user.require_owner()?;
     let bank = state
-        .optima
-        .as_ref()
+        .optima_for(ctx.user.branch_id)
         .ok_or_else(|| invalid("ключ Optima Business не задан на сервере"))?;
     let today = {
         let mut conn = state.pool.acquire().await?;
@@ -939,13 +938,13 @@ async fn owner_ctx(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Option
 
 /// С 06:00 по времени точки — сверка трёх прошедших дней, раз в день по каждому филиалу с
 /// расчётным счётом. Не вышло (нет связи) — повтор через 30 минут.
-pub async fn daily(pool: &PgPool, bank: &Optima, now: DateTime<Utc>) {
-    if let Err(e) = daily_inner(pool, bank, now).await {
+pub async fn daily(pool: &PgPool, bank: impl Into<optima::Banks>, now: DateTime<Utc>) {
+    if let Err(e) = daily_inner(pool, &bank.into(), now).await {
         tracing::warn!(error = %e, "банк: сверка дня не прошла");
     }
 }
 
-async fn daily_inner(pool: &PgPool, bank: &Optima, now: DateTime<Utc>) -> AppResult<()> {
+async fn daily_inner(pool: &PgPool, banks: &optima::Banks, now: DateTime<Utc>) -> AppResult<()> {
     let local = now.with_timezone(&optima::bishkek());
     if chrono::Timelike::hour(&local) < DAILY_HOUR {
         return Ok(());
@@ -975,7 +974,9 @@ async fn daily_inner(pool: &PgPool, bank: &Optima, now: DateTime<Utc>) -> AppRes
         let s = optima::load_settings(&mut conn, b.branch_id).await?;
         let ctx = owner_ctx(&mut conn, b.branch_id).await?;
         drop(conn);
-        let (true, Some(ctx)) = (s.statement_ready(), ctx) else {
+        let (true, Some(ctx), Some(bank)) =
+            (s.statement_ready(), ctx, banks.for_branch(b.branch_id))
+        else {
             continue;
         };
         let result = reconcile(

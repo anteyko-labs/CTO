@@ -200,6 +200,83 @@ impl std::fmt::Debug for Optima {
     }
 }
 
+/// Ключи банка по филиалам (ADR-206): свой ключ филиала из `OPTIMA_BRANCH_KEYS`, иначе общий
+/// `OPTIMA_API_KEY`; ни одного — у филиала QR и сверка выключены.
+#[derive(Clone, Debug, Default)]
+pub struct Banks {
+    pub shared: Option<Optima>,
+    pub branches: std::sync::Arc<std::collections::HashMap<Uuid, Optima>>,
+}
+
+/// Чей ключ у филиала — для «Настройки → Optima»; сам ключ не показывается.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeySource {
+    Branch,
+    Shared,
+    None,
+}
+
+impl Banks {
+    /// Клиенты банка: общий и свои у филиалов, все с одним адресом банка.
+    pub fn new(
+        shared: Option<SecretKey>,
+        branches: Vec<(Uuid, SecretKey)>,
+        url: Option<String>,
+    ) -> Self {
+        Self {
+            shared: shared.map(|k| Optima::new(k, url.clone())),
+            branches: std::sync::Arc::new(
+                branches
+                    .into_iter()
+                    .map(|(id, k)| (id, Optima::new(k, url.clone())))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Клиент банка филиала: свой ключ, иначе общий.
+    pub fn for_branch(&self, branch_id: Uuid) -> Option<&Optima> {
+        self.branches.get(&branch_id).or(self.shared.as_ref())
+    }
+
+    pub fn source(&self, branch_id: Uuid) -> KeySource {
+        if self.branches.contains_key(&branch_id) {
+            KeySource::Branch
+        } else if self.shared.is_some() {
+            KeySource::Shared
+        } else {
+            KeySource::None
+        }
+    }
+
+    /// Нет ни одного ключа — фоновый опрос не нужен.
+    pub fn is_empty(&self) -> bool {
+        self.shared.is_none() && self.branches.is_empty()
+    }
+}
+
+impl From<Optima> for Banks {
+    fn from(o: Optima) -> Self {
+        Self {
+            shared: Some(o),
+            branches: Default::default(),
+        }
+    }
+}
+
+impl From<&Optima> for Banks {
+    fn from(o: &Optima) -> Self {
+        o.clone().into()
+    }
+}
+
+impl From<&Banks> for Banks {
+    fn from(b: &Banks) -> Self {
+        b.clone()
+    }
+}
+
 /// Торговая точка и её кассы из банка.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SalePoint {
@@ -774,7 +851,7 @@ struct StatusOut {
 }
 
 async fn status(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<StatusOut>> {
-    if state.optima.is_none() {
+    if state.optima_for(user.branch_id).is_none() {
         return Ok(Json(StatusOut {
             enabled: false,
             qr: false,
@@ -790,8 +867,10 @@ async fn status(State(state): State<AppState>, user: CurrentUser) -> AppResult<J
 
 #[derive(Serialize)]
 struct SettingsOut {
-    /// Ключ `OPTIMA_API_KEY` задан на сервере.
+    /// У филиала есть ключ банка (свой или общий).
     enabled: bool,
+    /// Чей ключ: `branch` — свой у филиала (`OPTIMA_BRANCH_KEYS`), `shared` — общий, `none`.
+    key_source: KeySource,
     #[serde(flatten)]
     settings: OptimaSettings,
     /// Счёт учёта, куда пойдут деньги сейчас (с учётом счёта по умолчанию).
@@ -807,7 +886,8 @@ async fn get_settings(
     let settings = load_settings(&mut conn, user.branch_id).await?;
     let account_id = money_account(&mut conn, user.branch_id, &settings).await?;
     Ok(Json(SettingsOut {
-        enabled: state.optima.is_some(),
+        enabled: state.optima_for(user.branch_id).is_some(),
+        key_source: state.optima_source(user.branch_id),
         settings,
         account_id,
     }))
@@ -871,7 +951,8 @@ async fn put_settings(
     let account_id = money_account(&mut tx, branch_id, &s).await?;
     tx.commit().await?;
     Ok(Json(SettingsOut {
-        enabled: state.optima.is_some(),
+        enabled: state.optima_for(branch_id).is_some(),
+        key_source: state.optima_source(branch_id),
         settings: s,
         account_id,
     }))
@@ -889,9 +970,11 @@ struct PointsQuery {
     legal_party_id: i64,
 }
 
-fn require_bank(state: &AppState) -> AppResult<&Optima> {
-    state.optima.as_ref().ok_or_else(|| {
-        invalid("ключ Optima Business не задан на сервере (OPTIMA_API_KEY в настройке точки)")
+fn require_bank(state: &AppState, branch_id: Uuid) -> AppResult<&Optima> {
+    state.optima_for(branch_id).ok_or_else(|| {
+        invalid(
+            "ключ Optima Business не задан на сервере (OPTIMA_API_KEY или OPTIMA_BRANCH_KEYS в настройке точки)",
+        )
     })
 }
 
@@ -902,7 +985,7 @@ async fn sale_points(
     Query(q): Query<PointsQuery>,
 ) -> AppResult<Json<Vec<SalePoint>>> {
     user.require_owner()?;
-    let bank = require_bank(&state)?;
+    let bank = require_bank(&state, user.branch_id)?;
     if q.legal_party_id <= 0 {
         return Err(invalid("ID компании — положительное число"));
     }
@@ -924,7 +1007,7 @@ struct CheckOut {
 /// «Проверить связь»: ключ подходит, точка и касса из настройки есть в банке.
 async fn check(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<CheckOut>> {
     user.require_owner()?;
-    let bank = require_bank(&state)?;
+    let bank = require_bank(&state, user.branch_id)?;
     let mut conn = state.pool.acquire().await?;
     let s = load_settings(&mut conn, user.branch_id).await?;
     drop(conn);
@@ -993,13 +1076,14 @@ pub async fn key_problem(pool: &PgPool, branch_id: Uuid, e: &BankError) {
 pub const SERVER_DEVICE: Uuid = Uuid::from_u128(0x0b7e_0a11_0000_4000_8000_0000_0000_5e4f);
 
 /// Опрос QR каждые 2 с, «QR оплачен, чек не проведён», сверка в 06:00.
-pub fn spawn(pool: PgPool, bank: Optima) {
+pub fn spawn(pool: PgPool, bank: impl Into<Banks>) {
     spawn_with_clock(pool, bank, Utc::now);
 }
 
 /// То же с часами для сверки (тесты). Сверка — своей задачей: выписка банка идёт до 90 с,
 /// а опрос QR в это время не останавливается.
-pub fn spawn_with_clock(pool: PgPool, bank: Optima, clock: fn() -> DateTime<Utc>) {
+pub fn spawn_with_clock(pool: PgPool, bank: impl Into<Banks>, clock: fn() -> DateTime<Utc>) {
+    let bank: Banks = bank.into();
     let (qr_pool, qr_bank) = (pool.clone(), bank.clone());
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
