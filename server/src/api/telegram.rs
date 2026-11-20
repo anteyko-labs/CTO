@@ -5430,6 +5430,7 @@ mod tests {
                 unit: "km".into(),
                 last_mileage: None,
                 next_mileage: None,
+                product: None,
             };
         let gur = Uuid::now_v7();
         let oil = slot("oil", None, "Масло двигателя");

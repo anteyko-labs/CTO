@@ -497,6 +497,9 @@ pub struct SlotNext {
     pub unit: String,
     pub last_mileage: Option<i32>,
     pub next_mileage: Option<i32>,
+    /// Один из нескольких разных фильтров одной строки в последней замене (задачи 040/041): товар
+    /// этой строки «Следующей замены»; у строки целиком — нет.
+    pub product: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1549,6 +1552,7 @@ pub async fn books_with_removed(
             .filter(|n| n.slot == "oil" || n.last_date.is_some() || n.own_interval)
             .collect();
         fill_auto_follow(&mut slots, &recs, &v.mileage_unit);
+        let mut slots = split_filters(slots, &recs);
         // «Прочее» по услугам (ADR-131): у каждой услуги — своя следующая замена с её названием,
         // свежие сверху.
         let mut other: Vec<Uuid> = Vec::new();
@@ -1910,6 +1914,7 @@ fn slot_next(
         last_text: last.map(|(_, l)| l.text),
         next_km,
         next_date,
+        product: None,
     }
 }
 
@@ -1977,6 +1982,7 @@ fn custom_next(
         last_text: last.map(|(_, l)| l.text),
         next_km,
         next_date,
+        product: None,
     }
 }
 
@@ -2018,6 +2024,56 @@ fn fill_auto_follow(slots: &mut [SlotNext], recs: &[OilRecord], unit: &str) {
             .next_km
             .and_then(|k| crate::domain::mileage::from_km(k, unit));
     }
+}
+
+/// Несколько разных фильтров одной строки в последней замене (3 масляных у грузовой, задачи 040/041)
+/// — каждый своей строкой «Следующей замены»: со своим названием, а цель кассира у его строки — его.
+/// Один товар (или одинаковые) — строка как была.
+fn split_filters(slots: Vec<SlotNext>, recs: &[OilRecord]) -> Vec<SlotNext> {
+    let mut out = Vec::with_capacity(slots.len());
+    for n in slots {
+        if !is_filter_slot(&n.slot) || n.service_id.is_some() || n.custom_slot_id.is_some() {
+            out.push(n);
+            continue;
+        }
+        let key: SlotKey = (n.slot.as_str(), None);
+        let lines: Vec<&BookLine> = recs
+            .iter()
+            .find(|r| r.lines.iter().any(|l| line_of(l, key)))
+            .map(|r| r.lines.iter().filter(|l| line_of(l, key)).collect())
+            .unwrap_or_default();
+        let mut parts: Vec<(String, &BookLine)> = Vec::new();
+        for l in lines {
+            if let Some(p) = product_name(l)
+                && !parts.iter().any(|(q, _)| *q == p)
+            {
+                parts.push((p, l));
+            }
+        }
+        if parts.len() < 2 {
+            out.push(n);
+            continue;
+        }
+        for (p, l) in parts {
+            let mut one = n.clone();
+            one.title = line_title(l);
+            one.products = vec![p.clone()];
+            one.last_text = Some(l.text.clone());
+            if l.target_set && !l.target_auto {
+                one.next_km = l.next_km;
+                one.next_date = l.next_date;
+                one.next_mileage = if l.next_unit.as_deref() == Some(n.unit.as_str()) {
+                    l.next_mileage
+                } else {
+                    l.next_km
+                        .and_then(|k| crate::domain::mileage::from_km(k, &n.unit))
+                };
+            }
+            one.product = Some(p);
+            out.push(one);
+        }
+    }
+    out
 }
 
 /// Удалённые клиентом пометки остаются только владельцу (SPEC-22).

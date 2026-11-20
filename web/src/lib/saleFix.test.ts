@@ -48,6 +48,11 @@ describe('исправление чека: исходный чек в кассу
     expect(s.delivery).toBeNull()
   })
 
+  it('«Грузовая / Легковая» — исходного чека; у старого черновика — нет (значение филиала)', () => {
+    expect(saleFixState(doc({ vehicle_kind: 'truck' }), new Map(), new Map(), null, key).vehicleKind).toBe('truck')
+    expect(saleFixState(doc(), new Map(), new Map(), null, key).vehicleKind).toBeNull()
+  })
+
   it('несколько способов — «Смешанная» с суммами; баллы и аккумулятор отдельно; счёт карты', () => {
     const s = saleFixState(
       doc({

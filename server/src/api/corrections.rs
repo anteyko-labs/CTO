@@ -708,6 +708,8 @@ async fn load_sale_doc(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) ->
         "mileage_unit": book.as_ref().map(|b| b.mileage_unit.clone()),
         "declined": book.as_ref().map(|b| b.declined.clone()).unwrap_or_default(),
         "next_changes": next_changes,
+        // «Грузовая / Легковая» исходного чека (задача 040 A): ползунок «Исправить» — с него.
+        "vehicle_kind": s.vehicle_kind,
         "lines": s.lines.iter().map(|l| json!({
             "kind": l.kind,
             "gift": l.gift,
