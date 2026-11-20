@@ -28,13 +28,19 @@ pub fn routes() -> Router<AppState> {
 
 /// Строки книжки (SPEC-27): у каждой замены — масло, фильтры по видам и прочие работы.
 /// Антифриз и тормозная жидкость — строки услуг (SPEC-34).
-pub const SLOTS: [&str; 9] = [
+pub const SLOTS: [&str; 14] = [
     "oil",
     "gear_oil",
     "oil_filter",
     "air_filter",
     "cabin_filter",
     "fuel_filter",
+    // Задача 041 A: остальные фильтры владельца.
+    "gearbox_filter",
+    "fuel_separator",
+    "water_separator",
+    "coolant_filter",
+    "hydraulic_filter",
     "antifreeze",
     "brake_fluid",
     "other",
@@ -42,6 +48,21 @@ pub const SLOTS: [&str; 9] = [
 
 pub fn is_slot(slot: &str) -> bool {
     SLOTS.contains(&slot)
+}
+
+/// Строка книжки — фильтр (задача 041 A): `*_filter`, сепаратор и влагоотделитель.
+pub fn is_filter_slot(slot: &str) -> bool {
+    slot.ends_with("_filter") || slot == "fuel_separator" || slot == "water_separator"
+}
+
+/// «Куда поставили» (задача 041 A): масляный фильтр может стоять как фильтр коробки, воздушный —
+/// как салонный. Иначе — строка товара.
+pub fn placed_slot(slot: &'static str, placed: Option<&str>) -> &'static str {
+    match (slot, placed) {
+        ("oil_filter", Some("gearbox_filter")) => "gearbox_filter",
+        ("air_filter", Some("cabin_filter")) => "cabin_filter",
+        _ => slot,
+    }
 }
 
 /// Название строки книжки для экрана, бота и печати.
@@ -53,6 +74,11 @@ pub fn slot_label(slot: &str) -> &'static str {
         "air_filter" => "Фильтр воздушный",
         "cabin_filter" => "Фильтр салонный",
         "fuel_filter" => "Фильтр топливный",
+        "gearbox_filter" => "Фильтр коробки",
+        "fuel_separator" => "Топливный фильтр грубой очистки (сепаратор)",
+        "water_separator" => "Влагоотделитель",
+        "coolant_filter" => "Фильтр антифриза",
+        "hydraulic_filter" => "Фильтр гидравлической системы",
         "antifreeze" => "Антифриз",
         "brake_fluid" => "Тормозная жидкость",
         _ => "Прочие работы",
@@ -69,6 +95,11 @@ fn slot_note(slot: &str) -> &'static str {
         "air_filter" => "воздушный",
         "cabin_filter" => "салонный",
         "fuel_filter" => "топливный",
+        "gearbox_filter" => "коробки",
+        "fuel_separator" => "сепаратор",
+        "water_separator" => "влагоотделитель",
+        "coolant_filter" => "антифриза",
+        "hydraulic_filter" => "гидравлика",
         "antifreeze" => "антифриз",
         "brake_fluid" => "тормозная",
         _ => "",
@@ -318,7 +349,12 @@ pub fn product_slot(
     name: Option<&str>,
 ) -> Option<&'static str> {
     let by_category = SLOTS.iter().copied().find(|s| *s == category_slot)?;
-    if by_category.ends_with("_filter") {
+    // Тип фильтра товара уточняет только общие строки: у фильтра коробки, сепаратора и других —
+    // строка категории (задача 041 A).
+    if matches!(
+        by_category,
+        "oil_filter" | "air_filter" | "cabin_filter" | "fuel_filter"
+    ) {
         let by_type = match filter_type.map(str::trim) {
             Some("масляный") => Some("oil_filter"),
             Some("воздушный") => Some("air_filter"),
@@ -593,7 +629,7 @@ pub async fn record_from_sale(
                   coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                   case when category_by_type(c.attributes) then p.attrs ->> 'filter_type' end as filter_type,
                   (c.kind = 'filter' and c.book_slot is null) as "slot_by_name!",
-                  l.kind, l.qty, p.container_ml
+                  l.kind, l.qty, p.container_ml, l.book_slot as "placed?"
            from sale_lines l
            join products p on p.id = l.product_id
            join categories c on c.id = p.category_id
@@ -620,6 +656,7 @@ pub async fn record_from_sale(
         let Some(slot) = slot else {
             continue;
         };
+        let slot = placed_slot(slot, r.placed.as_deref());
         let part = QtyPart {
             kind: r.kind.clone(),
             qty: r.qty,
@@ -869,7 +906,7 @@ pub async fn record_from_sale(
         change_date,
         mileage.as_ref().map(|m| m.km),
         join_slots(&lines, |s| s == "oil"),
-        join_slots(&lines, |s| s.ends_with("_filter")),
+        join_slots(&lines, is_filter_slot),
         ctx.user.id,
         declined.trim(),
         mileage.as_ref().map(|m| m.value),
@@ -1221,7 +1258,7 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
     // кассира, ADR-131).
     let printed = |l: &BookLine| {
         is_fluid(&l.slot)
-            || (settings.with_filters && l.slot.ends_with("_filter"))
+            || (settings.with_filters && is_filter_slot(&l.slot))
             || (l.slot == "other" && l.service_id.is_some())
     };
     let own = own_intervals(conn, h.vehicle_id).await?;
@@ -1249,7 +1286,7 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
             service_id: other,
             group: i.group.clone(),
         });
-        let apart = i.slot.ends_with("_filter");
+        let apart = is_filter_slot(&i.slot);
         let key = (i.slot.clone(), other, apart.then_some(pos));
         if decided.contains(&key) {
             continue;
@@ -2328,7 +2365,7 @@ async fn manual(
         req.change_date,
         mileage.as_ref().map(|m| m.km),
         join_slots(&lines, |s| s == "oil"),
-        join_slots(&lines, |s| s.ends_with("_filter")),
+        join_slots(&lines, is_filter_slot),
         req.comment.trim(),
         ctx.user.id,
         mileage.as_ref().map(|m| m.value),
@@ -2583,7 +2620,7 @@ async fn edit_lines(
         "update oil_changes set oil_text = $2, filter_text = $3 where id = $1",
         record,
         join_slots(&lines_after, |s| s == "oil"),
-        join_slots(&lines_after, |s| s.ends_with("_filter"))
+        join_slots(&lines_after, is_filter_slot)
     )
     .execute(&mut *tx)
     .await?;

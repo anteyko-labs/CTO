@@ -139,6 +139,11 @@ const SLOT_NOTE: Partial<Record<BookSlot, string>> = {
   air_filter: 'воздушный',
   cabin_filter: 'салонный',
   fuel_filter: 'топливный',
+  gearbox_filter: 'коробки',
+  fuel_separator: 'сепаратор',
+  water_separator: 'влагоотделитель',
+  coolant_filter: 'антифриза',
+  hydraulic_filter: 'гидравлика',
   antifreeze: 'антифриз',
   brake_fluid: 'тормозная',
 }

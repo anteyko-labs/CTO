@@ -1,7 +1,7 @@
 // Узкая полоса сверху в режиме кассы (SPEC-29, «Режим кассы»): смена и кассир, связь и очередь
 // чеков, экранная клавиатура (ADR-101), во весь экран и выход из режима. Меню приложения в режиме скрыто.
 // При открытой смене — «Закрыть смену» (то же окно, что на экране «Смена») и «Чек смены» (SPEC-36 §10).
-import { useEffect, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useState, type ReactNode, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { enterFullscreen, exitFullscreen, setCashierMode, setKeyboardOpen, useKeyboardOpen } from '../lib/cashierMode'
 import { isOwnItem, pendingCount, watchOutbox } from '../lib/offline'
 import { useUser } from '../lib/auth'
@@ -27,6 +27,7 @@ export function CashierModeBar({
   buttons = BAR_DEFAULT,
   exitGrey = false,
   saleBlocked = false,
+  extra,
 }: {
   shift: Shift | null | undefined
   onOpenShift: () => void
@@ -40,6 +41,8 @@ export function CashierModeBar({
   /** Без смены чек не пробить (задача 005 Н4): надпись полосы — та самая плашка режима кассы (что
    *  нельзя, говорит строка «Не хватает: … открытая смена»), отдельная плашка сдвинула бы строки. */
   saleBlocked?: boolean
+  /** Своё у кассы в полосе: «Грузовая / Легковая» (задача 040 A) — место по высоте остаётся чеку. */
+  extra?: ReactNode
 }) {
   // Связь — с сервером, а не только сеть устройства; не отправлено — чеки вошедшего пользователя.
   const online = useServerOnline()
@@ -92,6 +95,7 @@ export function CashierModeBar({
         data-testid="cashier-mode-bar"
       >
         <span className="text-lg font-bold">Касса</span>
+        {extra}
         {shift ? (
           <>
             <span className="min-w-0 truncate text-base" data-testid="mode-shift">

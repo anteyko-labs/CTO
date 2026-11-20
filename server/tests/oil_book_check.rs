@@ -1847,3 +1847,57 @@ async fn three_oil_filters_are_three_lines(pool: PgPool) {
     let rec = p.record(&sale).await.unwrap();
     assert_eq!(rec.iter().filter(|l| l.0 == "oil_filter").count(), 3);
 }
+
+/// Задача 041 A: «Куда поставили» — масляный фильтр как фильтр коробки, воздушный как салонный;
+/// другое место не учитывается. Миграция завела категории фильтров по одной.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn filter_placed_as_gearbox_or_cabin(pool: PgPool) {
+    let p = Point::new(pool.clone()).await;
+    let mut body = p.sale_body(
+        250_000,
+        &[
+            ("oil", "container", 1),
+            ("oil_f", "piece", 1),
+            ("air_f", "piece", 1),
+            ("fuel_f", "piece", 1),
+        ],
+        &["oil"],
+        json!([{ "service_id": p.services["oil"]["id"], "next_mileage": 258_000 }]),
+    );
+    body["lines"][1]["book_slot"] = json!("gearbox_filter");
+    body["lines"][2]["book_slot"] = json!("cabin_filter");
+    // Топливный как фильтр коробки — нельзя: остаётся топливным.
+    body["lines"][3]["book_slot"] = json!("gearbox_filter");
+    let sale = ok(&p.app, "POST", "/api/v1/sales", &p.owner, body).await;
+    let slots: Vec<Value> = sale["book"]["filled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["slot"].clone())
+        .collect();
+    assert_eq!(
+        slots,
+        vec![
+            json!("oil"),
+            json!("gearbox_filter"),
+            json!("cabin_filter"),
+            json!("fuel_filter")
+        ]
+    );
+    let rec = p.record(&sale).await.unwrap();
+    assert!(rec.iter().any(|l| l.0 == "gearbox_filter"), "{rec:?}");
+    for name in [
+        "СЕПАРАТОРЫ",
+        "ВЛАГООТДЕЛИТЕЛИ",
+        "ФИЛЬТРЫ АНТИФРИЗА",
+        "ГИДРАВЛИЧЕСКИЕ ФИЛЬТРЫ",
+    ] {
+        let n: i64 =
+            sqlx::query_scalar("select count(*) from categories where lower(name) = lower($1)")
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(n, 1, "{name}");
+    }
+}

@@ -224,6 +224,7 @@ fn line(kind: &str, product: Uuid, qty: i64, price: i64) -> SaleLineReq {
         qty,
         unit_price_tyiyn: price,
         seen_list_price_tyiyn: None,
+        book_slot: None,
     }
 }
 
@@ -236,6 +237,7 @@ fn service_line(service: Uuid) -> SaleLineReq {
         qty: 1,
         unit_price_tyiyn: 0,
         seen_list_price_tyiyn: None,
+        book_slot: None,
     }
 }
 
