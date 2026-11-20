@@ -9,7 +9,7 @@ import { formatLiters, parseLiters } from './format'
 import { fromKm, type MileageUnit } from './mileage'
 import { isFluid, ownFluid, titleOf } from './oilBook'
 import type { QtyStyle } from './oilBookSettings'
-import { BOOK_SLOT_LABELS, type BookSlot, type Product, type SaleBook, type Service } from './types'
+import { BOOK_SLOT_LABELS, isFilterSlot, placedSlot, type BookSlot, type Product, type SaleBook, type Service } from './types'
 
 /** Строка «Следующей замены»: строка книжки, у услуги «прочее» — `svc:<услуга>` (ADR-131). */
 export type NextKey = BookSlot | `svc:${string}`
@@ -83,6 +83,8 @@ export interface CartPosition {
   /** Вид строки и количество, как набрал кассир, — для «что залито» (ADR-116). */
   kind?: string
   qtyText?: string
+  /** «Куда поставили» фильтр (задача 041 A). */
+  place?: BookSlot | null
 }
 
 /** Товар чека со строкой книжки: что и сколько залили. */
@@ -133,7 +135,8 @@ export function filterSlotByName(name: string): BookSlot | null {
 export function productSlot(categorySlot: string | null | undefined, filterType: string | null | undefined, byType = true, name?: string | null): BookSlot | null {
   if (!categorySlot || !SLOTS.has(categorySlot)) return null
   const slot = categorySlot as BookSlot
-  if (!slot.endsWith('_filter')) return slot
+  // Тип фильтра уточняет только общие строки фильтров (задача 041 A).
+  if (slot !== 'oil_filter' && slot !== 'air_filter' && slot !== 'cabin_filter' && slot !== 'fuel_filter') return slot
   // «Тип» выключен у категории (задача 002 П10) — не по типу.
   const byTypeSlot = byType ? FILTER_SLOT.get(filterType?.trim() ?? '') : undefined
   return byTypeSlot ?? (name ? filterSlotByName(name) : null) ?? slot
@@ -251,7 +254,8 @@ export function cartGoods(lines: readonly CartPosition[], categories: readonly C
     const p = l.product
     if (!p || l.gift) continue
     const category = categories?.find((c) => c.id === p.category_id)
-    const slot = goodSlot(category, p)
+    const found = goodSlot(category, p)
+    const slot = found ? placedSlot(found, l.place) : null
     if (!slot || slot === 'other') continue
     const part = { kind: l.kind ?? 'piece', qty: (l.qtyText ?? '1').trim() }
     const same = out.find((g) => g.productId === p.id && g.slot === slot)
@@ -539,7 +543,7 @@ export function receiptBook(
   }
   if (opts.withFilters ?? true) {
     const follow = (slot: BookSlot) => opts.filtersFollowOil !== false && followsOil(slot) && oil !== undefined
-    for (const g of goods.filter((g) => g.slot.endsWith('_filter'))) {
+    for (const g of goods.filter((g) => isFilterSlot(g.slot))) {
       const product = goodBook(g, style)
       const ownRow = rows.find((r) => r.slot === g.slot)
       let next: Next = follow(g.slot) ? ofRow(oil) : ofRow(ownRow)
@@ -553,7 +557,7 @@ export function receiptBook(
       items.push({ slot: g.slot, service_id: null, label: titleOf(g.slot, product), product, group, next })
     }
     // Услуга фильтра без товара (свой фильтр клиента) — её названием.
-    for (const r of rows.filter((r) => r.slot.endsWith('_filter') && !goods.some((g) => g.slot === r.slot))) {
+    for (const r of rows.filter((r) => isFilterSlot(r.slot) && !goods.some((g) => g.slot === r.slot))) {
       items.push({ slot: r.slot, service_id: null, label: titleOf(r.slot, r.label, r.label), product: r.label, group: groupOf(r), next: ofRow(r) })
     }
   }

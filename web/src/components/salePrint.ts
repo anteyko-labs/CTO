@@ -4,7 +4,7 @@ import { salePriceSuffix, saleQtyText } from '../lib/units'
 import { paymentLabel } from '../lib/battery'
 import { printInFrame } from '../lib/printFrame'
 import { lineSum } from '../lib/discount'
-import { vehicleKindText, type Sale, type SaleLine } from '../lib/types'
+import { isFilterSlot, vehicleKindText, type Sale, type SaleLine } from '../lib/types'
 import { branchLabel } from '../lib/branch'
 import { mileageText } from '../lib/mileage'
 import { cachedOilBookSettings } from '../lib/oilBookSettings'
@@ -93,7 +93,7 @@ export function bookHtml(sale: Pick<Sale, 'sale_type' | 'kind' | 'book'>): strin
     x.slot === y.slot && (x.service_id ?? null) === (y.service_id ?? null)
   // Задача 040 A: у каждого фильтра своя строка следующей замены — по его подписи (у любой машины).
   const nextOf = (x: { slot?: string; service_id?: string | null; label?: string }) => {
-    const apart = Boolean(x.slot?.endsWith('_filter'))
+    const apart = isFilterSlot(x.slot)
     const l = b.lines.find((l) => same(l, x) && (!apart || l.label === x.label))
     return l ? `на ${mileageText(l.next_mileage, l.unit)}` : ''
   }
@@ -101,7 +101,7 @@ export function bookHtml(sale: Pick<Sale, 'sale_type' | 'kind' | 'book'>): strin
   const items = [
     ...filled.map((f) => ({ title: f.label, group: f.group ?? null, next: nextOf(f) })),
     // Следующая замена без строки «что залито» (чек из очереди старой кассы) — своей строкой.
-    ...b.lines.filter((l) => !filled.some((f) => same(f, l) && (!l.slot?.endsWith('_filter') || f.label === l.label))).map((l) => ({ title: l.label, group: l.group ?? null, next: nextOf(l) })),
+    ...b.lines.filter((l) => !filled.some((f) => same(f, l) && (!isFilterSlot(l.slot) || f.label === l.label))).map((l) => ({ title: l.label, group: l.group ?? null, next: nextOf(l) })),
   ]
   if (items.length === 0) return ''
   return `<div class="book"><b>Масляная книжка</b>

@@ -9,7 +9,7 @@ import QRCode from 'qrcode'
 import { get, newOpId, post } from './api'
 import { toast } from '../components/ui'
 import { formatDate } from './format'
-import { vehicleKindText } from './types'
+import { isFilterSlot, vehicleKindText } from './types'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, type OilBookSettings } from './oilBookSettings'
 import {
   bookGroups,
@@ -79,7 +79,7 @@ const plateHtml = (b: VehicleBook) =>
  *  поля — как по умолчанию (`OIL_BOOK_DEFAULTS`). */
 export type BookPrint = Partial<Pick<OilBookSettings, 'with_filters' | 'print_filters_only'>>
 
-const isFilter = (slot: string) => slot.endsWith('_filter')
+const isFilter = isFilterSlot
 
 /** Строки, которые идут в чек книжки этой записи: жидкости, фильтры — по настройке, работы
  *  «прочее» по услуге — своим названием и сроком (задача 003 Н5). Как `oil_book::sale_book`. */

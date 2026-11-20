@@ -68,6 +68,10 @@ pub struct SaleLineReq {
     /// менял ли кассир цену, а не по прайсу на момент отправки.
     #[serde(default)]
     pub seen_list_price_tyiyn: Option<i64>,
+    /// «Куда поставили» фильтр (задача 041 A): `gearbox_filter` у масляного, `cabin_filter` у
+    /// воздушного; пусто — строка категории. Другое значение не учитывается.
+    #[serde(default)]
+    pub book_slot: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -448,6 +452,8 @@ struct Prepared {
     oil_category: Option<Uuid>,
     /// Услуга-доливка (ADR-118): допустима и в чеке «На вынос».
     takeaway: bool,
+    /// «Куда поставили» фильтр (задача 041 A).
+    book_slot: Option<String>,
 }
 
 /// Названия услуг чека без флажка «доливка на вынос» (ADR-118).
@@ -528,6 +534,7 @@ async fn prepare_line(
             free_with_oil: s.free_with_oil,
             oil_category: s.oil_category_id,
             takeaway: s.takeaway,
+            book_slot: None,
         });
     }
     // Карточку могли влить в другую, пока чек лежал на устройстве: продаём основную.
@@ -628,6 +635,10 @@ async fn prepare_line(
         free_with_oil: false,
         oil_category: None,
         takeaway: false,
+        book_slot: l
+            .book_slot
+            .clone()
+            .filter(|s| s == "gearbox_filter" || s == "cabin_filter"),
     })
 }
 
@@ -1084,12 +1095,12 @@ async fn insert_line(
     sqlx::query!(
         r#"insert into sale_lines (id, sale_id, line_no, kind, product_id, service_id, qty, units,
                                    unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn, master_fee_tyiyn,
-                                   gift, cost_unknown, name)
+                                   gift, cost_unknown, name, book_slot)
            select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                   -- Название на момент продажи: печать позже покажет то, что продали.
                   coalesce(p.name || case p.attrs ->> 'polarity' when 'прямая' then ' (Л)'
                                                                 when 'обратная' then ' (П)' else '' end,
-                           sv.name)
+                           sv.name), $16
            from (select 1) x
            left join products p on p.id = $5
            left join services sv on sv.id = $6"#,
@@ -1107,7 +1118,8 @@ async fn insert_line(
         cost,
         fee,
         p.gift,
-        cost_unknown
+        cost_unknown,
+        p.book_slot.as_deref()
     )
     .execute(&mut *conn)
     .await?;
@@ -2838,6 +2850,7 @@ pub async fn return_sale_core(
                 free_with_oil: false,
                 oil_category: None,
                 takeaway: false,
+                book_slot: None,
             },
             line_no: rl.line_no,
             amount,
@@ -3549,6 +3562,7 @@ pub async fn no_receipt_return_tx(
             free_with_oil: false,
             oil_category: None,
             takeaway: false,
+            book_slot: None,
         });
     }
     if total <= 0 {

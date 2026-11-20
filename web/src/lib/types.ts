@@ -115,9 +115,27 @@ export type BookSlot =
   | 'air_filter'
   | 'cabin_filter'
   | 'fuel_filter'
+  | 'gearbox_filter'
+  | 'fuel_separator'
+  | 'water_separator'
+  | 'coolant_filter'
+  | 'hydraulic_filter'
   | 'antifreeze'
   | 'brake_fluid'
   | 'other'
+
+/** Строка книжки — фильтр (задача 041 A): `*_filter`, сепаратор и влагоотделитель. Как
+ *  `oil_book::is_filter_slot`. */
+export const isFilterSlot = (slot: string | null | undefined): boolean =>
+  Boolean(slot && (slot.endsWith('_filter') || slot === 'fuel_separator' || slot === 'water_separator'))
+
+/** «Куда поставили» (задача 041 A): масляный — как фильтр коробки, воздушный — как салонный. */
+export const PLACE_CHOICES: Partial<Record<BookSlot, BookSlot>> = { oil_filter: 'gearbox_filter', air_filter: 'cabin_filter' }
+
+/** Строка книжки товара с выбранным местом; место не из пары — строка товара. Как `oil_book::placed_slot`. */
+export function placedSlot(slot: BookSlot, place: string | null | undefined): BookSlot {
+  return place && PLACE_CHOICES[slot] === place ? (place as BookSlot) : slot
+}
 
 export const BOOK_SLOT_LABELS: Record<BookSlot, string> = {
   oil: 'Масло двигателя',
@@ -126,6 +144,11 @@ export const BOOK_SLOT_LABELS: Record<BookSlot, string> = {
   air_filter: 'Фильтр воздушный',
   cabin_filter: 'Фильтр салонный',
   fuel_filter: 'Фильтр топливный',
+  gearbox_filter: 'Фильтр коробки',
+  fuel_separator: 'Топливный фильтр грубой очистки (сепаратор)',
+  water_separator: 'Влагоотделитель',
+  coolant_filter: 'Фильтр антифриза',
+  hydraulic_filter: 'Фильтр гидравлической системы',
   antifreeze: 'Антифриз',
   brake_fluid: 'Тормозная жидкость',
   other: 'Прочие работы',

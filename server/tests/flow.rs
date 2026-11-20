@@ -302,6 +302,7 @@ fn line(kind: &str, product: Uuid, qty: i64, price: i64) -> SaleLineReq {
         qty,
         unit_price_tyiyn: price,
         seen_list_price_tyiyn: None,
+        book_slot: None,
     }
 }
 
@@ -443,6 +444,7 @@ fn kind_line(service: Uuid, qty: i64, price: i64) -> SaleLineReq {
         qty,
         unit_price_tyiyn: price,
         seen_list_price_tyiyn: None,
+        book_slot: None,
     }
 }
 
@@ -705,6 +707,7 @@ async fn service_line_pays_master_its_own_rate(pool: PgPool) {
         qty: 1,
         unit_price_tyiyn: 40_000,
         seen_list_price_tyiyn: None,
+        book_slot: None,
     };
     let client = service_client(&pool, &w).await;
     let req = in_service(
@@ -1847,6 +1850,7 @@ async fn batteries_by_weight_average_and_no_loss(pool: PgPool) {
         qty: grams,
         unit_price_tyiyn: per_kg,
         seen_list_price_tyiyn: None,
+        book_slot: None,
     };
     // 12,5 кг по 85 с/кг — дешевле средней 92: отказ.
     assert!(matches!(
@@ -1998,6 +2002,7 @@ async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
             qty: 1,
             unit_price_tyiyn: 20_000,
             seen_list_price_tyiyn: None,
+            book_slot: None,
         }],
         cash(20_000),
     );
@@ -6133,6 +6138,7 @@ async fn battery_intake_can_be_reversed_once(pool: PgPool) {
                 qty: 5_000,
                 unit_price_tyiyn: 15_000,
                 seen_list_price_tyiyn: None,
+                book_slot: None,
             }],
             cash(75_000),
         ),

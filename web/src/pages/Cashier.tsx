@@ -35,6 +35,7 @@ import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage
 import { askOilChange, hasServiceWork, hasTopup } from '../lib/oilChange'
 import {
   cartGoods,
+  goodSlot,
   cartSources,
   extraChoices,
   extraServices,
@@ -83,7 +84,7 @@ import { focusScanField, useScanToPicker } from '../lib/scanner'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
-import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift, type VehicleKind } from '../lib/types'
+import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift, type VehicleKind, BOOK_SLOT_LABELS, PLACE_CHOICES } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -95,6 +96,8 @@ interface CartLine {
   priceText: string
   /** Подарок: цена ноль, в чеке помечен (SPEC-11). */
   gift?: boolean
+  /** «Куда поставили» фильтр (задача 041 A): пусто — строка категории. */
+  place?: BookSlot | null
 }
 
 type PayMode = PaymentMethod | 'mixed'
@@ -1413,6 +1416,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         unit_price_tyiyn: parseSom(l.priceText),
         // Прайс, который видела касса: сервер отличит правку кассира от сменившегося прайса.
         seen_list_price_tyiyn: l.gift ? 0 : lineList(l),
+        book_slot: l.place ?? null,
       })),
       payments,
     }
@@ -2301,6 +2305,33 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       )}
     </>
   )
+  // «Грузовая / Легковая» (задача 040 A): в режиме кассы — в полосе сверху (высота — строкам чека),
+  // иначе — над позициями чека.
+  const vehicleToggle = (
+    <div className={`flex shrink-0 items-center gap-2 ${touch ? '' : 'px-1 py-0.5'}`} role="radiogroup" aria-label="Грузовая или легковая" data-testid="vehicle-kind">
+            {(['truck', 'car'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={vehicleKind === k}
+                data-testid={`vehicle-kind-${k}`}
+                className={`flex-1 rounded-lg px-3 font-semibold whitespace-nowrap ${touch ? 'border text-base' : 'border-2 py-1.5 text-base'} ${
+                  vehicleKind === k
+                    ? k === 'truck'
+                      ? 'border-amber-500 bg-amber-100 text-amber-900'
+                      : 'border-sky-500 bg-sky-100 text-sky-900'
+                    : touch
+                      ? 'border-slate-500 bg-slate-800 text-slate-300'
+                      : 'border-slate-200 bg-white text-slate-500'
+                }`}
+                onClick={() => setVehicleKind(k)}
+              >
+                {k === 'truck' ? '🚚 Грузовая' : '🚗 Легковая'}
+              </button>
+            ))}
+          </div>
+  )
   const submitBlock = (
     <>
       <ErrorBox error={error} />
@@ -2353,6 +2384,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             saleBlocked={needShift}
             buttons={at('bar')}
             exitGrey={cs.exit_grey}
+            extra={vehicleToggle}
           />
         </div>
       )}
@@ -2658,23 +2690,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </span>
             </div>
           )}
-          <div className="flex shrink-0 items-center gap-2 px-1 py-1" role="radiogroup" aria-label="Грузовая или легковая" data-testid="vehicle-kind">
-            {(['truck', 'car'] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                role="radio"
-                aria-checked={vehicleKind === k}
-                data-testid={`vehicle-kind-${k}`}
-                className={`flex-1 rounded-lg border-2 px-3 font-semibold ${touch ? 'py-3 text-lg' : 'py-2 text-base'} ${
-                  vehicleKind === k ? (k === 'truck' ? 'border-amber-500 bg-amber-100 text-amber-900' : 'border-sky-500 bg-sky-100 text-sky-900') : 'border-slate-200 bg-white text-slate-500'
-                }`}
-                onClick={() => setVehicleKind(k)}
-              >
-                {k === 'truck' ? '🚚 Грузовая' : '🚗 Легковая'}
-              </button>
-            ))}
-          </div>
+          {!touch && vehicleToggle}
           <div
             ref={cartRef}
             className={touch ? 'relative lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : ''}
@@ -2724,6 +2740,27 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         title={serviceLeft ? (l.product ? productTitle(l.product) : l.service?.name) : undefined}
                       >
                         {l.product ? productTitle(l.product) : l.service?.name}
+                        {(() => {
+                          // «Куда поставили» (задача 041 A): масляный — как фильтр коробки, воздушный — как салонный.
+                          const p = l.product
+                          const own = p && !l.gift ? goodSlot(categories.data?.find((c) => c.id === p.category_id), p) : null
+                          const alt = own ? PLACE_CHOICES[own] : undefined
+                          if (!own || !alt) return null
+                          return (
+                            <label className="ml-2 text-sm font-normal text-slate-600">
+                              Куда поставили{' '}
+                              <select
+                                className="rounded border border-slate-300 px-1 py-0.5"
+                                data-testid="line-place"
+                                value={l.place ?? own}
+                                onChange={(e) => update(l.key, { place: e.target.value === alt ? alt : null })}
+                              >
+                                <option value={own}>{BOOK_SLOT_LABELS[own]}</option>
+                                <option value={alt}>{BOOK_SLOT_LABELS[alt]}</option>
+                              </select>
+                            </label>
+                          )
+                        })()}
                         {l.gift && (
                           <span className="ml-2">
                             <Badge tone="green">подарок</Badge>
