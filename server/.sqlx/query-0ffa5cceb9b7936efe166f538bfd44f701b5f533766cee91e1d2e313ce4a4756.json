@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into old_catalog (id, branch_id, name, barcode, article, extra_code, cost_tyiyn,\n                                    price_tyiyn, unit, supplier, category, qty)\n           select t.id, $1, t.name, t.barcode, t.article, t.extra_code, t.cost, t.price, t.unit,\n                  t.supplier, t.category,\n                  case when t.qty >= 0 then t.qty::numeric end\n           from unnest($2::uuid[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int8[],\n                       $8::int8[], $9::text[], $10::text[], $11::text[], $12::float8[])\n                as t(id, name, barcode, article, extra_code, cost, price, unit, supplier, category,\n                     qty)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Float8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ffa5cceb9b7936efe166f538bfd44f701b5f533766cee91e1d2e313ce4a4756"
+}

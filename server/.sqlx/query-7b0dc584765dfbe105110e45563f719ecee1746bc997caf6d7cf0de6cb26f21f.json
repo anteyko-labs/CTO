@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update revision_lines set counted_qty = greatest(counted_qty - $3, 0), user_id = $4,\n                                     updated_at = now()\n           where revision_id = $1 and product_id = $2 returning counted_qty",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "counted_qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7b0dc584765dfbe105110e45563f719ecee1746bc997caf6d7cf0de6cb26f21f"
+}

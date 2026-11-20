@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, article, keys from old_catalog where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "article",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "keys",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "94735650f0bd95c0b3d2ac6b04d69ae631c22c467117a8502da8ca0ec464d5c4"
+}

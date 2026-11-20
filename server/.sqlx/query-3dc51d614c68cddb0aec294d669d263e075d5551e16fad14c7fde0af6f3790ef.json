@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select umag_key(barcode, name) as \"key!\", intake_status, intake_product_id,\n                  intake_revision_id, intake_counted\n           from old_catalog where branch_id = $1 and intake_status <> 'todo'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "intake_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "intake_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "intake_revision_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "intake_counted",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3dc51d614c68cddb0aec294d669d263e075d5551e16fad14c7fde0af6f3790ef"
+}

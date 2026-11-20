@@ -55,7 +55,7 @@ pub(crate) async fn enabled(conn: &mut PgConnection, branch_id: Uuid) -> AppResu
 }
 
 /// Связывание при выключенном Умаге — 409: список и связи хранятся, но не меняются.
-async fn require_enabled(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
+pub(crate) async fn require_enabled(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     if enabled(conn, branch_id).await? {
         Ok(())
     } else {
@@ -143,7 +143,7 @@ async fn put_switch(
 }
 
 /// Связывать, отвязывать и разбирать пары — право «Товары и штрихкоды» (ADR-097).
-const RIGHT: &str = "products";
+pub(crate) const RIGHT: &str = "products";
 
 #[derive(Deserialize)]
 pub struct ImportRow {
@@ -164,6 +164,9 @@ pub struct ImportRow {
     pub supplier: String,
     #[serde(default)]
     pub category: String,
+    /// Остаток в Умаге (задача 042): в единицах строки — штуки, литры, кг, м. Нет колонки — `None`.
+    #[serde(default)]
+    pub qty: Option<f64>,
 }
 
 const MAX_ROWS: usize = 50_000;
@@ -338,6 +341,15 @@ async fn import(
     .into_iter()
     .map(|r| (r.umag_barcode, r.product_id))
     .collect();
+    // Разобранные строки (задача 042) новая выгрузка не возвращает в «Не разобрано».
+    let intake = sqlx::query!(
+        r#"select umag_key(barcode, name) as "key!", intake_status, intake_product_id,
+                  intake_revision_id, intake_counted
+           from old_catalog where branch_id = $1 and intake_status <> 'todo'"#,
+        branch_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     sqlx::query!("delete from old_catalog where branch_id = $1", branch_id)
         .execute(&mut *tx)
         .await?;
@@ -354,12 +366,14 @@ async fn import(
     // Одним запросом: пять тысяч строк по одной — секунды под замком.
     sqlx::query!(
         r#"insert into old_catalog (id, branch_id, name, barcode, article, extra_code, cost_tyiyn,
-                                    price_tyiyn, unit, supplier, category)
+                                    price_tyiyn, unit, supplier, category, qty)
            select t.id, $1, t.name, t.barcode, t.article, t.extra_code, t.cost, t.price, t.unit,
-                  t.supplier, t.category
+                  t.supplier, t.category,
+                  case when t.qty >= 0 then t.qty::numeric end
            from unnest($2::uuid[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int8[],
-                       $8::int8[], $9::text[], $10::text[], $11::text[])
-                as t(id, name, barcode, article, extra_code, cost, price, unit, supplier, category)"#,
+                       $8::int8[], $9::text[], $10::text[], $11::text[], $12::float8[])
+                as t(id, name, barcode, article, extra_code, cost, price, unit, supplier, category,
+                     qty)"#,
         branch_id,
         &ids,
         &text(|r| &r.name, 300),
@@ -373,9 +387,45 @@ async fn import(
         &text(|r| &r.unit, 20),
         &text(|r| &r.supplier, 200),
         &text(|r| &r.category, 200),
+        &rows
+            .iter()
+            // Нет количества — −1 (массив без пустых значений), в базе — null.
+            .map(|r| {
+                r.qty
+                    .filter(|q| q.is_finite() && *q >= 0.0 && *q < 1e9)
+                    .unwrap_or(-1.0)
+            })
+            .collect::<Vec<f64>>(),
     )
     .execute(&mut *tx)
     .await?;
+    if !intake.is_empty() {
+        sqlx::query!(
+            r#"update old_catalog o
+               set intake_status = t.status, intake_product_id = t.product_id,
+                   intake_revision_id = t.revision_id, intake_counted = t.counted
+               from unnest($2::text[], $3::text[], $4::uuid[], $5::uuid[], $6::int8[])
+                    as t(key, status, product_id, revision_id, counted)
+               where o.branch_id = $1 and umag_key(o.barcode, o.name) = t.key"#,
+            branch_id,
+            &intake.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
+            &intake
+                .iter()
+                .map(|r| r.intake_status.clone())
+                .collect::<Vec<_>>(),
+            &intake
+                .iter()
+                .map(|r| r.intake_product_id)
+                .collect::<Vec<_>>() as &[Option<Uuid>],
+            &intake
+                .iter()
+                .map(|r| r.intake_revision_id)
+                .collect::<Vec<_>>() as &[Option<Uuid>],
+            &intake.iter().map(|r| r.intake_counted).collect::<Vec<_>>() as &[Option<i64>],
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     let fresh: Vec<FreshRow> = sqlx::query!(
         r#"select id, barcode, umag_key(barcode, name) as "key!", keys,
                   umag_product_codes(codes, unit) as "codes!"
@@ -444,6 +494,8 @@ struct Stats {
     conflicts: i64,
     /// Умаг включён (SPEC-36 §15): выключенный не подсказывает и не связывает.
     enabled: bool,
+    /// Неразобранных строк с остатком (задача 042): пока они есть, виден «Разбор из Умага».
+    intake_todo: i64,
 }
 
 async fn stats(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Stats>> {
@@ -452,7 +504,8 @@ async fn stats(State(state): State<AppState>, user: CurrentUser) -> AppResult<Js
     let r = sqlx::query!(
         r#"select count(*) as "rows!", max(imported_at) as imported_at,
                   count(product_id) as "linked!",
-                  count(*) filter (where jsonb_array_length(code_conflicts) > 0) as "conflicts!"
+                  count(*) filter (where jsonb_array_length(code_conflicts) > 0) as "conflicts!",
+                  count(*) filter (where qty is not null and intake_status = 'todo') as "intake_todo!"
            from old_catalog where branch_id = $1"#,
         user.branch_id
     )
@@ -465,6 +518,7 @@ async fn stats(State(state): State<AppState>, user: CurrentUser) -> AppResult<Js
         linked: r.linked,
         unlinked: r.rows - r.linked,
         conflicts: r.conflicts,
+        intake_todo: r.intake_todo,
     }))
 }
 
@@ -489,7 +543,7 @@ struct SearchQuery {
 }
 
 #[derive(Serialize, Clone)]
-struct Hit {
+pub(crate) struct Hit {
     id: Uuid,
     name: String,
     barcode: String,
@@ -521,7 +575,7 @@ struct Hit {
 const COST_RIGHTS: [&str; 3] = ["receipts", "revision", "products"];
 
 /// Видна ли пользователю закупка в Умаге в подсказках.
-async fn sees_umag_cost(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<bool> {
+pub(crate) async fn sees_umag_cost(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<bool> {
     if user.is_owner() {
         return Ok(true);
     }
@@ -539,7 +593,7 @@ async fn sees_umag_cost(conn: &mut PgConnection, user: &CurrentUser) -> AppResul
 
 /// Строки Умага в порядке `ids`; `exact` — строки, чей код совпал с искомым. `cost` — показать
 /// ли закупку (`sees_umag_cost`).
-async fn load_hits(
+pub(crate) async fn load_hits(
     conn: &mut PgConnection,
     branch_id: Uuid,
     ids: &[Uuid],
@@ -831,7 +885,7 @@ async fn link_rows(
 }
 
 /// Итог связи одной строки.
-struct Linked {
+pub(crate) struct Linked {
     copied: Vec<String>,
     conflicts: Vec<CodeConflict>,
 }
@@ -840,7 +894,7 @@ struct Linked {
 /// связанная с другим товаром, — 409: сначала «Отвязать». `how` — откуда связь, для журнала:
 /// `manual` (выбрал человек), `created` (товар заведён из строки), `code` (код строки — только
 /// у этого товара).
-async fn link_row(
+pub(crate) async fn link_row(
     conn: &mut PgConnection,
     ctx: &Ctx,
     row_id: Uuid,
@@ -1029,14 +1083,18 @@ struct OpReq {
 }
 
 /// Строка Умага филиала для отвязки и «Не то»: название, штрихкод, ключ и связь.
-struct RowRef {
-    name: String,
-    barcode: String,
-    key: String,
-    product_id: Option<Uuid>,
+pub(crate) struct RowRef {
+    pub(crate) name: String,
+    pub(crate) barcode: String,
+    pub(crate) key: String,
+    pub(crate) product_id: Option<Uuid>,
 }
 
-async fn row_ref(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<RowRef> {
+pub(crate) async fn row_ref(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<RowRef> {
     let r = sqlx::query!(
         r#"select name, barcode, umag_key(barcode, name) as "key!", product_id
            from old_catalog where id = $1 and branch_id = $2 for update"#,
@@ -1055,7 +1113,7 @@ async fn row_ref(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResul
 }
 
 /// «Не то» для пары: больше не предлагается и автоматически не связывается.
-async fn remember_reject(
+pub(crate) async fn remember_reject(
     conn: &mut PgConnection,
     branch_id: Uuid,
     key: &str,

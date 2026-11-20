@@ -1450,7 +1450,7 @@ async fn similar_products(
 
 /// Остаток похожего товара в одном филиале.
 #[derive(Serialize)]
-struct SimilarStock {
+pub(crate) struct SimilarStock {
     branch_id: Uuid,
     branch_name: String,
     stock_qty: i64,
@@ -1458,7 +1458,7 @@ struct SimilarStock {
 
 /// Похожий товар общей базы (задача 041 §5): категория, цена и остаток по филиалам.
 #[derive(Serialize)]
-struct SimilarItem {
+pub(crate) struct SimilarItem {
     id: Uuid,
     name: String,
     article: String,
@@ -1531,8 +1531,22 @@ async fn similar_in_base(
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
-    let my_tokens = name_tokens(&me.name);
-    let my_article = code_key(&me.article);
+    Ok(Json(
+        similar_to(&mut conn, id, &me.name, &me.article, &me.barcodes).await?,
+    ))
+}
+
+/// До 10 похожих товаров общей базы по названию, артикулу и кодам (задача 041 §7), кроме
+/// `exclude`; совпавшие по коду — сверху. Тот же подбор у строки Умага (задача 042).
+pub(crate) async fn similar_to(
+    conn: &mut PgConnection,
+    exclude: Uuid,
+    name: &str,
+    article: &str,
+    barcodes: &[String],
+) -> AppResult<Vec<SimilarItem>> {
+    let my_tokens = name_tokens(name);
+    let my_article = code_key(article);
     let patterns: Vec<String> = my_tokens
         .iter()
         .map(|t| format!("%{}%", escape_like(t)))
@@ -1550,19 +1564,19 @@ async fn similar_in_base(
                   or ($3 <> '' and lower(regexp_replace(p.name, '[^[:alnum:]]', '', 'g')) like '%' || $3 || '%')
                   or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code = any($4)))
            limit 300"#,
-        id,
+        exclude,
         &patterns,
         my_article,
-        &me.barcodes
+        barcodes
     )
     .fetch_all(&mut *conn)
     .await?;
-    let my_name_key = code_key(&me.name);
+    let my_name_key = code_key(name);
     let mut scored: Vec<_> = rows
         .into_iter()
         .filter_map(|r| {
             let other_article = code_key(&r.article);
-            let by_code = r.barcodes.iter().any(|b| me.barcodes.contains(b))
+            let by_code = r.barcodes.iter().any(|b| barcodes.contains(b))
                 || (!my_article.is_empty()
                     && (other_article == my_article || code_key(&r.name).contains(&my_article)))
                 || (other_article.chars().count() >= 3 && my_name_key.contains(&other_article));
@@ -1581,31 +1595,29 @@ async fn similar_in_base(
     )
     .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(
-        scored
-            .into_iter()
-            .map(|(_, by_code, r)| SimilarItem {
-                stocks: stocks
-                    .iter()
-                    .filter(|s| s.product_id == r.id)
-                    .map(|s| SimilarStock {
-                        branch_id: s.branch_id,
-                        branch_name: s.branch_name.clone(),
-                        stock_qty: s.stock_qty,
-                    })
-                    .collect(),
-                id: r.id,
-                name: r.name,
-                article: r.article,
-                unit: r.unit,
-                category_id: r.category_id,
-                category_name: r.category_name,
-                sale_price_tyiyn: r.sale_price_tyiyn,
-                barcodes: r.barcodes,
-                reason: if by_code { "code" } else { "name" },
-            })
-            .collect(),
-    ))
+    Ok(scored
+        .into_iter()
+        .map(|(_, by_code, r)| SimilarItem {
+            stocks: stocks
+                .iter()
+                .filter(|s| s.product_id == r.id)
+                .map(|s| SimilarStock {
+                    branch_id: s.branch_id,
+                    branch_name: s.branch_name.clone(),
+                    stock_qty: s.stock_qty,
+                })
+                .collect(),
+            id: r.id,
+            name: r.name,
+            article: r.article,
+            unit: r.unit,
+            category_id: r.category_id,
+            category_name: r.category_name,
+            sale_price_tyiyn: r.sale_price_tyiyn,
+            barcodes: r.barcodes,
+            reason: if by_code { "code" } else { "name" },
+        })
+        .collect())
 }
 
 /// Товар в продаже не кладётся в скрытую категорию (задача 003 Н10): её нет в выборе.
@@ -2820,7 +2832,9 @@ async fn merge_product(
     // Строки Умага дубля (во всех филиалах) связаны теперь с основной карточкой (SPEC-35), их
     // отметки конфликтов — заново: коды дубля теперь у основной.
     sqlx::query!(
-        "update old_catalog set product_id = $2 where product_id = $1",
+        "update old_catalog set product_id = case when product_id = $1 then $2 else product_id end,
+                intake_product_id = case when intake_product_id = $1 then $2 else intake_product_id end
+         where product_id = $1 or intake_product_id = $1",
         id,
         req.into_product_id
     )

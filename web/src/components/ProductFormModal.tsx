@@ -75,6 +75,7 @@ export function ProductFormModal({
   presetCost,
   stockIn,
   continueIfTaken,
+  createUrl,
   onClose,
   onSaved,
 }: {
@@ -99,6 +100,9 @@ export function ProductFormModal({
   /** Отсканированный незнакомый код в ту же минуту завёл другой: взять его товар (строка прихода,
    *  чек), а не показывать ошибку (задача 003, Н14). */
   continueIfTaken?: boolean
+  /** Куда заводить новую карточку вместо `POST /products` (разбор из Умага, задача 042): ответ —
+   *  `{ product }`, сервер в той же операции пишет количество строки в ревизию. */
+  createUrl?: string
   onClose: () => void
   /** `cost` — введённая цена прихода нового товара: приход ставит её в строку. */
   onSaved: (p: Product, cost?: PriceEntry) => void
@@ -260,7 +264,7 @@ export function ProductFormModal({
         const unitCost = entryUnitPrice(cost, isOil ? v.container : null)
         if (unitCost === null) throw new Error('Неверная цена прихода')
         const r = await createOrTaken(continueIfTaken ? form.barcode.trim() : '', () =>
-          post<Product>('/products', {
+          (createUrl ? (b: object) => post<{ product: Product }>(createUrl, b).then((x) => x.product) : (b: object) => post<Product>('/products', b))({
             op_id: opId,
             category_id: form.category_id,
             name: form.name,

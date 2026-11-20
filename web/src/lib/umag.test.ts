@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mapUmagRows, preselected, serviceCandidates } from './umag'
+import { mapUmagRows, parseUmagQty, preselected, serviceCandidates } from './umag'
 
 const sheet = [
   ['Название товара', 'Штрихкод', 'Артикул', 'Доп. код', 'Закупочная цена', 'Прод. цена', 'Ед. изм.', 'Поставщик', 'Категория'],
@@ -32,5 +32,19 @@ describe('выгрузка старой программы', () => {
     ])
     expect([...preselected(list)]).toEqual(['Мойка двигателя', 'Замена антифриза'])
     expect(list.find((c) => c.name === 'Мойка двигателя')?.price_tyiyn).toBe(50_000)
+  })
+
+  it('количество из колонки «Остаток» (задача 042)', () => {
+    const rows = mapUmagRows([
+      ['Наименование', 'Штрихкод', 'Остаток', 'Ед. изм.'],
+      ['Свеча', '1', '12', 'шт'],
+      ['Масло', '2', '2,5', 'л'],
+      ['Без остатка', '3', '', 'шт'],
+      ['Минус', '4', '-3', 'шт'],
+    ])
+    expect(rows.map((r) => r.qty)).toEqual([12, 2.5, undefined, 0])
+    expect(mapUmagRows(sheet)[0].qty).toBeUndefined()
+    expect(parseUmagQty('1 200')).toBe(1200)
+    expect(parseUmagQty('нет')).toBeUndefined()
   })
 })

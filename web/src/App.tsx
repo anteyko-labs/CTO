@@ -26,6 +26,7 @@ import Cashier from './pages/Cashier'
 import Login from './pages/Login'
 const SettingsHub = lazyPage(() => import('./pages/SettingsHub'))
 const Stock = lazyPage(() => import('./pages/Stock'))
+const UmagIntake = lazyPage(() => import('./pages/UmagIntake'))
 const Accounts = lazyPage(() => import('./pages/Accounts'))
 const Categories = lazyPage(() => import('./pages/Categories'))
 const ClientCard = lazyPage(() => import('./pages/ClientCard'))
@@ -98,6 +99,8 @@ interface NavItem {
   permission?: Permission | Permission[]
   /** Только у личного входа сотрудника (задача 005 Н1, ADR-170). */
   employeeOnly?: boolean
+  /** Временный пункт: виден, пока в филиале есть неразобранные строки Умага (задача 042). */
+  umagIntake?: boolean
 }
 
 // Меню: рабочие экраны сверху, справочники и настройки ниже. Категории живут внутри «Товаров»,
@@ -138,6 +141,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/products', label: 'Товары', icon: 'products' },
       // «Склад → Остатки» — что лежит на складе (SPEC-36 §14); «Товары» — справочник.
       { to: '/stock', label: 'Остатки', icon: 'stock', permission: 'view_stock' },
+      { to: '/stock/umag-intake', label: 'Разбор из Умага', icon: 'stock', permission: 'products', umagIntake: true },
       { to: '/top-products', label: 'Продаваемые', icon: 'star', permission: 'view_stock' },
       { to: '/revision', label: 'Ревизия и товары', icon: 'revision', permission: ['revision', 'products'] },
       { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', permission: 'oil_transfer' },
@@ -222,6 +226,17 @@ function useUnseen(enabled: boolean): number {
   return n
 }
 
+/** Есть ли неразобранные строки Умага с остатком (задача 042): пункт меню временный. */
+function useUmagTodo(enabled: boolean): boolean {
+  const [n, setN] = useState(0)
+  const { pathname } = useLocation()
+  useEffect(() => {
+    if (!enabled) return
+    void get<{ intake_todo?: number }>('/old-catalog').then((r) => setN(r.intake_todo ?? 0)).catch(() => undefined)
+  }, [enabled, pathname])
+  return n > 0
+}
+
 /** Пересоздаёт страницу при смене :id, чтобы окна и идентификаторы операций не переносились между документами. */
 function ByParam({ children }: { children: ReactNode }) {
   const { id } = useParams()
@@ -233,6 +248,7 @@ function Shell() {
   const [open, setOpen] = useState(false)
   const [theme, setTheme] = useTheme()
   const unseen = useUnseen(user?.role === 'owner')
+  const umagTodo = useUmagTodo(Boolean(user && (user.role === 'owner' || can(user, 'products'))))
   // Название филиала в печатных чеках — когда филиалов несколько (SPEC-33).
   useEffect(() => setBranchLabel(user?.several_branches ? (user.branch_name ?? null) : null), [user])
   // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
@@ -267,7 +283,7 @@ function Shell() {
   // Пункт по праву (ADR-097): без права администратор его не видит.
   const allowed = (p?: Permission | Permission[]) => !p || (Array.isArray(p) ? p : [p]).some((x) => can(user, x))
   const items = (list: NavItem[]) =>
-    list.filter((it) => !(accountant && it.to === '/profit') && (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.employeeOnly || Boolean(user.employee_id)) && allowed(it.permission))
+    list.filter((it) => !(accountant && it.to === '/profit') && (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.employeeOnly || Boolean(user.employee_id)) && (!it.umagIntake || umagTodo || pathname === it.to) && allowed(it.permission))
   const badge = (to: string) =>
     to === '/notifications' && unseen > 0 ? (
       <span className="ml-auto rounded-full bg-rose-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{unseen > 99 ? '99+' : unseen}</span>
@@ -394,6 +410,7 @@ function Shell() {
           {owner && <Route path="/receipts/:id/correct" element={<ByParam><ReceiptCorrect /></ByParam>} />}
           {/* Разделы — по правам (задача 003 Н8): без права прямой адрес уводит на кассу. */}
           {can(user, 'view_stock') && <Route path="/stock" element={<Stock />} />}
+          {can(user, 'products') && <Route path="/stock/umag-intake" element={<UmagIntake />} />}
           <Route path="/products" element={<Products />} />
           {/* Связь товаров со старой базой Умаг (SPEC-35 §3): владелец и право «Товары и штрихкоды». */}
           {can(user, 'products') && <Route path="/products/umag" element={<UmagLink />} />}

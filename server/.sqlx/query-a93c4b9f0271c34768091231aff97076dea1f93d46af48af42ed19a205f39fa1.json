@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update old_catalog o\n               set intake_status = t.status, intake_product_id = t.product_id,\n                   intake_revision_id = t.revision_id, intake_counted = t.counted\n               from unnest($2::text[], $3::text[], $4::uuid[], $5::uuid[], $6::int8[])\n                    as t(key, status, product_id, revision_id, counted)\n               where o.branch_id = $1 and umag_key(o.barcode, o.name) = t.key",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "UuidArray",
+        "UuidArray",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a93c4b9f0271c34768091231aff97076dea1f93d46af48af42ed19a205f39fa1"
+}

@@ -12,6 +12,16 @@ export interface UmagRow {
   unit: string
   supplier: string
   category: string
+  /** Остаток в Умаге (задача 042), в единицах строки; нет колонки или пусто — без поля. */
+  qty?: number
+}
+
+/** Количество ячейки: «12», «2,5», «1 200»; пусто или не число — `undefined`, меньше нуля — 0. */
+export function parseUmagQty(cell: string): number | undefined {
+  const t = cell.replace(/[\s\u00a0]/g, '').replace(',', '.')
+  if (!t) return undefined
+  const n = Number(t)
+  return Number.isFinite(n) ? Math.max(0, n) : undefined
 }
 
 /** Строки выгрузки → строки для сервера; столбцы ищем по заголовкам первой строки. */
@@ -28,10 +38,13 @@ export function mapUmagRows(rows: string[][]): UmagRow[] {
     unit: col('ед. изм', 'ед изм', 'единица'),
     supplier: col('поставщик'),
     category: col('категория'),
+    qty: col('остаток', 'количество', 'кол-во', 'кол.'),
   }
   if (c.name < 0) throw new Error('Не нашёл столбец «Название товара» в первой строке файла')
   const at = (r: string[], i: number) => (i >= 0 ? (r[i] ?? '') : '')
-  return rows.slice(1).map((r) => ({
+  return rows.slice(1).map((r) => {
+    const qty = parseUmagQty(at(r, c.qty))
+    return {
     name: at(r, c.name),
     barcode: at(r, c.barcode),
     article: at(r, c.article),
@@ -41,7 +54,9 @@ export function mapUmagRows(rows: string[][]): UmagRow[] {
     unit: at(r, c.unit),
     supplier: at(r, c.supplier),
     category: at(r, c.category),
-  }))
+    ...(qty === undefined ? {} : { qty }),
+    }
+  })
 }
 
 /** Строка выгрузки как кандидат в услуги. */

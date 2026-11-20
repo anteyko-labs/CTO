@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select count(*) as \"rows!\", max(imported_at) as imported_at,\n                  count(product_id) as \"linked!\",\n                  count(*) filter (where jsonb_array_length(code_conflicts) > 0) as \"conflicts!\"\n           from old_catalog where branch_id = $1",
+  "query": "select count(*) as \"rows!\", max(imported_at) as imported_at,\n                  count(product_id) as \"linked!\",\n                  count(*) filter (where jsonb_array_length(code_conflicts) > 0) as \"conflicts!\",\n                  count(*) filter (where qty is not null and intake_status = 'todo') as \"intake_todo!\"\n           from old_catalog where branch_id = $1",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
         "ordinal": 3,
         "name": "conflicts!",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "intake_todo!",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -33,8 +38,9 @@
       null,
       null,
       null,
+      null,
       null
     ]
   },
-  "hash": "7c46114749177bb614d3cae6bc42b3ede850442936ddb772a8a996d6fd7f0fae"
+  "hash": "37533378f03889eabfbd2115a522fa333687eb97ee921c19a76b018f0135b28c"
 }

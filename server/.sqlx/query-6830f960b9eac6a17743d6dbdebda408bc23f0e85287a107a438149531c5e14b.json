@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.id, o.qty::float8 as qty, o.intake_status, o.intake_product_id,\n                  p.name as \"intake_product_name?\", o.intake_counted,\n                  count(*) over () as \"total!\"\n           from old_catalog o left join products p on p.id = o.intake_product_id\n           where o.branch_id = $1 and ($2 = 'all' or o.intake_status = $2)\n             and ($3 = '%%' or o.name ilike $3 or o.barcode ilike $3 or o.article ilike $3)\n           order by o.name, o.id\n           limit $4 offset $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 2,
+        "name": "intake_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "intake_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "intake_product_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "intake_counted",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "total!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      true,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "6830f960b9eac6a17743d6dbdebda408bc23f0e85287a107a438149531c5e14b"
+}

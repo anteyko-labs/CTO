@@ -489,7 +489,7 @@ async fn create(
 /// перенесли в другую категорию, пока открыты оба) разминулись бы: проверка пересечения при
 /// проведении X строки в Y ещё не видит, а строка Y берёт остаток до движения X — недостача
 /// вычлась бы дважды (задача 003, Н14). Берётся раньше замка строки ревизии.
-async fn lock_branch_drafts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
+pub(crate) async fn lock_branch_drafts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     sqlx::query!(
         "select pg_advisory_xact_lock(hashtextextended('revision.draft:' || $1::text, 0))",
         branch_id.to_string()
@@ -1277,4 +1277,137 @@ async fn cancel(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Черновик «весь склад» филиала для разбора остатков из Умага (задача 042 §3): открытый, а нет —
+/// новый, если начинает владелец (ADR-186). Администратору без черновика — `None`: товар заводят и
+/// привязывают, количество ждёт. Открыта ревизия категории — тоже `None`: «весь склад» при ней
+/// не начать. Замок черновиков филиала вызывающий берёт заранее (`lock_branch_drafts`).
+pub(crate) async fn whole_draft_for_intake(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+) -> AppResult<Option<Uuid>> {
+    let open = sqlx::query!(
+        r#"select id, category_id from revisions
+           where branch_id = $1 and status = 'draft'
+           order by (category_id is null) desc, created_at desc limit 1"#,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match open {
+        Some(o) if o.category_id.is_none() => return Ok(Some(o.id)),
+        Some(_) => return Ok(None),
+        None if !ctx.user.is_owner() => return Ok(None),
+        None => {}
+    }
+    let number = ops::next_counter(&mut *conn, ctx.user.branch_id, "revision").await?;
+    let id = new_id();
+    sqlx::query!(
+        r#"insert into revisions (id, branch_id, number, category_id, comment, user_id, device_id)
+           values ($1, $2, $3, null, $4, $5, $6)"#,
+        id,
+        ctx.user.branch_id,
+        number,
+        "Остатки из Умага",
+        ctx.user.id,
+        ctx.device_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    ops::audit(
+        &mut *conn,
+        ctx,
+        "revision.create",
+        "revision",
+        Some(id),
+        json!({ "number": number, "from": "umag_intake" }),
+    )
+    .await?;
+    Ok(Some(id))
+}
+
+/// Прибавить найденное к строке черновика (`add`, ADR-059): товар уже посчитан — сумма. Товар в
+/// другом открытом черновике — 409, как у пересчёта. Замок черновиков — у вызывающего.
+pub(crate) async fn add_intake_count(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+    qty: i64,
+) -> AppResult<()> {
+    if !(0..=1_000_000_000).contains(&qty) {
+        return Err(invalid("количество из Умага: от 0"));
+    }
+    lock_draft_for_count(&mut *conn, ctx.user.branch_id, id).await?;
+    counted_elsewhere(&mut *conn, ctx.user.branch_id, id, &[product_id]).await?;
+    let stock_now = sqlx::query_scalar!(
+        "select stock_qty from branch_products where branch_id = $1 and product_id = $2",
+        ctx.user.branch_id,
+        product_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(0);
+    let counted = sqlx::query_scalar!(
+        r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
+           values ($1, $2, $3, $4, $5)
+           on conflict (revision_id, product_id)
+           do update set counted_qty = revision_lines.counted_qty + excluded.counted_qty,
+                         user_id = excluded.user_id, updated_at = now(),
+                         stock_at_count = coalesce(revision_lines.stock_at_count, excluded.stock_at_count)
+           returning counted_qty"#,
+        id,
+        product_id,
+        qty,
+        ctx.user.id,
+        stock_now
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if counted > 1_000_000_000 {
+        return Err(invalid("пересчитано слишком много"));
+    }
+    log_count(&mut *conn, ctx, id, product_id, "add", qty, None).await?;
+    Ok(())
+}
+
+/// «Отменить» разбор строки (задача 042 §4): записанное из Умага убирается из черновика; строка,
+/// которую больше никто не считал (итог 0), уходит совсем. Ревизию уже провели — 409.
+pub(crate) async fn remove_intake_count(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+    qty: i64,
+) -> AppResult<()> {
+    lock_draft_for_count(&mut *conn, ctx.user.branch_id, id).await?;
+    let left = sqlx::query_scalar!(
+        r#"update revision_lines set counted_qty = greatest(counted_qty - $3, 0), user_id = $4,
+                                     updated_at = now()
+           where revision_id = $1 and product_id = $2 returning counted_qty"#,
+        id,
+        product_id,
+        qty,
+        ctx.user.id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match left {
+        None => {}
+        Some(0) => {
+            sqlx::query!(
+                "delete from revision_lines where revision_id = $1 and product_id = $2",
+                id,
+                product_id
+            )
+            .execute(&mut *conn)
+            .await?;
+            log_count(&mut *conn, ctx, id, product_id, "clear", 0, None).await?;
+        }
+        Some(_) => {
+            log_count(&mut *conn, ctx, id, product_id, "add", -qty, None).await?;
+        }
+    }
+    Ok(())
 }

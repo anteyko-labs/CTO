@@ -73,6 +73,7 @@ pub mod supplier_debts;
 pub mod supplier_line_map;
 pub mod supplier_returns;
 pub mod telegram;
+pub mod umag_intake;
 
 use axum::Router;
 
@@ -121,6 +122,7 @@ pub fn routes() -> Router<AppState> {
         .merge(oil::routes())
         .merge(oil_book::routes())
         .merge(old_catalog::routes())
+        .merge(umag_intake::routes())
         .merge(optima::routes())
         .merge(parties::routes())
         .merge(pay_fix::routes())
