@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select branch_id from faceid_devices where key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "35c2c032b014eae91e139b2c124d9b7c380f7174fe625f74da7da49fb9ff7706"
+}

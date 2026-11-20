@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select to_char(started_at at time zone 'Asia/Bishkek', 'HH24:MI') as \"at!\"\n           from work_sessions where employee_id = $1 and ended_at is null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "at!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e5d6258883a8e126a5ed73cce61ddc635a4967c1aa36b18787fd8e68b67cf5a2"
+}

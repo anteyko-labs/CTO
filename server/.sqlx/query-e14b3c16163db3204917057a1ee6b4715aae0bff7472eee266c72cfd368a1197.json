@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update workday_requests set status = 'expired' where status = 'pending' and expires_at <= now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e14b3c16163db3204917057a1ee6b4715aae0bff7472eee266c72cfd368a1197"
+}

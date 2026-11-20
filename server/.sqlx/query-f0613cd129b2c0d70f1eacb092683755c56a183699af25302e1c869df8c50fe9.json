@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.started_at, w.ended_at, w.employee_id, e.full_name\n           from work_sessions w join employees e on e.id = w.employee_id\n           where w.id = $1 and w.branch_id = $2 for update of w",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "ended_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "f0613cd129b2c0d70f1eacb092683755c56a183699af25302e1c869df8c50fe9"
+}

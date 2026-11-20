@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into audit_log (id, branch_id, user_id, device_id, action, entity, entity_id, data)\n           values ($1, $2, null, null, 'staff.workday', 'employee', $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "da2ec8e55c6757780a317be64f02b701f928a7245437c7c141c5c2366ef06a76"
+}

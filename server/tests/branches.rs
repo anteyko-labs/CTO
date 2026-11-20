@@ -724,6 +724,9 @@ async fn admin_of_branch_b_sees_and_changes_nothing_of_branch_a(pool: PgPool) {
         "/auth/logout",
         "/client/login",
         "/client/logout",
+        // Терминал Face ID без входа: всегда 200, по ключу (tests/faceid.rs).
+        "/faceid/dahua/{key}",
+        "/faceid/dahua/{key}/{*rest}",
     ];
     for (route, methods) in &routes {
         if skip.contains(&route.as_str()) {

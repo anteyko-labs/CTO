@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into workday_requests (id, employee_id, branch_id, kind, chat_id, expires_at)\n           values ($1, $2, $3, $4, $5, now() + make_interval(mins => $6))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93e983e2e741a313ff2c9245d984038aa6c2c61c05e24aa271474fb6e7524455"
+}

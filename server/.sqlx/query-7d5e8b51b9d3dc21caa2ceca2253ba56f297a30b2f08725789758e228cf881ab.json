@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update work_sessions set ended_at = now() where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d5e8b51b9d3dc21caa2ceca2253ba56f297a30b2f08725789758e228cf881ab"
+}

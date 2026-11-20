@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.kind, r.status, r.chat_id as \"chat_id!\", r.employee_id,\n                  to_char(r.done_at at time zone 'Asia/Bishkek', 'HH24:MI') as at,\n                  (select (extract(epoch from w.ended_at - w.started_at) / 60)::bigint\n                   from work_sessions w where w.employee_id = r.employee_id and w.ended_at is not null\n                   order by w.ended_at desc limit 1) as minutes,\n                  exists (select 1 from work_sessions w where w.employee_id = r.employee_id\n                          and w.ended_at is null) as \"working!\",\n                  (exists (select 1 from telegram_employees t where t.chat_id = r.chat_id\n                           and t.employee_id = r.employee_id)\n                   and not exists (select 1 from telegram_customers c where c.chat_id = r.chat_id)\n                   and not exists (select 1 from users u where u.employee_id = r.employee_id))\n                   as \"plain!\"\n           from workday_requests r\n           where r.notified_at is null and r.status in ('done', 'expired') and r.chat_id is not null\n             and r.created_at > now() - interval '1 day'\n           order by r.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "chat_id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "at",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "minutes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "working!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "plain!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "dcc28b878d764b9f81f8bfd353e9ab17d46c9ab41acbd17e341c682ac01a3fb3"
+}

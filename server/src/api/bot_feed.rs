@@ -46,7 +46,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 95] = [
+const EVENTS: [(&str, &str, &str); 96] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -221,6 +221,7 @@ const EVENTS: [(&str, &str, &str); 95] = [
     ("employee.create", "payroll", "Новый сотрудник"),
     ("employee.update", "payroll", "Изменён сотрудник"),
     ("employee.pin", "payroll", "Задан или снят PIN кассира"),
+    ("staff.workday", "payroll", "Рабочий день по лицу"),
     (
         "telegram.employee_link",
         "payroll",
@@ -302,7 +303,7 @@ fn yes() -> bool {
 
 /// События, которые по умолчанию в бот не идут — владелец включает сам (I21): привязка кода к
 /// товару (задача 005 Н3) бывает часто. Прежним настройкам их добавила миграция 0092.
-const OFF_BY_DEFAULT: [&str; 1] = ["product.barcode"];
+const OFF_BY_DEFAULT: [&str; 2] = ["product.barcode", "staff.workday"];
 
 fn default_off() -> Vec<String> {
     OFF_BY_DEFAULT.iter().map(|a| (*a).to_string()).collect()
@@ -543,7 +544,10 @@ mod tests {
             .is_err()
         );
         assert_eq!(Feed::default().sales, "none");
-        assert_eq!(Feed::default().off, vec!["product.barcode"]);
+        assert_eq!(
+            Feed::default().off,
+            vec!["product.barcode", "staff.workday"]
+        );
         assert!(Feed::default().profit);
         let parsed: Feed = serde_json::from_value(json!({})).unwrap();
         assert_eq!(parsed, Feed::default());

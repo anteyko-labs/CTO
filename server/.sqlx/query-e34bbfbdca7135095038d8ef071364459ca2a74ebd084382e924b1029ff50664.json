@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update workday_requests set status = 'cancelled', notified_at = now() where employee_id = $1 and status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e34bbfbdca7135095038d8ef071364459ca2a74ebd084382e924b1029ff50664"
+}

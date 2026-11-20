@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, kind from workday_requests\n           where employee_id = $1 and branch_id = $2 and status = 'pending' and expires_at > now()\n           order by created_at desc limit 1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ebdfdd6797680dc77d4445b5bc90a01eaf0bd93ee415d525b2668632be7e9721"
+}

@@ -32,6 +32,7 @@ pub mod defects;
 pub mod deliveries;
 pub mod entry_drafts;
 pub mod expenses;
+pub mod faceid;
 pub mod favorites;
 pub mod fees;
 pub mod gifts;
@@ -100,6 +101,7 @@ pub fn routes() -> Router<AppState> {
         .merge(defects::routes())
         .merge(deliveries::routes())
         .merge(expenses::routes())
+        .merge(faceid::routes())
         .merge(own_use::routes())
         .merge(favorites::routes())
         .merge(label_jobs::routes())
