@@ -45,8 +45,8 @@ pub const BUTTONS: [&str; 7] = [
 /// Кнопка рабочего дня: `Some(true)` — начать, `Some(false)` — закончить.
 pub fn workday_button(text: &str) -> Option<bool> {
     match text.trim() {
-        BTN_WORK_START => Some(true),
-        BTN_WORK_STOP => Some(false),
+        BTN_WORK_START | "/начать" => Some(true),
+        BTN_WORK_STOP | "/закончить" => Some(false),
         _ => None,
     }
 }

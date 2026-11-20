@@ -161,6 +161,15 @@ impl Menu {
         let mut rows: Vec<Vec<&'static str>> = buttons.chunks(2).map(<[&str]>::to_vec).collect();
         if self.0 & EARNINGS != 0 {
             rows.insert(0, vec![crate::api::bot_staff::BTN_EARNINGS]);
+            // Рабочий день по лицу (задача 039): одна из двух кнопок — по состоянию.
+            rows.insert(
+                0,
+                vec![if self.0 & WORKING != 0 {
+                    crate::api::bot_staff::BTN_WORK_STOP
+                } else {
+                    crate::api::bot_staff::BTN_WORK_START
+                }],
+            );
         }
         rows
     }
@@ -168,6 +177,15 @@ impl Menu {
     /// Чат ещё и кабинет работника (SPEC-23): в меню — «💼 Мой заработок».
     pub fn with_earnings(self) -> Self {
         Self(self.0 | EARNINGS)
+    }
+
+    /// Рабочий день начат: вместо «▶️ Начать» — «⏹ Закончить рабочий день».
+    pub fn with_working(self, working: bool) -> Self {
+        if working {
+            Self(self.0 | WORKING)
+        } else {
+            Self(self.0 & !WORKING)
+        }
     }
 
     /// В меню есть «💼 Мой заработок».
@@ -178,6 +196,8 @@ impl Menu {
 
 /// Бит «чат ещё и кабинет работника» — вне битов пунктов [`ITEMS`].
 const EARNINGS: u16 = 1 << 15;
+/// Бит «рабочий день начат» (задача 039).
+const WORKING: u16 = 1 << 14;
 
 /// Отказ в праве словами — как ответ сервера 403 (ADR-097, ADR-152).
 fn denied_text(a: &Access, key: &str) -> String {

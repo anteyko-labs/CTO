@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select data from bot_input where chat_id = $1 and kind = 'ap_reason' and expires_at > now()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "83d0dbab1d0798b69d489146383a2b852c6b23b23a353498628c83ebd0885eee"
+}

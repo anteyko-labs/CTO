@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.status, a.reason, v.plate, v.party_id as owner, p.name\n           from sale_approvals a join party_vehicles v on v.id = a.vehicle_id\n           join parties p on p.id = a.party_id\n           where a.vehicle_id is not null and a.owner_notified_at is null\n             and a.status in ('approved', 'rejected') and v.party_id <> a.party_id\n             and a.decided_at > now() - interval '1 day'\n           order by a.decided_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "owner",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "83bd4c3da388ec0b612673d837d1352bd771cdecc005f9a5848cebdf3185f0bd"
+}

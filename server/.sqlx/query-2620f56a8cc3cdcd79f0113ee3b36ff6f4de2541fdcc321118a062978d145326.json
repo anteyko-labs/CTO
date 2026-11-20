@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select a.id, a.status, a.mode, a.sale_id, s.number as \"sale_number?\", a.summary,\n                  a.debt_tyiyn, a.created_at, a.expires_at, a.decided_at, a.decided_by, a.reason,\n                  a.forced_at\n           from sale_approvals a left join sales s on s.id = a.sale_id where a.id = $1",
+  "query": "select a.id, a.status, a.mode, a.sale_id, s.number as \"sale_number?\", a.summary,\n                  a.debt_tyiyn, a.created_at, a.expires_at, a.decided_at, a.decided_by, a.reason,\n                  a.forced_at, a.offline\n           from sale_approvals a left join sales s on s.id = a.sale_id where a.id = $1",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,11 @@
         "ordinal": 12,
         "name": "forced_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "offline",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -87,8 +92,9 @@
       true,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "327ee4f5cd115b00f7855b42eccb8568f3550e2fe7334cbd2bcec468651b008c"
+  "hash": "2620f56a8cc3cdcd79f0113ee3b36ff6f4de2541fdcc321118a062978d145326"
 }

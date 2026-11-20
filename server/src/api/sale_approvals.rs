@@ -16,6 +16,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::sales::SaleReq;
+use crate::api::telegram::{Button, Keys, Reply};
 use crate::auth::{Ctx, CurrentUser};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops;
@@ -149,6 +150,8 @@ pub struct ApprovalOut {
     pub decided_by: String,
     pub reason: String,
     pub forced: bool,
+    /// Чек проведён без сети, запрос создан после синхронизации.
+    pub offline: bool,
     /// Кассир может нажать «Провести без подтверждения».
     pub can_force: bool,
     /// Чек по запросу можно проводить.
@@ -170,6 +173,7 @@ fn not_needed(mode: &str) -> ApprovalOut {
         decided_by: String::new(),
         reason: String::new(),
         forced: false,
+        offline: false,
         can_force: false,
         can_post: true,
     }
@@ -191,7 +195,7 @@ pub async fn load(conn: &mut PgConnection, id: Uuid) -> AppResult<ApprovalOut> {
     let r = sqlx::query!(
         r#"select a.id, a.status, a.mode, a.sale_id, s.number as "sale_number?", a.summary,
                   a.debt_tyiyn, a.created_at, a.expires_at, a.decided_at, a.decided_by, a.reason,
-                  a.forced_at
+                  a.forced_at, a.offline
            from sale_approvals a left join sales s on s.id = a.sale_id where a.id = $1"#,
         id
     )
@@ -215,6 +219,7 @@ pub async fn load(conn: &mut PgConnection, id: Uuid) -> AppResult<ApprovalOut> {
         decided_by: r.decided_by,
         reason: r.reason,
         forced,
+        offline: r.offline,
     })
 }
 
@@ -312,14 +317,15 @@ async fn insert(
     draft: Option<&Value>,
     sale_id: Option<Uuid>,
     expires_at: Option<DateTime<Utc>>,
+    offline: bool,
 ) -> AppResult<Uuid> {
     let id = ops::new_id();
     let debt = debt_of(req);
     let summary = summary(conn, req, debt).await?;
     sqlx::query!(
         r#"insert into sale_approvals (id, branch_id, party_id, op_id, sale_id, mode, status, draft,
-                                      summary, debt_tyiyn, user_id, expires_at)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+                                      summary, debt_tyiyn, user_id, expires_at, vehicle_id, offline)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
         id,
         ctx.user.branch_id,
         party_id,
@@ -331,7 +337,9 @@ async fn insert(
         summary,
         debt,
         ctx.user.id,
-        expires_at
+        expires_at,
+        req.vehicle_id,
+        offline
     )
     .execute(&mut *conn)
     .await?;
@@ -400,6 +408,7 @@ async fn create(
             Some(&req.draft),
             None,
             expires,
+            false,
         )
         .await?
     } else {
@@ -413,6 +422,7 @@ async fn create(
             Some(&req.draft),
             None,
             None,
+            false,
         )
         .await?
     };
@@ -530,12 +540,34 @@ pub async fn on_sale(
         .await?;
         return Ok(());
     }
-    if offline || req.correction.is_some() {
+    if req.correction.is_some() {
         return Ok(());
     }
     let s = load_settings(conn, ctx.user.branch_id).await?;
     let mode = s.approval_mode.as_str();
     if mode == "off" || !is_company(conn, party_id, ctx.user.branch_id).await? {
+        return Ok(());
+    }
+    // Чек без сети уже состоялся (I10): после синхронизации — запрос фирме с отметкой
+    // «проведено без сети», фирма отвечает как в режиме «после», владельцу — событие.
+    if offline {
+        if !reachable(conn, party_id).await? {
+            return Ok(());
+        }
+        let id = insert(
+            conn,
+            ctx,
+            req,
+            party_id,
+            mode,
+            "pending",
+            None,
+            Some(sale_id),
+            None,
+            true,
+        )
+        .await?;
+        journal(conn, id, "offline", "").await?;
         return Ok(());
     }
     if !reachable(conn, party_id).await? {
@@ -550,6 +582,7 @@ pub async fn on_sale(
             None,
             Some(sale_id),
             None,
+            false,
         )
         .await?;
         return Ok(());
@@ -565,6 +598,7 @@ pub async fn on_sale(
             None,
             Some(sale_id),
             None,
+            false,
         )
         .await?;
         return Ok(());
@@ -582,11 +616,14 @@ pub struct SaleMark {
     pub forced: bool,
     pub reason: String,
     pub decided_by: String,
+    /// Чек проведён без сети, фирму спросили после синхронизации.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 pub async fn mark_of(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option<SaleMark>> {
     let r = sqlx::query!(
-        "select status, forced_at, reason, decided_by from sale_approvals where sale_id = $1",
+        "select status, forced_at, reason, decided_by, offline from sale_approvals where sale_id = $1",
         sale_id
     )
     .fetch_optional(&mut *conn)
@@ -596,13 +633,14 @@ pub async fn mark_of(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option
         forced: r.forced_at.is_some(),
         reason: r.reason,
         decided_by: r.decided_by,
+        offline: r.offline,
     }))
 }
 
 /// Событие владельцу `party.sale_approval`: решение фирмы или проведение без подтверждения.
 async fn journal(conn: &mut PgConnection, id: Uuid, decision: &str, by: &str) -> AppResult<()> {
     let r = sqlx::query!(
-        r#"select a.branch_id, a.party_id, p.name, a.debt_tyiyn, a.reason, a.mode,
+        r#"select a.branch_id, a.party_id, p.name, a.debt_tyiyn, a.reason, a.mode, a.offline,
                   s.number as "number?"
            from sale_approvals a join parties p on p.id = a.party_id
            left join sales s on s.id = a.sale_id where a.id = $1"#,
@@ -618,6 +656,7 @@ async fn journal(conn: &mut PgConnection, id: Uuid, decision: &str, by: &str) ->
         r.party_id,
         json!({
             "approval_id": id, "name": r.name, "decision": decision, "reason": r.reason,
+            "offline": r.offline,
             "debt_tyiyn": r.debt_tyiyn, "number": r.number, "mode": r.mode, "by": by,
         })
     )
@@ -636,8 +675,26 @@ pub async fn decide(
     reason: &str,
     by: &str,
 ) -> AppResult<ApprovalOut> {
+    decide_as(conn, party_id, id, approve, reason, by, true).await
+}
+
+/// Запрос ещё ждёт ответа: ждёт или просрочен, но чек не проведён без подтверждения.
+fn is_open(status: &str, forced: bool, has_sale: bool) -> bool {
+    status == "pending" || (status == "expired" && !forced && !has_sale)
+}
+
+/// Решение; из бота отказ можно без причины («Пропустить»).
+async fn decide_as(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    id: Uuid,
+    approve: bool,
+    reason: &str,
+    by: &str,
+    need_reason: bool,
+) -> AppResult<ApprovalOut> {
     let reason = reason.trim();
-    if !approve && reason.is_empty() {
+    if !approve && need_reason && reason.is_empty() {
         return Err(invalid("укажите причину отказа"));
     }
     if reason.chars().count() > 500 {
@@ -654,9 +711,7 @@ pub async fn decide(
     if r.party_id != party_id {
         return Err(AppError::NotFound);
     }
-    let open = r.status == "pending"
-        || (r.status == "expired" && r.forced_at.is_none() && r.sale_id.is_none());
-    if !open {
+    if !is_open(&r.status, r.forced_at.is_some(), r.sale_id.is_some()) {
         return Err(AppError::Conflict("на этот запрос уже ответили".into()));
     }
     let status = if approve { "approved" } else { "rejected" };
@@ -783,6 +838,58 @@ pub async fn mark_notice(conn: &mut PgConnection, n: &Notice) -> AppResult<()> {
     Ok(())
 }
 
+/// Решение фирмы по личной машине работника — ему в бот (задача 039, ADR-202): подтверждать
+/// сам себе работник не может, запрос уходит только фирме.
+pub struct OwnerNotice {
+    pub approval_id: Uuid,
+    pub chats: Vec<i64>,
+    pub text: String,
+}
+
+pub async fn owner_notices(conn: &mut PgConnection) -> AppResult<Vec<OwnerNotice>> {
+    let rows = sqlx::query!(
+        r#"select a.id, a.status, a.reason, v.plate, v.party_id as owner, p.name
+           from sale_approvals a join party_vehicles v on v.id = a.vehicle_id
+           join parties p on p.id = a.party_id
+           where a.vehicle_id is not null and a.owner_notified_at is null
+             and a.status in ('approved', 'rejected') and v.party_id <> a.party_id
+             and a.decided_at > now() - interval '1 day'
+           order by a.decided_at"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out = Vec::new();
+    for r in rows {
+        let chats = crate::api::telegram::party_chats(conn, r.owner).await?;
+        out.push(OwnerNotice {
+            approval_id: r.id,
+            chats,
+            text: owner_text(&r.name, &r.plate, &r.status, &r.reason),
+        });
+    }
+    Ok(out)
+}
+
+pub fn owner_text(firm: &str, plate: &str, status: &str, reason: &str) -> String {
+    if status == "approved" {
+        format!("✅ Фирма {firm} подтвердила заправку вашей машины {plate}.")
+    } else if reason.is_empty() {
+        format!("✖ Фирма {firm} отклонила заправку вашей машины {plate}.")
+    } else {
+        format!("✖ Фирма {firm} отклонила заправку вашей машины {plate}: {reason}.")
+    }
+}
+
+pub async fn mark_owner_notice(conn: &mut PgConnection, approval_id: Uuid) -> AppResult<()> {
+    sqlx::query!(
+        "update sale_approvals set owner_notified_at = now() where id = $1",
+        approval_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Кнопки под запросом: `ap:ok:<id>` и `ap:no:<id>`.
 pub fn buttons(id: Uuid) -> Vec<(String, String)> {
     vec![
@@ -791,30 +898,113 @@ pub fn buttons(id: Uuid) -> Vec<(String, String)> {
     ]
 }
 
-/// Нажатие кнопки в чате фирмы: запрос должен быть этой фирмы.
-pub async fn press_bot(conn: &mut PgConnection, party_id: Uuid, data: &str) -> AppResult<String> {
+/// Нажатие кнопки в чате фирмы: запрос должен быть этой фирмы. «✖ Отклонить» спрашивает
+/// причину: следующее сообщение чата — причина, «Пропустить» — без причины.
+pub async fn press_bot(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    chat_id: i64,
+    data: &str,
+) -> AppResult<Reply> {
+    let text = |t: &str| Ok(Reply::new(t, Keys::Customer));
     let mut parts = data.splitn(3, ':');
     let (_, act, id) = (parts.next(), parts.next(), parts.next());
     let Some(id) = id.and_then(|i| Uuid::parse_str(i).ok()) else {
-        return Ok("Кнопка устарела.".into());
+        return text(STALE);
     };
-    let approve = match act {
-        Some("ok") => true,
-        Some("no") => false,
-        _ => return Ok("Кнопка устарела.".into()),
-    };
-    let reason = if approve {
-        ""
-    } else {
-        "отклонено в Телеграме"
-    };
-    match decide(conn, party_id, id, approve, reason, "Телеграм").await {
-        Ok(_) if approve => Ok("✅ Обслуживание подтверждено.".into()),
-        Ok(_) => Ok("✖ Обслуживание отклонено. Причину можно уточнить в кабинете.".into()),
-        Err(AppError::NotFound) => Ok("Запрос не найден.".into()),
-        Err(AppError::Conflict(m)) => Ok(format!("{}.", capitalize(&m))),
-        Err(e) => Err(e),
+    match act {
+        Some("ok") => answer(conn, party_id, id, true, "").await,
+        Some("skip") => {
+            crate::api::bot_cars::clear_input(conn, chat_id).await?;
+            answer(conn, party_id, id, false, "").await
+        }
+        Some("no") => {
+            expire_due(conn).await?;
+            let r = sqlx::query!(
+                "select branch_id, status, forced_at, sale_id from sale_approvals
+                 where id = $1 and party_id = $2",
+                id,
+                party_id
+            )
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some(r) = r else {
+                return text("Запрос не найден.");
+            };
+            if !is_open(&r.status, r.forced_at.is_some(), r.sale_id.is_some()) {
+                return text("На этот запрос уже ответили.");
+            }
+            crate::api::bot_cars::wait_for(
+                conn,
+                r.branch_id,
+                chat_id,
+                "ap_reason",
+                None,
+                json!({ "approval_id": id }),
+            )
+            .await?;
+            Ok(Reply::with_buttons(
+                ASK_REASON,
+                vec![vec![Button {
+                    text: "Пропустить".into(),
+                    data: format!("ap:skip:{id}"),
+                }]],
+            ))
+        }
+        _ => text(STALE),
     }
+}
+
+const STALE: &str = "Кнопка устарела.";
+pub const ASK_REASON: &str = "Напишите причину отказа одним сообщением — её увидят кассир и владелец. Или нажмите «Пропустить».";
+
+/// Бот ждёт причину отказа (`ap_reason`): сообщение чата — причина. `None` — ничего не ждём.
+pub async fn on_reason(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    chat_id: i64,
+    text: Option<&str>,
+) -> AppResult<Option<Reply>> {
+    let wait = sqlx::query_scalar!(
+        "select data from bot_input where chat_id = $1 and kind = 'ap_reason' and expires_at > now()",
+        chat_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(data) = wait else {
+        return Ok(None);
+    };
+    let id = data
+        .get("approval_id")
+        .and_then(Value::as_str)
+        .and_then(|i| Uuid::parse_str(i).ok());
+    let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(Some(Reply::new(ASK_REASON, Keys::Customer)));
+    };
+    crate::api::bot_cars::clear_input(conn, chat_id).await?;
+    let Some(id) = id else {
+        return Ok(Some(Reply::new(STALE, Keys::Customer)));
+    };
+    let reason: String = text.chars().take(500).collect();
+    Ok(Some(answer(conn, party_id, id, false, &reason).await?))
+}
+
+async fn answer(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    id: Uuid,
+    approve: bool,
+    reason: &str,
+) -> AppResult<Reply> {
+    let t = match decide_as(conn, party_id, id, approve, reason, "Телеграм", false).await {
+        Ok(_) if approve => "✅ Обслуживание подтверждено.".to_string(),
+        Ok(_) if reason.is_empty() => "✖ Обслуживание отклонено.".to_string(),
+        Ok(_) => format!("✖ Обслуживание отклонено: {reason}."),
+        Err(AppError::NotFound) => "Запрос не найден.".into(),
+        Err(AppError::Conflict(m)) => format!("{}.", capitalize(&m)),
+        Err(e) => return Err(e),
+    };
+    Ok(Reply::new(t, Keys::Customer))
 }
 
 fn capitalize(s: &str) -> String {

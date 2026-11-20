@@ -1285,15 +1285,36 @@ pub async fn check_sale_party(
         return Err(invalid("это поставщик, а не клиент"));
     }
     if let Some(cid) = contact_id {
-        let ok = sqlx::query_scalar!(
-            "select count(*) as \"n!\" from party_contacts where id = $1 and party_id = $2",
+        let c = sqlx::query!(
+            "select full_name, status from party_contacts where id = $1 and party_id = $2",
             cid,
             party_id
         )
-        .fetch_one(&mut *conn)
-        .await?;
-        if ok == 0 {
-            return Err(invalid("работник не из этой фирмы"));
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| invalid("работник не из этой фирмы"))?;
+        // Водитель из кабинета ждёт подтверждения (или отклонён) — в долг фирмы нельзя (ADR-199).
+        if on_debt && c.status != "active" {
+            if !offline {
+                return Err(AppError::ConflictCode(
+                    "contact_pending",
+                    if c.status == "pending" {
+                        format!(
+                            "водитель {} ждёт подтверждения фирмы — в долг нельзя",
+                            c.full_name
+                        )
+                    } else {
+                        format!(
+                            "фирма не подтвердила водителя {} — в долг нельзя",
+                            c.full_name
+                        )
+                    },
+                ));
+            }
+            bypass.push(format!(
+                "в долг по неподтверждённому водителю {}",
+                c.full_name
+            ));
         }
     }
     if let Some(vid) = vehicle_id {

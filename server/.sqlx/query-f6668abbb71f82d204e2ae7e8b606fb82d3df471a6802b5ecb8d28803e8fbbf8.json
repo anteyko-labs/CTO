@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update contact_requests set status = $2, reason = $3, decided_by = $4, decided_at = now()\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f6668abbb71f82d204e2ae7e8b606fb82d3df471a6802b5ecb8d28803e8fbbf8"
+}

@@ -533,3 +533,75 @@ async fn recount_fixes_balance_by_ledger(pool: PgPool) {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// Водитель из кабинета ждёт подтверждения, как машина: в долг по нему нельзя; подтверждает
+/// администратор с правом «Клиенты и машины» (без права — 403) или руководитель в кабинете.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cabinet_driver_waits_for_approval(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.mode("off", 10).await;
+    let firm = w
+        .firm("ОсОО Водители", "0700 38-38-38", "08080808080808")
+        .await;
+    let cab = w.cabinet(&firm, "08080808080808").await;
+    let add = json!({ "op_id": Uuid::now_v7(), "full_name": "Талант", "phone": "0700 99-99-99" });
+    let (s, r) = w
+        .post_as(&cab, "/api/v1/client/contacts", add.clone())
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["status"], "pending");
+    let (_, again) = w.post_as(&cab, "/api/v1/client/contacts", add).await;
+    assert_eq!(again["id"], r["id"]);
+    let contact = r["contact_id"].as_str().unwrap().to_string();
+    let mut sale = w.sale(&firm);
+    sale["contact_id"] = json!(contact);
+    let (s, v) = w.req("POST", "/api/v1/sales", Some(sale.clone())).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "contact_pending");
+    let n: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'party.contact_request'")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+    // Администратор без права — 403, с правом — подтверждает.
+    let (adm, adm_id) = w.admin(&[]).await;
+    let rid = r["id"].as_str().unwrap();
+    let uri = format!("/api/v1/parties/{firm}/contact-requests/{rid}/approve");
+    let (s, _) = w.post_as(&adm, &uri, json!({})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    w.perms(&adm_id, &["clients"]).await;
+    let (s, v) = w.post_as(&adm, &uri, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "approved");
+    w.ok("POST", "/api/v1/sales", sale).await;
+
+    // Второй водитель: руководитель отклоняет в кабинете — только с причиной.
+    let (_, r2) = w
+        .post_as(
+            &cab,
+            "/api/v1/client/contacts",
+            json!({ "op_id": Uuid::now_v7(), "full_name": "Чужой" }),
+        )
+        .await;
+    let rid2 = r2["id"].as_str().unwrap();
+    let uri = format!("/api/v1/client/contact-requests/{rid2}/reject");
+    let (s, _) = w.post_as(&cab, &uri, json!({ "reason": "" })).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, v) = w
+        .post_as(&cab, &uri, json!({ "reason": "не работает у нас" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "rejected");
+    let (_, _, list) = call(
+        &w.app,
+        "GET",
+        "/api/v1/client/contact-requests",
+        Some(&cab),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    let n = w.get("/api/v1/notifications").await;
+    assert!(n.to_string().contains("водитель отклонён"), "{n}");
+}

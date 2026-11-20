@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.branch_id, a.party_id, p.name, a.debt_tyiyn, a.reason, a.mode, a.offline,\n                  s.number as \"number?\"\n           from sale_approvals a join parties p on p.id = a.party_id\n           left join sales s on s.id = a.sale_id where a.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "debt_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "offline",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "95b56c50a41d03c00b54e3d456f4a257058b14008e09536a97de9741095dfe7d"
+}

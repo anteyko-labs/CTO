@@ -46,7 +46,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 100] = [
+const EVENTS: [(&str, &str, &str); 101] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -214,6 +214,11 @@ const EVENTS: [(&str, &str, &str); 100] = [
         "party.vehicle_request",
         "debts",
         "Машина фирмы ждёт подтверждения",
+    ),
+    (
+        "party.contact_request",
+        "debts",
+        "Водитель фирмы ждёт подтверждения",
     ),
     ("party.recount", "debts", "Пересчитан долг клиента"),
     // Зарплата

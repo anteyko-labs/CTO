@@ -675,7 +675,9 @@ async fn employee_cabinet_and_login_share_one_chat(pool: PgPool) {
         panic!("не кнопки администратора: {:?} {}", r.keys, r.text)
     };
     assert!(menu.has("shift"), "{menu:?}");
-    assert_eq!(menu.rows()[0], vec!["💼 Мой заработок"]);
+    // Первым рядом — кнопка рабочего дня (задача 039, ADR-207), затем «💼 Мой заработок».
+    assert_eq!(menu.rows()[0], vec!["▶️ Начать рабочий день"]);
+    assert_eq!(menu.rows()[1], vec!["💼 Мой заработок"]);
     // «💼 Мой заработок» — заработок работника, кнопки остаются администраторские.
     let r = say("💼 Мой заработок").await;
     assert!(r.text.starts_with("💼 Сегодня"), "{}", r.text);

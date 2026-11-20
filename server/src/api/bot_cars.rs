@@ -180,7 +180,7 @@ async fn pending(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<Pend
     }))
 }
 
-async fn wait_for(
+pub(crate) async fn wait_for(
     conn: &mut PgConnection,
     branch_id: Uuid,
     chat_id: i64,

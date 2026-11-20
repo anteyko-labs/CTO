@@ -403,6 +403,17 @@ pub async fn chat_working(conn: &mut PgConnection, chat_id: i64) -> AppResult<bo
     .await?)
 }
 
+/// У сотрудника открыт рабочий день (кнопка в меню администратора со входом сотрудника).
+pub async fn employee_working(conn: &mut PgConnection, employee_id: Uuid) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists (select 1 from work_sessions
+                          where employee_id = $1 and ended_at is null) as "e!""#,
+        employee_id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// Кнопка «Начать / Закончить рабочий день»: заявка ждёт лица в окне.
 pub async fn press(
     conn: &mut PgConnection,

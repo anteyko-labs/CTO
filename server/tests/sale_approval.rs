@@ -12,7 +12,7 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use avtodom_server::api::telegram::handle_callback;
+use avtodom_server::api::telegram::{handle_callback, handle_message};
 use avtodom_server::{app, bootstrap, build_state};
 
 const SIG: &str = "iVBORw0KGgpzaWctb25lIQ==";
@@ -478,4 +478,187 @@ async fn after_mode_posts_then_marks(pool: PgPool) {
     // Событие — в уведомлениях владельца.
     let n = w.get("/api/v1/notifications").await;
     assert!(n.to_string().contains("отклонила обслуживание"), "{n}");
+}
+
+/// «✖ Отклонить» в боте спрашивает причину: следующее сообщение — причина, её видят кассир и
+/// владелец; «Пропустить» — без причины.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_reject_asks_reason(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.mode("wait", 10).await;
+    let firm = w
+        .firm("ОсОО Причина", "0700 12-12-12", "05050505050505")
+        .await;
+    w.link_tg(&firm, "0700121212").await;
+    let draft = w.sale(&firm);
+    let id = w.ask(&draft).await["id"].as_str().unwrap().to_string();
+    let mut conn = w.pool.acquire().await.unwrap();
+    let r = handle_callback(&mut conn, CHAT, &format!("ap:no:{id}"))
+        .await
+        .unwrap();
+    assert!(r.text.contains("причину"), "{}", r.text);
+    assert!(
+        r.inline
+            .iter()
+            .flatten()
+            .any(|b| b.data == format!("ap:skip:{id}")),
+        "нет «Пропустить»"
+    );
+    // Пока причины нет — запрос ждёт.
+    let a = w.get(&format!("/api/v1/sales/approvals/{id}")).await;
+    assert_eq!(a["status"], "pending");
+    let r = handle_message(&mut conn, CHAT, CHAT, Some("не наша машина"), None)
+        .await
+        .unwrap();
+    assert!(r.text.contains("отклонено"), "{}", r.text);
+    drop(conn);
+    let a = w.get(&format!("/api/v1/sales/approvals/{id}")).await;
+    assert_eq!(a["status"], "rejected");
+    assert_eq!(a["reason"], "не наша машина");
+    let ev = w.events().await;
+    assert_eq!(ev.last().unwrap()["reason"], "не наша машина");
+
+    // «Пропустить» — без причины.
+    let draft = w.sale(&firm);
+    let id = w.ask(&draft).await["id"].as_str().unwrap().to_string();
+    let mut conn = w.pool.acquire().await.unwrap();
+    handle_callback(&mut conn, CHAT, &format!("ap:no:{id}"))
+        .await
+        .unwrap();
+    let r = handle_callback(&mut conn, CHAT, &format!("ap:skip:{id}"))
+        .await
+        .unwrap();
+    assert!(r.text.contains("отклонено"), "{}", r.text);
+    drop(conn);
+    let a = w.get(&format!("/api/v1/sales/approvals/{id}")).await;
+    assert_eq!(a["status"], "rejected");
+    assert_eq!(a["reason"], "");
+}
+
+/// Личная машина работника: запрос — только фирме (не в чат работника), решение — работнику.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn personal_car_owner_gets_decision(pool: PgPool) {
+    const WORKER_CHAT: i64 = 39_141;
+    let w = W::new(pool).await;
+    w.mode("after", 10).await;
+    let firm = w
+        .firm("ОсОО Личная", "0700 13-13-13", "06060606060606")
+        .await;
+    let cab = w.cabinet(&firm, "06060606060606").await;
+    let person = w
+        .ok(
+            "POST",
+            "/api/v1/parties",
+            json!({ "kind": "person", "name": "Бакыт", "phone": "0700 14-14-14" }),
+        )
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "insert into telegram_customers (chat_id, party_id, phone) values ($1, $2::uuid, '0700141414')",
+    )
+    .bind(WORKER_CHAT)
+    .bind(&person)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let vid = Uuid::now_v7();
+    sqlx::query(
+        "insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, paid_by_party_id)
+         select $1, branch_id, $2::uuid, '01KG777AAA', '01KG777AAA', $3::uuid from parties where id = $2::uuid",
+    )
+    .bind(vid)
+    .bind(&person)
+    .bind(&firm)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let mut draft = w.sale(&person);
+    draft["vehicle_id"] = json!(vid);
+    let sale = w.ok("POST", "/api/v1/sales", draft).await;
+    assert_eq!(sale["approval"]["status"], "pending", "{sale}");
+    let mut conn = w.pool.acquire().await.unwrap();
+    let notices = avtodom_server::api::sale_approvals::notices(&mut conn)
+        .await
+        .unwrap();
+    assert!(notices.iter().all(|n| n.chat_id != WORKER_CHAT));
+    // До решения работнику сообщать нечего.
+    let o = avtodom_server::api::sale_approvals::owner_notices(&mut conn)
+        .await
+        .unwrap();
+    assert!(o.is_empty());
+    drop(conn);
+    let (_, _, list) = call(&w.app, "GET", "/api/v1/client/approvals", Some(&cab), None).await;
+    let id = list[0]["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/client/approvals/{id}/approve"),
+        Some(&cab),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let mut conn = w.pool.acquire().await.unwrap();
+    let o = avtodom_server::api::sale_approvals::owner_notices(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(o.len(), 1);
+    assert_eq!(o[0].chats, vec![WORKER_CHAT]);
+    assert!(
+        o[0].text
+            .contains("подтвердила заправку вашей машины 01KG777AAA"),
+        "{}",
+        o[0].text
+    );
+    avtodom_server::api::sale_approvals::mark_owner_notice(&mut conn, o[0].approval_id)
+        .await
+        .unwrap();
+    assert!(
+        avtodom_server::api::sale_approvals::owner_notices(&mut conn)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Чек в долг фирме без сети в режиме «ждать»: после синхронизации — запрос с отметкой
+/// «проведено без сети», фирма его получает, владельцу событие.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_sale_asks_firm_after_sync(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.mode("wait", 10).await;
+    let firm = w
+        .firm("ОсОО Без сети", "0700 15-15-15", "07070707070707")
+        .await;
+    w.link_tg(&firm, "0700151515").await;
+    let mut draft = w.sale(&firm);
+    draft["offline"] = json!(true);
+    draft["client_time"] = json!(chrono::Utc::now());
+    let sale = w.ok("POST", "/api/v1/sales", draft).await;
+    assert_eq!(sale["approval"]["status"], "pending", "{sale}");
+    assert_eq!(sale["approval"]["offline"], true, "{sale}");
+    let mut conn = w.pool.acquire().await.unwrap();
+    let notices = avtodom_server::api::sale_approvals::notices(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].chat_id, CHAT);
+    drop(conn);
+    let ev = w.events().await;
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0]["decision"], "offline");
+    assert_eq!(ev[0]["offline"], true);
+    let n = w.get("/api/v1/notifications").await;
+    assert!(n.to_string().contains("без сети"), "{n}");
+    let id: Uuid = sqlx::query_scalar("select id from sale_approvals")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    let mut conn = w.pool.acquire().await.unwrap();
+    let r = handle_callback(&mut conn, CHAT, &format!("ap:ok:{id}"))
+        .await
+        .unwrap();
+    assert!(r.text.contains("подтверждено"), "{}", r.text);
 }

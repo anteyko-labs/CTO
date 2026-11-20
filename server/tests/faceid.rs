@@ -436,3 +436,60 @@ async fn admin_needs_timesheet_right(pool: PgPool) {
         assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
     }
 }
+
+/// Кнопка рабочего дня — и в чате «работник и клиент», и в меню администратора со входом
+/// сотрудника; текстовые «/начать» и «/закончить» — как кнопки.
+#[test]
+fn workday_buttons_in_both_and_admin_menus() {
+    use avtodom_server::api::bot_admin::Menu;
+    let has = |keys: Keys, b: &str| keys.markup().to_string().contains(b);
+    assert!(has(Keys::Both, BTN_WORK_START));
+    assert!(!has(Keys::Both, BTN_WORK_STOP));
+    assert!(has(Keys::BothWorking, BTN_WORK_STOP));
+    let m = Menu::all().with_earnings();
+    assert_eq!(m.rows()[0], vec![BTN_WORK_START]);
+    assert_eq!(m.with_working(true).rows()[0], vec![BTN_WORK_STOP]);
+    assert!(
+        !Menu::all()
+            .rows()
+            .iter()
+            .flatten()
+            .any(|b| *b == BTN_WORK_START)
+    );
+    use avtodom_server::api::bot_staff::workday_button;
+    assert_eq!(workday_button("/начать"), Some(true));
+    assert_eq!(workday_button("/закончить"), Some(false));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn workday_command_in_both_chat(pool: PgPool) {
+    let w = world(pool).await;
+    w.setup_terminal().await;
+    // Тот же номер — и у клиента: внизу «оба», с кнопкой рабочего дня.
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, kind, role, name, phone) values ($1, $2, 'person', 'customer', 'Эрбол', '+996700123456')")
+        .bind(party)
+        .bind(w.branch)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, '+996700123456')")
+        .bind(CHAT)
+        .bind(party)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let r = w.say("/начать").await;
+    assert!(r.text.contains("терминал"), "{}", r.text);
+    assert_eq!(r.keys, Keys::Both);
+    // День открыт — в чате «оба» кнопка «Закончить».
+    sqlx::query("insert into work_sessions (id, employee_id, branch_id, started_at) values ($1, $2, $3, now())")
+        .bind(Uuid::now_v7())
+        .bind(w.employee)
+        .bind(w.branch)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let r = w.say("/закончить").await;
+    assert_eq!(r.keys, Keys::BothWorking, "{}", r.text);
+}

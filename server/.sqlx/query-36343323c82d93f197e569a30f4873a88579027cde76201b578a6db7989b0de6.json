@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into sale_approvals (id, branch_id, party_id, op_id, sale_id, mode, status, draft,\n                                      summary, debt_tyiyn, user_id, expires_at, vehicle_id, offline)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Int8",
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36343323c82d93f197e569a30f4873a88579027cde76201b578a6db7989b0de6"
+}

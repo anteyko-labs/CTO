@@ -600,11 +600,18 @@ export interface SaleApprovalMark {
   forced: boolean
   reason: string
   decided_by: string
+  /** Чек проведён без сети — фирму спросили после синхронизации. */
+  offline?: boolean
 }
 
 /** Отметка подтверждения фирмы на чеке. */
 export function approvalMarkText(a: SaleApprovalMark): string {
   if (a.forced) return 'Проведено без подтверждения фирмы'
+  const text = approvalStatusText(a)
+  return a.offline ? `Проведено без сети · ${text}` : text
+}
+
+function approvalStatusText(a: SaleApprovalMark): string {
   switch (a.status) {
     case 'approved':
       return `Фирма подтвердила${a.decided_by ? ` (${a.decided_by})` : ''}`

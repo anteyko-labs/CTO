@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into contact_requests (id, branch_id, contact_id, party_id, source, author, op_id)\n           values ($1, $2, $3, $4, 'cabinet', 'Кабинет', $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "320aada6bb049bb0b5ba318f4cb98eb06e8878116ce31f8b8ccacdfbbfa2ea74"
+}

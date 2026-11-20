@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select status, forced_at, reason, decided_by from sale_approvals where sale_id = $1",
+  "query": "select status, forced_at, reason, decided_by, offline from sale_approvals where sale_id = $1",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
         "ordinal": 3,
         "name": "decided_by",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "offline",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -33,8 +38,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "31a57917094a10530546e3fc8747d427a9595eadea0bb84a4d28ce551e33d3fd"
+  "hash": "4cb2cb9afba6294782bdf1d1351937b4ca5a3a69c59d5fc94067c24d664c5da6"
 }

@@ -420,8 +420,10 @@ pub enum Keys {
     Employee,
     /// Работник с начатым рабочим днём: вместо «Начать» — «⏹ Закончить рабочий день».
     EmployeeWorking,
-    /// Номер и у работника, и у клиента: «Мой заработок» и кнопки клиента.
+    /// Номер и у работника, и у клиента: «▶️ Начать рабочий день», «Мой заработок» и кнопки клиента.
     Both,
+    /// То же с начатым рабочим днём: вместо «Начать» — «⏹ Закончить рабочий день».
+    BothWorking,
     ConfirmLeave,
     /// Чат администратора (ADR-135, ADR-142, SPEC-40): пункты меню по его правам.
     Admin(crate::api::bot_admin::Menu),
@@ -465,7 +467,12 @@ impl Keys {
                 vec![json!(bot_staff::BTN_ADJUST), json!(bot_staff::BTN_WORKS)],
                 vec![json!(BTN_LEAVE)],
             ],
-            Keys::Both => vec![
+            Keys::Both | Keys::BothWorking => vec![
+                vec![json!(if self == Keys::BothWorking {
+                    bot_staff::BTN_WORK_STOP
+                } else {
+                    bot_staff::BTN_WORK_START
+                })],
                 vec![json!(bot_staff::BTN_EARNINGS)],
                 vec![json!(BTN_CARS), json!(BTN_PAST)],
                 vec![json!(BTN_BONUS), json!(BTN_DEBT)],
@@ -1129,22 +1136,43 @@ fn section_keys(customer: bool, employee: bool) -> Keys {
 }
 
 /// Чат подключён и клиентом, и работником (SPEC-23): внизу — кнопки обоих разделов, а не одного.
+/// Кнопка рабочего дня — по состоянию (задача 039): и у работника, и в чате «оба», и в меню
+/// администратора со входом сотрудника.
 async fn fit_keys(conn: &mut PgConnection, chat_id: i64, mut r: Reply) -> AppResult<Reply> {
-    if matches!(r.keys, Keys::Customer | Keys::Employee) {
-        let both = sqlx::query_scalar!(
-            r#"select exists (select 1 from telegram_customers where chat_id = $1)
-                      and exists (select 1 from telegram_employees where chat_id = $1) as "b!""#,
-            chat_id
-        )
-        .fetch_one(&mut *conn)
-        .await?;
-        if both {
-            r.keys = Keys::Both;
-        } else if r.keys == Keys::Employee
-            && crate::api::faceid::chat_working(conn, chat_id).await?
-        {
-            r.keys = Keys::EmployeeWorking;
+    match r.keys {
+        Keys::Customer
+        | Keys::Employee
+        | Keys::EmployeeWorking
+        | Keys::Both
+        | Keys::BothWorking => {
+            let x = sqlx::query!(
+                r#"select exists (select 1 from telegram_customers where chat_id = $1) as "c!",
+                          exists (select 1 from telegram_employees where chat_id = $1) as "e!""#,
+                chat_id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if x.e && (x.c || !matches!(r.keys, Keys::Customer)) {
+                let working = crate::api::faceid::chat_working(conn, chat_id).await?;
+                r.keys = match (x.c, working) {
+                    (true, false) => Keys::Both,
+                    (true, true) => Keys::BothWorking,
+                    (false, false) => Keys::Employee,
+                    (false, true) => Keys::EmployeeWorking,
+                };
+            }
         }
+        Keys::Admin(m) if m.earnings() => {
+            let working = match crate::api::bot_admin::chat_user(conn, chat_id).await? {
+                Some((user, _)) => match bot_staff::of_login(conn, &user).await? {
+                    Some(e) => crate::api::faceid::employee_working(conn, e.id).await?,
+                    None => crate::api::faceid::chat_working(conn, chat_id).await?,
+                },
+                None => false,
+            };
+            r.keys = Keys::Admin(m.with_working(working));
+        }
+        _ => {}
     }
     Ok(r)
 }
@@ -1219,6 +1247,11 @@ async fn message(
     if let Some(party_id) = customer {
         if is_menu(text) {
             crate::api::bot_cars::clear_input(conn, chat_id).await?;
+        } else if let Some(r) =
+            crate::api::sale_approvals::on_reason(conn, party_id, chat_id, raw).await?
+        {
+            // Причина отказа фирмы (задача 039): следующее сообщение после «✖ Отклонить».
+            return Ok(r);
         } else if let Some(r) = crate::api::bot_cars::on_input(conn, party_id, chat_id, raw).await?
         {
             return Ok(r);
@@ -1447,10 +1480,9 @@ async fn callback(
     // «✅ Подтвердить» / «✖ Отклонить» под запросом фирмы (задача 039 C, ADR-202).
     if data.starts_with("ap:") {
         return match customer_link(conn, chat_id).await? {
-            CustomerLink::Linked(party_id) => Ok(Reply::new(
-                crate::api::sale_approvals::press_bot(conn, party_id, data).await?,
-                Keys::Customer,
-            )),
+            CustomerLink::Linked(party_id) => {
+                crate::api::sale_approvals::press_bot(conn, party_id, chat_id, data).await
+            }
             CustomerLink::Dropped => Ok(Reply::new(RESHARE, Keys::Contact)),
             CustomerLink::None => Ok(Reply::new(NOT_LINKED, Keys::Contact)),
         };
@@ -5297,6 +5329,30 @@ pub async fn approval_pass(conn: &mut PgConnection, api: &Api) -> AppResult<Pass
                 }
                 blocked.insert(n.chat_id);
             }
+        }
+    }
+    // Решение фирмы по личной машине — работнику, чья машина (задача 039).
+    for n in crate::api::sale_approvals::owner_notices(conn).await? {
+        let mut done = true;
+        for chat_id in &n.chats {
+            if blocked.contains(chat_id) {
+                done = false;
+                continue;
+            }
+            match api.push(*chat_id, &n.text).await {
+                Delivery::Sent | Delivery::Skip => {}
+                Delivery::Retry { after, all } => {
+                    out.retry(after, all);
+                    if all {
+                        return Ok(out);
+                    }
+                    blocked.insert(*chat_id);
+                    done = false;
+                }
+            }
+        }
+        if done {
+            crate::api::sale_approvals::mark_owner_notice(conn, n.approval_id).await?;
         }
     }
     // Решение фирмы по машине из бота — автору (задача 037 п. 3).

@@ -280,6 +280,8 @@ export interface Approval {
   decided_by: string
   reason: string
   forced: boolean
+  /** Чек проведён без сети, запрос — после синхронизации. */
+  offline?: boolean
   can_force: boolean
   can_post: boolean
 }
@@ -325,6 +327,7 @@ function Approvals() {
                   <span className="text-xs text-slate-500">{a.created_at ? formatDateTime(a.created_at) : ''}</span>
                   <Badge tone={tone}>{label}</Badge>
                   {a.sale_number != null && <span className="text-xs text-slate-500">чек № {a.sale_number}</span>}
+                  {a.offline && <Badge tone="slate">Проведено без сети</Badge>}
                 </div>
                 <div>
                   {[a.summary.plate, a.summary.contact].filter(Boolean).join(' · ')}

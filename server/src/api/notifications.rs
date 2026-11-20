@@ -19,9 +19,11 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 87] = [
+pub(crate) const WATCHED: [&str; 88] = [
     // Машина фирмы ждёт подтверждения или решена; пересчёт долга клиента (задача 037).
     "party.vehicle_request",
+    // Водитель фирмы ждёт подтверждения или решён (задача 037, ADR-199).
+    "party.contact_request",
     "party.recount",
     // Ответ фирмы на запрос «Подтвердите обслуживание» (задача 039 C, ADR-202).
     "party.sale_approval",
@@ -626,6 +628,25 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 ),
             )
         }
+        "party.contact_request" => {
+            let s = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let what = match s("decision").as_str() {
+                "approved" => "водитель подтверждён",
+                "rejected" => "водитель отклонён",
+                _ => "водитель ждёт подтверждения",
+            };
+            (
+                format!("Фирма {}: {what}", s("name")),
+                format!(
+                    "{}{}",
+                    s("contact"),
+                    Some(s("reason"))
+                        .filter(|c| !c.is_empty())
+                        .map(|c| format!(" — {c}"))
+                        .unwrap_or_default()
+                ),
+            )
+        }
         "party.recount" => (
             format!(
                 "Пересчитан долг клиента {}",
@@ -640,7 +661,11 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "party.sale_approval" => {
             let what = match data.get("decision").and_then(Value::as_str).unwrap_or("") {
                 "approved" => "подтвердила обслуживание",
+                "rejected" if data.get("offline").and_then(Value::as_bool) == Some(true) => {
+                    "отклонила обслуживание (чек проведён без сети)"
+                }
                 "rejected" => "отклонила обслуживание",
+                "offline" => "чек проведён без сети — запрос фирме отправлен",
                 _ => "не ответила — чек проведён без подтверждения",
             };
             (
