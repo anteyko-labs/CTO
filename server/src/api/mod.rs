@@ -28,6 +28,7 @@ pub mod catalog;
 pub mod client_messages;
 pub mod corrections;
 pub mod cross_pick;
+pub mod days_off;
 pub mod defects;
 pub mod deliveries;
 pub mod entry_drafts;
@@ -102,6 +103,7 @@ pub fn routes() -> Router<AppState> {
         .merge(defects::routes())
         .merge(deliveries::routes())
         .merge(expenses::routes())
+        .merge(days_off::routes())
         .merge(faceid::routes())
         .merge(own_use::routes())
         .merge(favorites::routes())

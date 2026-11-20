@@ -61,8 +61,10 @@ export default function Timesheet() {
                   {days.map((d) => {
                     const date = `${sheet.data!.month}-${String(d).padStart(2, '0')}`
                     const day = row.days.find((x) => x.date === date)
+                    const off = row.days_off.includes(date)
                     return (
-                      <td key={d} className="px-0.5 py-1 text-center">
+                      <td key={d} className={`px-0.5 py-1 text-center ${off ? 'bg-slate-100 text-slate-500' : ''}`} title={off ? 'выходной по графику' : undefined}>
+                        {off && !day && 'В'}
                         {day && (
                           <button
                             type="button"

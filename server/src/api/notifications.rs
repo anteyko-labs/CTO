@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 84] = [
+pub(crate) const WATCHED: [&str; 85] = [
     // Ответ фирмы на запрос «Подтвердите обслуживание» (задача 039 C, ADR-202).
     "party.sale_approval",
     "party.limit_request",
@@ -113,6 +113,8 @@ pub(crate) const WATCHED: [&str; 84] = [
     "stock.purchase_price",
     // Рабочий день начат или закончен по лицу на терминале (задача 039); в бот по умолчанию не идёт.
     "staff.workday",
+    // Выходной сотрудника поставлен или снят в графике (задача 037 п.5).
+    "staff.day_off",
 ];
 
 #[derive(Serialize)]
@@ -697,6 +699,14 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 "Рабочий день начат".into()
             },
             format!("{}: по лицу на терминале", text("name")),
+        ),
+        "staff.day_off" => (
+            if data.get("off").and_then(Value::as_bool) == Some(false) {
+                "Выходной снят".into()
+            } else {
+                "Выходной поставлен".into()
+            },
+            format!("{}: {}", text("name"), text("day")),
         ),
         "product.barcode" => (
             "К товару привязан код".into(),

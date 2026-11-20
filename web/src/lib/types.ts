@@ -43,6 +43,7 @@ export type Permission =
   | 'purchase_price'
   | 'payroll_view_all'
   | 'timesheet'
+  | 'staff_schedule'
 
 /** Филиал (SPEC-33). */
 export interface Branch {

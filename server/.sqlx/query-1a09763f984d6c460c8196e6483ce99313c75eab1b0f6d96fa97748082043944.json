@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select employee_id, day from employee_days_off where branch_id = $1 and day >= $2 and day < $3 order by day",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "day",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1a09763f984d6c460c8196e6483ce99313c75eab1b0f6d96fa97748082043944"
+}

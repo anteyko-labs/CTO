@@ -470,6 +470,7 @@ export default function Employees() {
   // Заводить и править — по праву «Сотрудники» (задача 003 Н8); без него список только для чтения.
   const mayEdit = useCan()('employees')
   const mayTimesheet = useCan()('timesheet')
+  const maySchedule = useCan()('staff_schedule')
   const list = useLoad(() => get<Employee[]>('/employees'), [])
   const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true, phone: '', pin: '' })
   const [adding, setAdding] = useState(false)
@@ -528,6 +529,11 @@ export default function Employees() {
             {mayTimesheet && (
               <Link to="/timesheet" className="inline-flex min-h-[42px] items-center px-2 text-sm text-sky-700 hover:underline">
                 Табель
+              </Link>
+            )}
+            {maySchedule && (
+              <Link to="/days-off" className="inline-flex min-h-[42px] items-center px-2 text-sm text-sky-700 hover:underline">
+                График
               </Link>
             )}
             {/* Все сотрудники отбора; телефон — только владельцу, как отдаёт сервер (задача 003 Н13). */}

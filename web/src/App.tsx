@@ -33,6 +33,7 @@ const Bank = lazyPage(() => import('./pages/Bank'))
 const BankRecon = lazyPage(() => import('./pages/BankRecon'))
 const OptimaSettings = lazyPage(() => import('./pages/OptimaSettings'))
 const Timesheet = lazyPage(() => import('./pages/Timesheet'))
+const DaysOff = lazyPage(() => import('./pages/DaysOff'))
 const FaceIdSettings = lazyPage(() => import('./pages/FaceIdSettings'))
 const Debts = lazyPage(() => import('./pages/Debts'))
 const Income = lazyPage(() => import('./pages/Income'))
@@ -149,6 +150,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/employees', label: 'Сотрудники', icon: 'employees' },
       // Табель по терминалу Face ID (задача 039): владелец и право «Табель».
       { to: '/timesheet', label: 'Табель', icon: 'employees', permission: 'timesheet' },
+      // График выходных (задача 037 п.5): владелец и право «График выходных».
+      { to: '/days-off', label: 'График', icon: 'employees', permission: 'staff_schedule' },
       { to: '/services', label: 'Услуги', icon: 'services' },
       { to: '/gifts', label: 'Подарки', icon: 'gifts', ownerOnly: true },
       // Права администраторов — на виду (задача 003 Н8); экран тот же, что «Настройки → Пользователи».
@@ -419,6 +422,7 @@ function Shell() {
           <Route path="/categories" element={<Categories />} />
           <Route path="/employees" element={<Employees />} />
           {can(user, 'timesheet') && <Route path="/timesheet" element={<Timesheet />} />}
+          {can(user, 'staff_schedule') && <Route path="/days-off" element={<DaysOff />} />}
           {can(user, 'timesheet') && <Route path="/settings/faceid" element={<FaceIdSettings />} />}
           <Route path="/services" element={<Services />} />
           {owner && <Route path="/gifts" element={<Gifts />} />}

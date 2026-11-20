@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from employee_days_off d join employees e on e.id = d.employee_id\n           where d.branch_id = $1 and d.day = $2 and e.active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f303cbca47a32c608fa0555332dd90a96a4002ae8f1dbc17b599bb9685a078c4"
+}

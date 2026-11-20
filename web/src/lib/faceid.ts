@@ -43,6 +43,8 @@ export interface TimesheetRow {
   full_name: string
   total_minutes: number
   days: TimesheetDay[]
+  /** Выходные по графику (задача 037 п.5). */
+  days_off: string[]
 }
 
 export interface Timesheet {

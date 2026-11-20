@@ -805,6 +805,8 @@ pub struct RowOut {
     pub full_name: String,
     pub total_minutes: i64,
     pub days: Vec<DayOut>,
+    /// Выходные по графику за месяц (задача 037 п.5).
+    pub days_off: Vec<NaiveDate>,
 }
 
 #[derive(Serialize)]
@@ -881,6 +883,18 @@ pub async fn timesheet_of(
     {
         people.entry((e.full_name, e.id)).or_default();
     }
+    let offs = crate::api::days_off::days_off_of(&mut *conn, branch_id, from, to).await?;
+    if !offs.is_empty() {
+        for e in sqlx::query!(
+            "select id, full_name from employees where id = any($1)",
+            &offs.iter().map(|o| o.0).collect::<Vec<Uuid>>()
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        {
+            people.entry((e.full_name, e.id)).or_default();
+        }
+    }
     for r in rows {
         let status = match (r.ended_at, r.past) {
             (Some(_), _) => "closed",
@@ -918,6 +932,11 @@ pub async fn timesheet_of(
                 full_name,
                 total_minutes: days.iter().map(|d| d.minutes).sum(),
                 days,
+                days_off: offs
+                    .iter()
+                    .filter(|o| o.0 == employee_id)
+                    .map(|o| o.1)
+                    .collect(),
             }
         })
         .collect();

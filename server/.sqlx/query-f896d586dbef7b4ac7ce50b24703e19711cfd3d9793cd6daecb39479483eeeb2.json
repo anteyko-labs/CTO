@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from settings where branch_id = $1 and key = 'staff'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f896d586dbef7b4ac7ce50b24703e19711cfd3d9793cd6daecb39479483eeeb2"
+}

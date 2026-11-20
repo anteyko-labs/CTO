@@ -11776,6 +11776,8 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                 | "till_barcode"
                 // Табель — в tests/faceid.rs (admin_needs_timesheet_right).
                 | "timesheet"
+                // График выходных — в tests/days_off.rs (day_off_keeps_minimum_on_duty).
+                | "staff_schedule"
         ) {
             assert!(cases.iter().any(|c| c.0 == p.key), "{} без проверки", p.key);
         }
