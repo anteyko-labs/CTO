@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.chat_id, t.phone as link_phone, p.phone, p.active, p.role\n           from telegram_customers t join parties p on p.id = t.party_id\n           where t.party_id = $1 order by t.chat_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "link_phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "role",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "92d65ad96d105cb2386d010fb5065371dcbb4ee40910d1f474c6f73f02917716"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select branch_id from sale_approvals where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0521bce3d81ddeea303e94673eeef61c9794542e33d46868c6df0ae600a857e0"
+}

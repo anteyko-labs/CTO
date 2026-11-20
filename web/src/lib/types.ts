@@ -562,6 +562,30 @@ export interface Sale {
   book?: SaleBook | null
   /** Клиент расписался за долг на экране покупателя (задача 008). */
   has_debt_signature?: boolean
+  /** Подтверждение фирмы по чеку в долг (задача 039 C, ADR-202). */
+  approval?: SaleApprovalMark | null
+}
+
+export interface SaleApprovalMark {
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'skipped'
+  forced: boolean
+  reason: string
+  decided_by: string
+}
+
+/** Отметка подтверждения фирмы на чеке. */
+export function approvalMarkText(a: SaleApprovalMark): string {
+  if (a.forced) return 'Проведено без подтверждения фирмы'
+  switch (a.status) {
+    case 'approved':
+      return `Фирма подтвердила${a.decided_by ? ` (${a.decided_by})` : ''}`
+    case 'rejected':
+      return `Фирма отклонила${a.reason ? `: ${a.reason}` : ''}`
+    case 'skipped':
+      return 'Фирму не спросили: нет Телеграма и кабинета'
+    default:
+      return 'Ждём подтверждения фирмы'
+  }
 }
 
 /** Масляная книжка в печатном чеке: машина, пробег сейчас и следующие замены (SPEC-34 §4). */

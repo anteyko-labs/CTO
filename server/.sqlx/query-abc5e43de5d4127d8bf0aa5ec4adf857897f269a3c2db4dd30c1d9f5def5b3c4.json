@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from sale_approvals where party_id = $1 and status <> 'skipped'\n         order by created_at desc limit 50",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "abc5e43de5d4127d8bf0aa5ec4adf857897f269a3c2db4dd30c1d9f5def5b3c4"
+}

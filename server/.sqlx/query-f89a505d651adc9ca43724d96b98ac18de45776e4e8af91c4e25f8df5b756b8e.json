@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update sale_approvals set status = 'expired'\n         where status = 'pending' and mode = 'timeout' and expires_at <= now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f89a505d651adc9ca43724d96b98ac18de45776e4e8af91c4e25f8df5b756b8e"
+}

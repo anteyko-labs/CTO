@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into audit_log (id, branch_id, action, entity, entity_id, data)\n           values ($1, $2, 'party.sale_approval', 'party', $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2a21a164c1f2f533375663ff0ebaa3af89dc10cda67c83f53b81bddb63e542c1"
+}

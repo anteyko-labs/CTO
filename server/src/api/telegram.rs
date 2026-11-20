@@ -989,6 +989,23 @@ async fn drop_customer(
     Ok(())
 }
 
+/// Действующие чаты клиента (фирмы): по ним уходит запрос «Подтвердите обслуживание».
+pub(crate) async fn party_chats(conn: &mut PgConnection, party_id: Uuid) -> AppResult<Vec<i64>> {
+    let rows = sqlx::query!(
+        r#"select t.chat_id, t.phone as link_phone, p.phone, p.active, p.role
+           from telegram_customers t join parties p on p.id = t.party_id
+           where t.party_id = $1 order by t.chat_id"#,
+        party_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|r| link_valid(r.active, &r.role, &r.phone, &r.link_phone))
+        .map(|r| r.chat_id)
+        .collect())
+}
+
 const STALE_REASON: &str = "карточка отключена или номер в ней изменён";
 
 async fn customer_link(conn: &mut PgConnection, chat_id: i64) -> AppResult<CustomerLink> {
@@ -1399,6 +1416,17 @@ async fn callback(
     from_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
+    // «✅ Подтвердить» / «✖ Отклонить» под запросом фирмы (задача 039 C, ADR-202).
+    if data.starts_with("ap:") {
+        return match customer_link(conn, chat_id).await? {
+            CustomerLink::Linked(party_id) => Ok(Reply::new(
+                crate::api::sale_approvals::press_bot(conn, party_id, data).await?,
+                Keys::Customer,
+            )),
+            CustomerLink::Dropped => Ok(Reply::new(RESHARE, Keys::Contact)),
+            CustomerLink::None => Ok(Reply::new(NOT_LINKED, Keys::Contact)),
+        };
+    }
     // «📦 На приёмку» под ответом на фото накладной (SPEC-39 §2): владелец или администратор,
     // привязавший чат; право и черновик сервер проверяет заново.
     if data.starts_with("a:") {
@@ -5169,6 +5197,11 @@ pub async fn notify_pass(
         return Ok(a);
     }
     out.pause = out.pause.max(a.pause);
+    let ap = approval_pass(conn, api).await?;
+    if ap.stopped {
+        return Ok(ap);
+    }
+    out.pause = out.pause.max(ap.pause);
     let f = feed_pass(conn, api).await?;
     out.pause = out.pause.max(f.pause);
     out.stopped = f.stopped;
@@ -5187,6 +5220,37 @@ pub async fn acceptance_pass(conn: &mut PgConnection, api: &Api) -> AppResult<Pa
         match api.push(n.chat_id, &n.text).await {
             Delivery::Sent | Delivery::Skip => {
                 crate::api::acceptances::mark_notice(conn, &n).await?
+            }
+            Delivery::Retry { after, all } => {
+                out.retry(after, all);
+                if all {
+                    break;
+                }
+                blocked.insert(n.chat_id);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Запросы «Подтвердите обслуживание» в чаты фирмы — с кнопками, в любое время (задача 039 C).
+pub async fn approval_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOutcome> {
+    let mut out = PassOutcome::default();
+    let mut blocked: HashSet<i64> = HashSet::new();
+    for n in crate::api::sale_approvals::notices(conn).await? {
+        if blocked.contains(&n.chat_id) {
+            continue;
+        }
+        let keys: Vec<Button> = crate::api::sale_approvals::buttons(n.approval_id)
+            .into_iter()
+            .map(|(text, data)| Button { text, data })
+            .collect();
+        match api
+            .push_with(n.chat_id, &n.text, inline_markup(&[keys]))
+            .await
+        {
+            Delivery::Sent | Delivery::Skip => {
+                crate::api::sale_approvals::mark_notice(conn, &n).await?
             }
             Delivery::Retry { after, all } => {
                 out.retry(after, all);

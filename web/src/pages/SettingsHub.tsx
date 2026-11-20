@@ -18,6 +18,7 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/sales', title: 'Продажи', text: 'Кто задаёт цену новой услуги; уведомление об услуге от администратора', icon: 'cashier', ownerOnly: true },
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/stock', title: 'Склад', text: 'Цена масла в приходе: за канистру или за литр; срок залежалости', icon: 'stock', ownerOnly: true },
+  { to: '/settings/legal', title: 'Юрлица', text: 'Подтверждение заправки фирмой при чеке в долг: ждать, после, с таймаутом или не спрашивать', icon: 'receipt', ownerOnly: true },
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },
   { to: '/settings/telegram', title: 'Телеграм и баллы', text: 'Бот владельца, процент баллов клиентам', icon: 'bell', ownerOnly: true },
   { to: '/settings/bot-feed', title: 'Уведомления в бот', text: 'Что приходит вам в Телеграм: чеки, склад, деньги, долги, зарплата, смена', icon: 'bell', ownerOnly: true },

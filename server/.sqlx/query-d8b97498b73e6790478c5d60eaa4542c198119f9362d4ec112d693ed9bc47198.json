@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name from party_contacts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d8b97498b73e6790478c5d60eaa4542c198119f9362d4ec112d693ed9bc47198"
+}

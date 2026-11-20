@@ -31,6 +31,9 @@ pub fn routes() -> Router<AppState> {
         .route("/client/reconciliation", routing::get(reconciliation))
         .route("/client/oil-book", routing::get(oil_book))
         .route("/client/messages", routing::get(messages))
+        .route("/client/approvals", routing::get(approvals))
+        .route("/client/approvals/{id}/approve", routing::post(approve))
+        .route("/client/approvals/{id}/reject", routing::post(reject))
         .route("/parties/{id}/cabinet", routing::get(cabinet_state))
         .route("/parties/{id}/cabinet/reset", routing::post(cabinet_reset))
 }
@@ -590,6 +593,58 @@ async fn messages(State(state): State<AppState>, client: Client) -> AppResult<Js
     Ok(Json(
         crate::api::client_messages::cabinet_feed(&mut conn, client.party_id, 50).await?,
     ))
+}
+
+/// Запросы «Подтвердите обслуживание» (задача 039 C, ADR-202).
+async fn approvals(
+    State(state): State<AppState>,
+    client: Client,
+) -> AppResult<Json<Vec<crate::api::sale_approvals::ApprovalOut>>> {
+    client.customer()?;
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(
+        crate::api::sale_approvals::list_for_party(&mut conn, client.party_id).await?,
+    ))
+}
+
+async fn approve(
+    State(state): State<AppState>,
+    client: Client,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<crate::api::sale_approvals::ApprovalOut>> {
+    client.customer()?;
+    let mut tx = state.pool.begin().await?;
+    let out = crate::api::sale_approvals::decide(&mut tx, client.party_id, id, true, "", "Кабинет")
+        .await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct RejectIn {
+    #[serde(default)]
+    reason: String,
+}
+
+async fn reject(
+    State(state): State<AppState>,
+    client: Client,
+    Path(id): Path<Uuid>,
+    Json(req): Json<RejectIn>,
+) -> AppResult<Json<crate::api::sale_approvals::ApprovalOut>> {
+    client.customer()?;
+    let mut tx = state.pool.begin().await?;
+    let out = crate::api::sale_approvals::decide(
+        &mut tx,
+        client.party_id,
+        id,
+        false,
+        &req.reason,
+        "Кабинет",
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 /// Машины фирмы: когда меняли масло, что залили и когда следующая замена (SPEC-16).

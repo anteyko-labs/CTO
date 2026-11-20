@@ -71,6 +71,7 @@ const BotFeedSettings = lazyPage(() => import('./pages/BotFeedSettings'))
 const StockSettingsPage = lazyPage(() => import('./pages/StockSettings'))
 const SalesSettingsPage = lazyPage(() => import('./pages/SalesSettings'))
 const OilBookSettings = lazyPage(() => import('./pages/OilBookSettings'))
+const LegalSettingsPage = lazyPage(() => import('./pages/LegalSettings'))
 const CrossPickSettings = lazyPage(() => import('./pages/CrossPickSettings'))
 const CashierSettingsPage = lazyPage(() => import('./pages/CashierSettings'))
 const PayrollSettings = lazyPage(() => import('./pages/PayrollSettings'))
@@ -417,6 +418,7 @@ function Shell() {
           {owner && <Route path="/settings/stock" element={<StockSettingsPage />} />}
           {owner && <Route path="/settings/sales" element={<SalesSettingsPage />} />}
           {owner && <Route path="/settings/oil-book" element={<OilBookSettings />} />}
+          {owner && <Route path="/settings/legal" element={<LegalSettingsPage />} />}
           {owner && <Route path="/settings/cross-pick" element={<CrossPickSettings />} />}
           {owner && <Route path="/settings/cashier" element={<CashierSettingsPage />} />}
           {owner && <Route path="/settings/payroll" element={<PayrollSettings />} />}

@@ -24,7 +24,7 @@ import { returnDebtCap, splitReturn } from '../lib/returnSplit'
 import type { VehicleBook } from '../lib/oilBook'
 import { printBotQr, printOilBook, saleCheckOf } from '../lib/oilBookPrint'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, shouldAutoReceipt } from '../lib/oilBookSettings'
-import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
+import { PAYMENT_LABELS, approvalMarkText, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
   qty: number
@@ -445,6 +445,11 @@ export default function SaleView() {
             </Link>
             {sale.contact_name && ` · ${sale.contact_name}`}
             {sale.vehicle_plate && ` · ${sale.vehicle_plate}`}
+          </div>
+        )}
+        {sale.approval && (
+          <div data-testid="sale-approval">
+            <Badge tone={sale.approval.status === 'rejected' ? 'rose' : sale.approval.status === 'approved' ? 'green' : 'amber'}>{approvalMarkText(sale.approval)}</Badge>
           </div>
         )}
         {sale.master_fee_tyiyn !== 0 && (

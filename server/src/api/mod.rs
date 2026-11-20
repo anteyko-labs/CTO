@@ -59,6 +59,7 @@ pub mod receipts;
 pub mod refs;
 pub mod reports;
 pub mod revisions;
+pub mod sale_approvals;
 pub mod sales;
 pub mod shift_report;
 pub mod spending;
@@ -127,6 +128,7 @@ pub fn routes() -> Router<AppState> {
         .merge(receipt_files::routes())
         .merge(reports::routes())
         .merge(revisions::routes())
+        .merge(sale_approvals::routes())
         .merge(sales::routes())
         .merge(shift_report::routes())
         .merge(stock_in::routes())
