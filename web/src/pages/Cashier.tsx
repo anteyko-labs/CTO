@@ -30,7 +30,7 @@ import { toScreen } from '../lib/customerScreen'
 import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
-import { lineTitle, recordLines, recordMileage, slotKey, slotLabel, slotNextText, slotsOfSale, slotTitle, type VehicleBook } from '../lib/oilBook'
+import { lineTitle, recordLines, recordMileage, slotRowKey, slotLabel, slotNextText, slotsOfSale, slotTitle, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { askOilChange, hasServiceWork, hasTopup } from '../lib/oilChange'
 import {
@@ -84,7 +84,7 @@ import { focusScanField, useScanToPicker } from '../lib/scanner'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
-import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift, type VehicleKind, BOOK_SLOT_LABELS, PLACE_CHOICES } from '../lib/types'
+import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PartyVehicle, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift, type VehicleKind, BOOK_SLOT_LABELS, PLACE_CHOICES } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -470,8 +470,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [businessDate, setBusinessDate] = useState(fix?.state.businessDate ?? '')
   const [fixComment, setFixComment] = useState('')
   const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
-  // «Грузовая / Легковая» (задача 040 A, ADR-205): на каждый чек; не трогали — значение кассы филиала.
-  const [vehicleKindPick, setVehicleKind] = useState<VehicleKind | null>(null)
+  // «Грузовая / Легковая» (задача 040 A, ADR-205): на каждый чек; не трогали — значение кассы филиала,
+  // у «Исправить» — исходного чека.
+  const [vehicleKindPick, setVehicleKind] = useState<VehicleKind | null>(fix?.state.vehicleKind ?? null)
   const vehicleKind: VehicleKind = vehicleKindPick ?? cs.vehicle_kind_default
   const [cashierId, setCashierId] = useState(() => fix?.state.cashierId ?? remembered(CASHIER_KEY))
   const [masterId, setMasterId] = useState(draft?.masterId ?? '')
@@ -534,6 +535,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [innText, setInnText] = useState('')
   const [contactId, setContactId] = useState(draft?.contactId ?? '')
   const [vehicleId, setVehicleId] = useState(draft?.vehicleId ?? '')
+  // Машина ждёт подтверждения фирмы или отклонена (ADR-199): в долг фирмы её не провести.
+  const [carStatus, setCarStatus] = useState<PartyVehicle['status'] | null>(null)
+  const carUnconfirmed = Boolean(carStatus && carStatus !== 'active')
   const [mileage, setMileage] = useState(draft?.mileage ?? '')
   const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
   // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
@@ -1337,6 +1341,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     ],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]', 'получено мало'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]', 'клиент для долга'],
+    [debtAmount === 0 || !carUnconfirmed || !online, 'машина не подтверждена фирмой — в долг нельзя: другая оплата или машина', '[data-client]', 'машина не подтверждена'],
     [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента', undefined, 'баллы другого клиента'],
     [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново', undefined, 'баллов больше итога'],
     [!bonus || online, 'баллы списываются только при связи с сервером', undefined, 'баллы — нет связи'],
@@ -2179,7 +2184,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </div>
       ) : (
         <div data-client>
-          <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service' && cs.service_client_required} />
+          <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} onVehicleStatus={setCarStatus} service={saleType === 'service' && cs.service_client_required} />
         </div>
       )}
       {party && vehicleId && !touch && <OilHint book={carBook} />}
@@ -2628,7 +2633,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 )}
                 {/* Следующая — по строкам этого чека, не по прошлым заменам машины (ADR-111). */}
                 {slotsOfSale(done.book, done.sale.id).map((n) => (
-                  <div key={slotKey(n)} className="text-slate-700">
+                  <div key={slotRowKey(n)} className="text-slate-700">
                     Следующая · {slotTitle(n)}: <b>{slotNextText(n)}</b>
                   </div>
                 ))}
@@ -3645,7 +3650,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <Modal title="Клиент и машина" wide onClose={() => setClientOpen(false)}>
           <div className="flex flex-col gap-3">
             <div data-client-modal>
-              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service' && cs.service_client_required} />
+              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} onVehicleStatus={setCarStatus} service={saleType === 'service' && cs.service_client_required} />
             </div>
             {party && vehicleId && <OilHint book={carBook} />}
             <Button className="min-h-[64px]! text-xl!" onClick={() => setClientOpen(false)}>

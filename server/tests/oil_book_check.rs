@@ -1766,6 +1766,20 @@ async fn truck_sale_marks_check_and_splits_filters(pool: PgPool) {
         .filter(|l| l["slot"] == "fuel_filter")
         .count();
     assert_eq!(fuel, 2, "и у легковой фильтры не сливаются");
+    // «Исправить» — с отметкой исходного чека, а не филиала.
+    let (s, draft) = call(
+        &p.app,
+        "GET",
+        &format!(
+            "/api/v1/corrections/draft/sale/{}",
+            car["id"].as_str().unwrap()
+        ),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{draft}");
+    assert_eq!(draft["doc"]["vehicle_kind"], "car");
     // Неверное — 422.
     let mut body = p.sale_body(252_000, &goods, &["oil"], next());
     body["vehicle_kind"] = json!("bus");
@@ -1846,6 +1860,42 @@ async fn three_oil_filters_are_three_lines(pool: PgPool) {
     assert_eq!(filled, 3);
     let rec = p.record(&sale).await.unwrap();
     assert_eq!(rec.iter().filter(|l| l.0 == "oil_filter").count(), 3);
+    // «Следующие замены» книжки — каждый фильтр своей строкой, со своим товаром.
+    let b = p.book().await;
+    let next: Vec<(Value, Value, Value)> = b["slots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["slot"] == "oil_filter")
+        .map(|n| {
+            (
+                n["product"].clone(),
+                n["title"].clone(),
+                n["next_mileage"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        next,
+        vec![
+            (
+                json!("Фильтр W712"),
+                json!("Фильтр W712 (масляный) · 1 шт"),
+                json!(258_000)
+            ),
+            (
+                json!("Фильтр W610"),
+                json!("Фильтр W610 (масляный) · 1 шт"),
+                json!(258_000)
+            ),
+            (
+                json!("Фильтр W920"),
+                json!("Фильтр W920 (масляный) · 1 шт"),
+                json!(258_000)
+            ),
+        ],
+        "{b}"
+    );
 }
 
 /// Задача 041 A: «Куда поставили» — масляный фильтр как фильтр коробки, воздушный как салонный;

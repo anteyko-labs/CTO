@@ -59,6 +59,9 @@ export interface SlotNext {
   unit?: MileageUnit
   last_mileage?: number | null
   next_mileage?: number | null
+  /** Один из нескольких разных фильтров строки в последней замене (задачи 040/041) — его товар:
+   *  каждый своей строкой «Следующей замены». */
+  product?: string | null
 }
 
 export interface OilRecord {
@@ -280,6 +283,9 @@ export function slotsWithNext(b: VehicleBook): SlotNext[] {
 
 /** Строка следующей замены: строка книжки, у услуги «прочее» — `other:<услуга>` (ADR-131). */
 export const slotKey = (n: { slot: BookSlot; service_id?: string | null }): string => (n.slot === 'other' && n.service_id ? `other:${n.service_id}` : n.slot)
+
+/** Ключ строки «Следующей замены» на экране: несколько фильтров одной строки — по товару. */
+export const slotRowKey = (n: { slot: BookSlot; service_id?: string | null; product?: string | null }): string => (n.product ? `${slotKey(n)}#${n.product}` : slotKey(n))
 
 /** Строки книжки, которые меняли в чеке `saleId` (по его записи); записи нет — ни одной. */
 function saleSlots(b: VehicleBook, saleId: string): Set<string> {

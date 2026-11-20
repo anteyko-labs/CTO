@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bookGroups, categorySlotText, lineNextText, lineSlotLabel, lineTitle, titleOf, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
+import { bookGroups, categorySlotText, lineNextText, lineSlotLabel, lineTitle, titleOf, recordLines, recordText, slotNextText, slotRowKey, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
 import { oilBookHtml, qrStickerHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
@@ -315,5 +315,14 @@ describe('своя строка книжки (задача 016)', () => {
     // Без своей строки — как раньше.
     expect(lineSlotLabel({ slot: 'other', custom_slot_name: null })).toBe('Прочие работы')
     expect(lineTitle({ slot: 'other', text: 'Замена ГУР' })).toBe('Замена ГУР')
+  })
+})
+
+describe('несколько фильтров одной строки в «Следующих заменах» (задачи 040/041)', () => {
+  it('у каждого свой ключ строки, у строки целиком — ключ строки книжки', () => {
+    const a = { slot: 'oil_filter' as const, product: 'Фильтр W712' }
+    const b = { slot: 'oil_filter' as const, product: 'Фильтр W610' }
+    expect(slotRowKey(a)).not.toBe(slotRowKey(b))
+    expect(slotRowKey({ slot: 'oil_filter' })).toBe('oil_filter')
   })
 })

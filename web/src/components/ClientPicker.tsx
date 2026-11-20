@@ -196,6 +196,7 @@ export function ClientPicker({
   onParty,
   onContact,
   onVehicle,
+  onVehicleStatus,
   service = false,
 }: {
   party: Party | null
@@ -206,6 +207,8 @@ export function ClientPicker({
   onParty: (p: Party | null) => void
   onContact: (id: string) => void
   onVehicle: (id: string) => void
+  /** Статус выбранной машины у фирмы (ADR-199): «ждёт подтверждения» — в долг фирмы нельзя. */
+  onVehicleStatus?: (status: PartyVehicle['status'] | null) => void
 }) {
   const [q, setQ] = useState('')
   const query = useDebounced(q.trim(), 250)
@@ -277,6 +280,13 @@ export function ClientPicker({
     else if (active.length === 1) onVehicle(active[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [party?.id, card.data])
+
+  const picked = card.data?.vehicles.find((v) => v.id === vehicleId)
+  const pickedStatus = picked?.status ?? null
+  useEffect(() => {
+    onVehicleStatus?.(party ? pickedStatus : null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [party?.id, pickedStatus])
 
   if (party) {
     const contacts = card.data?.contacts.filter((c) => c.active) ?? []
@@ -356,10 +366,18 @@ export function ClientPicker({
               <option key={v.id} value={v.id}>
                 {v.plate}
                 {v.brand && ` · ${v.brand} ${v.model}`}
+                {v.status === 'pending' && ' · ждёт подтверждения фирмы'}
+                {v.status === 'rejected' && ' · фирма не подтвердила'}
               </option>
             ))}
           </select>
         </Field>
+        {picked && picked.status && picked.status !== 'active' && (
+          <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="vehicle-pending">
+            {picked.status === 'pending' ? `Машина ${picked.plate} ждёт подтверждения фирмы` : `Фирма не подтвердила машину ${picked.plate}`} — в долг
+            фирме нельзя, только другая оплата.
+          </div>
+        )}
         <ErrorBox error={add.error ?? card.error ?? kindAct.error} />
         {adding === 'vehicle' && (
           <VehicleFormModal

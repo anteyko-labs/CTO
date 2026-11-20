@@ -6,7 +6,7 @@ import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNot
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { lineNextText, lineSlotLabel, lineTitle, nextText, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type CustomSlot, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, lineSlotLabel, lineTitle, nextText, recordLines, recordMileage, recordText, slotRowKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type CustomSlot, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
@@ -38,7 +38,7 @@ export function OilHint({ book: b }: { book: VehicleBook | null }) {
       {next.length > 0 && (
         <ul className="mt-1">
           {next.map((n) => (
-            <li key={slotKey(n)}>
+            <li key={slotRowKey(n)}>
               {slotTitle(n)}: следующая {slotNextText(n)}
             </li>
           ))}
@@ -239,7 +239,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
           <tbody className="divide-y divide-slate-100">
             {slots.map((n) => {
               return (
-                <tr key={slotKey(n)}>
+                <tr key={slotRowKey(n)}>
                   <td className="py-1 pr-2">
                     {/* Что залили в последний раз (задача 003 Н5); строка книжки — мелко: интервал у неё. */}
                     <span className="font-medium">{slotTitle(n)}</span>

@@ -3,7 +3,7 @@
 import { litersInput, somInput } from './format'
 import { isMilliKind } from './units'
 import { nextFromDraft, type NextEdits } from './nextChange'
-import type { Party, PaymentMethod, Product, SaleLineKind, Service } from './types'
+import type { Party, PaymentMethod, Product, SaleLineKind, Service, VehicleKind } from './types'
 
 /** Чек в виде запроса проведения — так его отдаёт `GET /corrections/draft/sale/{id}`. */
 export interface SaleDraftDoc {
@@ -20,6 +20,8 @@ export interface SaleDraftDoc {
   mileage_unit: string | null
   declined: string
   /** Следующие замены, заданные кассиром (ADR-131); у черновика до 27.10.2026 — нет. */
+  /** «Грузовая / Легковая» исходного чека (задача 040 A); у старого черновика — нет. */
+  vehicle_kind?: VehicleKind | null
   next_changes?: { service_id: string | null; slot: string; next_mileage: number | null }[]
   lines: { kind: SaleLineKind; gift: boolean; product_id: string | null; service_id: string | null; qty: number; unit_price_tyiyn: number }[]
   payments: { method: PaymentMethod; amount_tyiyn: number; grams: number | null; price_per_kg_tyiyn: number | null; account_id: string | null }[]
@@ -53,6 +55,8 @@ export interface SaleFixState {
   /** «Следующая замена»: правки по строкам и строки «+ ещё» исходного чека (ADR-131). */
   nextEdits: NextEdits
   nextExtra: string[]
+  /** «Грузовая / Легковая» исходного чека; нет — значение филиала. */
+  vehicleKind: VehicleKind | null
   payMode: MoneyMethod | 'mixed'
   split: Record<MoneyMethod, string>
   bonusAmount: number
@@ -116,6 +120,7 @@ export function saleFixState(
     declined: doc.declined,
     nextEdits: next.edits,
     nextExtra: next.extra,
+    vehicleKind: doc.vehicle_kind ?? null,
     payMode: used.length > 1 ? 'mixed' : (used[0] ?? 'cash'),
     split,
     bonusAmount: doc.payments.filter((p) => p.method === 'bonus').reduce((acc, p) => acc + p.amount_tyiyn, 0),

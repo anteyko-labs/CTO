@@ -195,6 +195,7 @@ fn next_change_text_is_mileage_only() {
         unit: unit.into(),
         last_mileage: None,
         next_mileage: mileage,
+        product: None,
     };
     let d = NaiveDate::from_ymd_opt(2027, 1, 12);
     assert_eq!(next_text(&slot(Some(93_000), "km", d)), "на 93 000 км");
