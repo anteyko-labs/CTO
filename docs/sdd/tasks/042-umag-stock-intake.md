@@ -15,7 +15,7 @@
 5. Повторное нажатие (двойной клик, повтор сети) — тот же результат (`op_id`).
 
 ## Данные, маршруты
-- Миграция 0121: `old_catalog.qty numeric null`, `old_catalog.intake_status text not null default 'todo'` (`todo|new|linked|skipped`), `intake_product_id`.
+- Миграция 0122: `old_catalog.qty numeric null`, `old_catalog.intake_status text not null default 'todo'` (`todo|new|linked|skipped`), `intake_product_id`.
 - `GET /old-catalog/intake?status=&q=` (постранично), `POST /old-catalog/{id}/intake/new` (тело — карточка товара), `POST /old-catalog/{id}/intake/link {product_id}`, `POST /old-catalog/{id}/intake/skip|undo`, `GET /old-catalog/{id}/similar`. Всё с `op_id`, право «Товары» (`products`), владелец — всегда. Журнал `stock.umag_intake`.
 
 ## Проверка
