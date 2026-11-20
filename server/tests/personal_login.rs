@@ -980,7 +980,7 @@ async fn personal_login_chat_has_rights_and_own_earnings(pool: PgPool) {
                 .await
                 .unwrap();
         }
-        // Свободный текст — меню по правам, первым рядом «💼 Мой заработок».
+        // Свободный текст — меню по правам, рядом «💼 Мой заработок».
         let r = handle_message(&mut conn, CHAT, CHAT, Some("привет"), None)
             .await
             .unwrap();
@@ -988,7 +988,9 @@ async fn personal_login_chat_has_rights_and_own_earnings(pool: PgPool) {
             panic!("{phone}: не кнопки администратора: {:?} {}", r.keys, r.text)
         };
         assert!(menu.has("shift"), "{phone}: {menu:?}");
-        assert_eq!(menu.rows()[0], vec!["💼 Мой заработок"], "{phone}");
+        // Первый ряд — рабочий день (задача 039), второй — «💼 Мой заработок».
+        assert_eq!(menu.rows()[0], vec!["▶️ Начать рабочий день"], "{phone}");
+        assert_eq!(menu.rows()[1], vec!["💼 Мой заработок"], "{phone}");
         assert!(r.text.contains("💼 Мой заработок"), "{phone}: {}", r.text);
         // Заработок — свой, кнопки внизу — администратора, разделы — под сообщением.
         let r = handle_message(&mut conn, CHAT, CHAT, Some("💼 Мой заработок"), None)
