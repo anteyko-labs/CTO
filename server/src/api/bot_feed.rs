@@ -46,7 +46,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 101] = [
+const EVENTS: [(&str, &str, &str); 102] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -189,6 +189,7 @@ const EVENTS: [(&str, &str, &str); 101] = [
     // Долги
     ("debt.repayment", "debts", "Погашение долга"),
     ("debt.adjust", "debts", "Правка долга вручную"),
+    ("party.merge", "debts", "Объединены карточки клиента"),
     ("debt.reverse", "debts", "Сторно записи долга"),
     ("debt.old", "debts", "Старый долг из тетради"),
     (

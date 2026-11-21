@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_vehicles set party_id = $2 where party_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9702d81278794df9e0047e3162b3395c4fb0f4bf067e2dfe526b10ebca7c6c3"
+}

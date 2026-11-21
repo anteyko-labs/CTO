@@ -218,7 +218,7 @@ pub(crate) async fn search_parties(
              -- Долги клиента раздельно по филиалам (задача 036): баланс — долг этого филиала.
              select case when (parties.role = 'customer' and not $11) or $10 then parties.balance_tyiyn else h.here end as bal,
                     h.here) b
-           where ($2::text is null or role = $2)
+           where ($2::text is null or role = $2) and merged_into is null
              and ($3::text is null or kind = $3)
              and ($4::text is null
                   or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'
@@ -2478,7 +2478,10 @@ pub(crate) async fn party_card_data(
            join branches b on b.id = s.branch_id
            left join party_contacts c on c.id = s.contact_id
            left join party_vehicles v on v.id = s.vehicle_id
-           where s.party_id = $1 and ($2::uuid is null or s.branch_id = $2)
+           where (s.party_id = $1
+                  -- Чеки влитых карточек (задача 043) — в карточке основной.
+                  or s.party_id in (select m.id from parties m where m.merged_into = $1))
+             and ($2::uuid is null or s.branch_id = $2)
              and ($3::date is null or s.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')
              and ($4::date is null or s.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')
            order by s.created_at desc
@@ -2594,6 +2597,7 @@ pub(crate) async fn party_card_data(
             ledger_id: Some(l.id),
             // Сторно — в филиале записи (SPEC-33): чужую запись владелец снимает, выбрав её филиал.
             reversible: (l.kind != "debt" || old_debt)
+                && l.doc_type != crate::api::party_merge::MERGE_DOC
                 && l.reversal_of.is_none()
                 && !l.reversed
                 && l.branch_id == user.branch_id,
@@ -2602,6 +2606,7 @@ pub(crate) async fn party_card_data(
                 // Возмещение за брак: поставщик должен нам (SPEC-25).
                 "defect" => "Возврат брака: скидка на приход".into(),
                 "defect_reversal" => "Отмена возврата брака".into(),
+                crate::api::party_merge::MERGE_DOC => "Объединение карточек".into(),
                 _ if old_debt => OLD_DEBT_TITLE.into(),
                 _ => ledger_title(&l.kind, l.amount_tyiyn, l.reversal_of.is_some()).into(),
             },
@@ -2703,6 +2708,11 @@ pub async fn reverse_ledger_tx(
     if l.kind == "debt" && l.doc_type.starts_with("defect") {
         return Err(AppError::Conflict(
             "возврат брака отменяется на экране «Остатки → Брак»".into(),
+        ));
+    }
+    if l.doc_type == crate::api::party_merge::MERGE_DOC {
+        return Err(AppError::Conflict(
+            "перенос долга при объединении карточек не сторнируется".into(),
         ));
     }
     // Старый долг из тетради снимается здесь (SPEC-38): у него нет своего документа.

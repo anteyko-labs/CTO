@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update suppliers set active = false where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c66c97ecac37e9cd5d00a9c3980026d6c791588f08d2b6a6a4f2f4d5b36f58bc"
+}

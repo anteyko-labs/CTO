@@ -19,7 +19,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 88] = [
+pub(crate) const WATCHED: [&str; 89] = [
+    // Объединение карточек клиентов или поставщиков с долгом (задача 043).
+    "party.merge",
     // Машина фирмы ждёт подтверждения или решена; пересчёт долга клиента (задача 037).
     "party.vehicle_request",
     // Водитель фирмы ждёт подтверждения или решён (задача 037, ADR-199).
@@ -705,6 +707,17 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "gift.rule" => (
             "Изменены правила подарков".into(),
             format!("подарков в списке: {}", num("items").unwrap_or(0)),
+        ),
+        "party.merge" => (
+            format!("Объединены карточки: {}", text("into_name")),
+            format!(
+                "влиты {}; перенесено {}",
+                data.get("from_names")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default(),
+                money(num("amount_tyiyn"))
+            ),
         ),
         "debt.adjust" => (
             "Правка долга вручную".into(),

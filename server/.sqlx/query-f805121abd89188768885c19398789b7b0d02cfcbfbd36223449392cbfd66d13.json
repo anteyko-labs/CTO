@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties\n           set kind = $2,\n               name = coalesce($3, name),\n               first_name = case when $6 then '' else coalesce($4, first_name) end,\n               last_name = case when $6 then '' else coalesce($5, last_name) end\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f805121abd89188768885c19398789b7b0d02cfcbfbd36223449392cbfd66d13"
+}

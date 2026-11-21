@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update telegram_customers set party_id = $2 where party_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "53b5fa0a99421f8d890295891d47ea203c8a9e8a673796ffae3f6fa1cce1c59c"
+}

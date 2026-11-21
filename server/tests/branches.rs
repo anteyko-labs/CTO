@@ -2186,3 +2186,49 @@ async fn client_bot_debt_names_each_branch(pool: PgPool) {
     );
     assert!(!text.contains("— Филиал Б"), "{text}");
 }
+
+/// Объединение карточек (задача 043): долг дубля в каждом филиале переходит на основную в том же
+/// филиале; объединяет только владелец.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn party_merge_moves_debt_per_branch(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    fill_branch(&w, w.a, &w.admin_a, SECRET).await;
+    fill_branch(&w, w.b, &w.admin_b, "Б").await;
+    let api = &w.api;
+    let main = api
+        .ok(
+            "POST",
+            "/api/v1/parties",
+            &w.owner,
+            None,
+            json!({ "kind": "company", "name": "IQOS" }),
+        )
+        .await;
+    let main = main["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/parties/{main}/merge");
+    let body = json!({ "op_id": op(), "duplicate_ids": [w.client] });
+    let (st, _) = api
+        .call("POST", &uri, &w.admin_a, None, Some(body.clone()))
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    api.ok("POST", &uri, &w.owner, None, body).await;
+    let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+        "select branch_id, balance_tyiyn from party_balances
+         where party_id = $1::uuid and balance_tyiyn <> 0 order by branch_id",
+    )
+    .bind(&main)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut want = vec![(w.a, 100_000), (w.b, 100_000)];
+    want.sort();
+    assert_eq!(rows, want);
+    let left: i64 = sqlx::query_scalar(
+        "select coalesce(sum(abs(balance_tyiyn)), 0)::bigint from party_balances where party_id = $1::uuid",
+    )
+    .bind(&w.client)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 0);
+}

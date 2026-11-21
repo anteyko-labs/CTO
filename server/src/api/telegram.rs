@@ -1902,7 +1902,7 @@ pub async fn bonus_notices(conn: &mut PgConnection) -> AppResult<Vec<BonusNotice
            from loyalty_ledger l
            join telegram_customers t on t.party_id = l.party_id and l.created_at >= t.linked_at
            left join sales s on s.id = l.doc_id
-           where l.created_at > now() - interval '3 days'
+           where l.created_at > now() - interval '3 days' and l.kind <> 'merge'
              and not exists (select 1 from loyalty_notices n where n.ledger_id = l.id)
            order by l.created_at, l.doc_id"#
     )
@@ -3151,7 +3151,7 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
 }
 
 /// Текущая работа точки, которая идёт владельцу в бот сверх экрана «Уведомления».
-pub(crate) const FEED: [&str; 17] = [
+pub(crate) const FEED: [&str; 18] = [
     "sale.post",
     "shift.open",
     "shift.close",
@@ -3167,6 +3167,7 @@ pub(crate) const FEED: [&str; 17] = [
     "battery.intake",
     "oil.transfer",
     "product.merge",
+    "party.merge",
     "product.create",
     "revision.cancel",
 ];
@@ -3664,6 +3665,23 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
         "product.merge" => (
             "🗂 Объединены карточки товара".into(),
             format!("«{}» влита в «{}»", txt("from_name"), txt("into_name")),
+        ),
+        "party.merge" => (
+            "🗂 Объединены карточки клиента".into(),
+            format!(
+                "{} → «{}», перенесено {}",
+                data.get("from_names")
+                    .and_then(Value::as_array)
+                    .map(|a| a
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|n| format!("«{n}»"))
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default(),
+                txt("into_name"),
+                money_of(data, "amount_tyiyn")
+            ),
         ),
         "product.create" => (format!("🆕 Новый товар: {}", txt("name")), String::new()),
         _ => describe(action, data),

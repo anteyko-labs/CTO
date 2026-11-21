@@ -178,7 +178,7 @@ async fn add_lines(
     Ok(())
 }
 
-async fn lock_party(conn: &mut PgConnection, party_id: Uuid) -> AppResult<()> {
+pub(crate) async fn lock_party(conn: &mut PgConnection, party_id: Uuid) -> AppResult<()> {
     sqlx::query!(
         "select pg_advisory_xact_lock(hashtextextended($1::text, 7))",
         party_id.to_string()

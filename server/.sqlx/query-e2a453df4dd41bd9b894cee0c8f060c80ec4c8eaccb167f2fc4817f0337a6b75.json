@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties set active = false, merged_into = $2 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e2a453df4dd41bd9b894cee0c8f060c80ec4c8eaccb167f2fc4817f0337a6b75"
+}

@@ -53,6 +53,7 @@ pub mod optima;
 pub mod own_use;
 pub mod paging;
 pub mod parties;
+pub mod party_merge;
 pub mod pay_fix;
 pub mod payroll;
 pub mod pnl;
@@ -125,6 +126,7 @@ pub fn routes() -> Router<AppState> {
         .merge(umag_intake::routes())
         .merge(optima::routes())
         .merge(parties::routes())
+        .merge(party_merge::routes())
         .merge(pay_fix::routes())
         .merge(pnl::routes())
         .merge(spending::routes())

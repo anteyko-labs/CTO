@@ -13,6 +13,7 @@ import { stockText } from '../components/ProductPicker'
 import { VehicleFormModal } from '../components/VehicleFormModal'
 import { OldDebtModal } from '../components/OldDebtModal'
 import { RepaymentModal } from '../components/RepaymentModal'
+import { PartyMergeModal } from '../components/PartyMergeModal'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post, qs } from '../lib/api'
@@ -443,6 +444,9 @@ export default function ClientCard() {
   // Имя и фамилия человека (ADR-083): у прежних записей их нет — дописывают здесь.
   const [naming, setNaming] = useState<{ first: string; last: string } | null>(null)
   const [reconciling, setReconciling] = useState(false)
+  // Объединение карточек (задача 043) и название фирмы.
+  const [merging, setMerging] = useState(false)
+  const [renaming, setRenaming] = useState<string | null>(null)
   const row = useAction()
   const card = useLoad(() => get<PartyCard>(`/parties/${id}/card`), [id])
   // Отметки «исправлен» / «исправление» у записей долга — одним запросом на историю.
@@ -490,6 +494,16 @@ export default function ClientCard() {
       toast('Имя сохранено')
     })
 
+  const saveCompanyName = () =>
+    void row.run(async () => {
+      if (renaming === null) return
+      if (!renaming.trim()) throw new Error('Укажите название')
+      await patch<Party>(`/parties/${party.id}`, { name: renaming.trim() })
+      setRenaming(null)
+      card.reload()
+      toast('Название сохранено')
+    })
+
   /** Лимит долга и срок оплаты правит только владелец (SPEC-10). */
   const saveLimits = () =>
     void row.run(async () => {
@@ -521,6 +535,11 @@ export default function ClientCard() {
     ...(can('reconciliation') ? [{ label: 'Акт сверки', onClick: () => setReconciling(true) }] : []),
     { label: 'Правка баланса', onClick: () => setMoney('adjust'), disabled: !owner },
     ...(mayOldDebt ? [{ label: 'Занести старый долг', onClick: () => setMoney('old') }] : []),
+    ...(owner ? [{ label: 'Объединить карточки', onClick: () => setMerging(true) }] : []),
+    ...(mayEdit ? [toggleItem] : []),
+  ]
+  const desktopItems: MenuItem[] = [
+    ...(owner ? [{ label: 'Объединить карточки', onClick: () => setMerging(true) }] : []),
     ...(mayEdit ? [toggleItem] : []),
   ]
 
@@ -557,9 +576,9 @@ export default function ClientCard() {
             <span className="md:hidden">
               <RowMenu items={phoneItems} />
             </span>
-            {mayEdit && (
+            {desktopItems.length > 0 && (
               <span className="hidden md:inline-block">
-                <RowMenu items={[toggleItem]} />
+                <RowMenu items={desktopItems} />
               </span>
             )}
           </>
@@ -624,6 +643,20 @@ export default function ClientCard() {
                 {party.first_name ? 'изменить' : 'заполнить'}
               </button>
             )}
+          </div>
+        )}
+        {party.kind === 'company' && mayEdit && (
+          <div>
+            <div className="text-xs text-slate-500">Название</div>
+            <div className="font-medium">{party.name}</div>
+            <button
+              type="button"
+              data-testid="party-rename"
+              className="mt-1 text-xs text-sky-700 underline"
+              onClick={() => setRenaming(party.name)}
+            >
+              изменить
+            </button>
           </div>
         )}
         <div>
@@ -958,6 +991,34 @@ export default function ClientCard() {
             card.reload()
           }}
         />
+      )}
+      {merging && (
+        <PartyMergeModal
+          party={party}
+          onClose={() => setMerging(false)}
+          onDone={() => {
+            setMerging(false)
+            card.reload()
+          }}
+        />
+      )}
+      {renaming !== null && (
+        <Modal title="Название фирмы" onClose={() => setRenaming(null)}>
+          <div className="flex flex-col gap-3">
+            <Field label="Название" required>
+              <input id="party-company-name" autoFocus value={renaming} onChange={(e) => setRenaming(e.target.value)} />
+            </Field>
+            {row.error && <ErrorBox error={row.error} />}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setRenaming(null)}>
+                Отмена
+              </Button>
+              <Button disabled={row.busy} onClick={saveCompanyName}>
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
       {naming && (
         <Modal title="Имя и фамилия клиента" onClose={() => setNaming(null)}>

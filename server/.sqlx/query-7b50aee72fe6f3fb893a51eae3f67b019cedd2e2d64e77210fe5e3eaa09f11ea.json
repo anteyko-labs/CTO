@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update contact_requests set party_id = $2 where party_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7b50aee72fe6f3fb893a51eae3f67b019cedd2e2d64e77210fe5e3eaa09f11ea"
+}

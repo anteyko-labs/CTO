@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties set phone = case when phone = '' then $2 else phone end,\n                                inn = case when inn = '' then $3 else inn end\n             where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f2010c6ace0e770169424301f12cc280de935a40f3cabe76c287ced2816e7c7"
+}

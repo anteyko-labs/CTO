@@ -1,3 +1,4 @@
+import { PartyMergeModal } from '../components/PartyMergeModal'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Pager, usePagedLoad, usePager } from '../components/Pager'
@@ -49,6 +50,8 @@ export default function SupplierCard() {
   // Старый долг поставщику из тетради (задача 003 Н15): занести — право «Старые долги из тетради»,
   // сторно и «Исправить» — владелец (I14).
   const [oldDebt, setOldDebt] = useState(false)
+  // Объединение дублей поставщика (задача 043).
+  const [merging, setMerging] = useState(false)
   const [fixingOld, setFixingOld] = useState<string | null>(null)
   const [reversing, setReversing] = useState<{ item: SupplierInvoice; comment: string; opId: string } | null>(null)
   const revAct = useAction()
@@ -106,11 +109,27 @@ export default function SupplierCard() {
                 Возврат поставщику
               </Button>
             )}
+            {owner && party.data && (
+              <Button variant="secondary" onClick={() => setMerging(true)}>
+                Объединить карточки
+              </Button>
+            )}
             <Button onClick={() => setEditing(true)}>Изменить</Button>
           </>
         }
       />
 
+      {merging && party.data && (
+        <PartyMergeModal
+          party={party.data}
+          onClose={() => setMerging(false)}
+          onDone={() => {
+            setMerging(false)
+            supplier.reload()
+            reloadMoney()
+          }}
+        />
+      )}
       <Card className="flex flex-wrap items-center gap-x-8 gap-y-2 text-sm">
         <div>
           <div className="text-xs text-slate-500">Телефон</div>

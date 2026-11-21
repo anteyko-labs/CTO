@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into loyalty_ledger (id, branch_id, party_id, kind, amount_tyiyn,\n                                                   doc_type, doc_id)\n                       values ($1, $2, $3, 'merge', $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ef5d330aef8896650d06e997fcb09b9aa31df56c654c950c110eb44c7b795eb4"
+}
