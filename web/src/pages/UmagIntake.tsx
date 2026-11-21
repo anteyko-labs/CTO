@@ -10,7 +10,7 @@ import { get, newOpId, post, put, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { presetFromHit } from '../lib/oldCatalog'
-import type { Category, OldCatalogHit } from '../lib/types'
+import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { mapUmagRows } from '../lib/umag'
 import { readXlsx } from '../lib/xlsx'
 
@@ -53,8 +53,14 @@ function savedText(r: IntakeOut, what: string): string {
 
 function SimilarModal({ row, onClose, onDone, onNew }: { row: IntakeRow; onClose: () => void; onDone: () => void; onNew: () => void }) {
   const list = useLoad(() => get<SimilarProduct[]>(`/old-catalog/${row.id}/similar`), [row.id])
+  const [find, setFind] = useState('')
+  const term = find.trim()
+  const found = useLoad(
+    () => (term.length < 2 ? Promise.resolve([] as Product[]) : get<Product[]>(`/products?q=${encodeURIComponent(term)}&limit=30`)),
+    [term],
+  )
   const act = useAction()
-  const pick = (p: SimilarProduct) =>
+  const pick = (p: { id: string; name: string }) =>
     void act.run(async () => {
       const r = await post<IntakeOut>(`/old-catalog/${row.id}/intake/link`, { op_id: newOpId(), product_id: p.id })
       toast(savedText(r, `Привязано к «${p.name}»`))
@@ -74,6 +80,32 @@ function SimilarModal({ row, onClose, onDone, onNew }: { row: IntakeRow; onClose
               <div className="text-xs text-slate-500">
                 {p.category_name}
                 {p.article && ` · ${p.article}`} · {formatSom(p.sale_price_tyiyn)}
+              </div>
+            </div>
+            <Button disabled={act.busy} onClick={() => pick(p)}>
+              Это он
+            </Button>
+          </div>
+        ))}
+        <div className="border-t border-slate-200 pt-3">
+          <input
+            className="w-full rounded-md border border-slate-300 px-3 py-2"
+            placeholder="Поиск по всем товарам: название, код, артикул"
+            value={find}
+            onChange={(e) => setFind(e.target.value)}
+            data-testid="intake-find"
+          />
+        </div>
+        <ErrorBox error={found.error} />
+        {term.length >= 2 && found.data?.length === 0 && <div className="text-sm text-slate-500">Ничего не нашли.</div>}
+        {found.data?.map((p) => (
+          <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 px-3 py-2">
+            <div className="min-w-0">
+              <div className="font-medium">{p.name}</div>
+              <div className="text-xs text-slate-500">
+                {p.article && `${p.article} · `}
+                {p.barcodes[0] && `${p.barcodes[0]} · `}
+                {formatSom(p.sale_price_tyiyn)}
               </div>
             </div>
             <Button disabled={act.busy} onClick={() => pick(p)}>
