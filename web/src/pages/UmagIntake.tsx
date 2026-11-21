@@ -21,6 +21,7 @@ export interface IntakeRow extends OldCatalogHit {
   intake_status: Status
   intake_product_id: string | null
   intake_product_name: string | null
+  intake_product_unit?: string | null
   intake_counted: number | null
 }
 
@@ -38,6 +39,11 @@ const FILTERS: [Status, string][] = [
 ]
 
 const qtyText = (q: number | null) => (q === null ? '—' : q.toLocaleString('ru-RU'))
+/** Записанное в ревизию в единицах товара: мл → л, г → кг, мм → м. */
+function countedText(counted: number, unit: string | null | undefined): string {
+  const [div, u] = unit === 'ml' ? [1000, 'л'] : unit === 'g' ? [1000, 'кг'] : unit === 'mm' ? [1000, 'м'] : [1, 'шт.']
+  return `${(counted / div).toLocaleString('ru-RU', { maximumFractionDigits: 3 })} ${u}`
+}
 
 /** Итог действия: записано в ревизию или количество ждёт черновика. */
 function savedText(r: IntakeOut, what: string): string {
@@ -178,6 +184,9 @@ export default function UmagIntake() {
                     </td>
                     <td className="pr-2 text-right tabular-nums">
                       {qtyText(r.qty)} {r.unit}
+                      {r.intake_counted !== null && r.intake_status !== 'todo' && (
+                        <div className="text-xs text-slate-500">в ревизии: {countedText(r.intake_counted, r.intake_product_unit)}</div>
+                      )}
                     </td>
                     <td className="pr-2 text-right">{r.cost_tyiyn === null ? '—' : <Money value={r.cost_tyiyn} />}</td>
                     <td className="pr-2 text-right">

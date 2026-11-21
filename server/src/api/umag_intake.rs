@@ -68,6 +68,8 @@ struct IntakeRow {
     intake_status: String,
     intake_product_id: Option<Uuid>,
     intake_product_name: Option<String>,
+    /// Единица заведённого товара (`pcs`, `ml`, `g`, `mm`) — подпись записанного количества.
+    intake_product_unit: Option<String>,
     /// Записано в черновик ревизии, в единицах товара; `None` — не записано (нет черновика).
     intake_counted: Option<i64>,
 }
@@ -91,7 +93,7 @@ async fn list(
     let like = format!("%{}%", escape_like(q.q.trim()));
     let rows = sqlx::query!(
         r#"select o.id, o.qty::float8 as qty, o.intake_status, o.intake_product_id,
-                  p.name as "intake_product_name?", o.intake_counted,
+                  p.name as "intake_product_name?", p.unit as "intake_product_unit?", o.intake_counted,
                   count(*) over () as "total!"
            from old_catalog o left join products p on p.id = o.intake_product_id
            where o.branch_id = $1 and ($2 = 'all' or o.intake_status = $2)
@@ -119,6 +121,7 @@ async fn list(
             intake_status: r.intake_status,
             intake_product_id: r.intake_product_id,
             intake_product_name: r.intake_product_name,
+            intake_product_unit: r.intake_product_unit,
             intake_counted: r.intake_counted,
         })
         .collect();
