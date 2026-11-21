@@ -37,15 +37,36 @@ pub fn routes() -> Router<AppState> {
 
 /// Количество строки Умага в единицах товара: литры строки — миллилитры, штуки масла — канистры
 /// (объём тары), кг и м — граммы и миллиметры; остальное — штуки. Округляется до целого.
-pub fn base_qty(qty: f64, umag_unit: &str, unit: &str, container_ml: Option<i64>) -> i64 {
+/// Масло «шт» с закупкой меньше [`MIN_LITER_COST`] за литр тары — в Умаге это литры (бочку и
+/// канистру там ведут штуками по цене литра): 756 «шт» KUNLUN 18 л по 321 с — 756 л.
+pub fn base_qty(
+    qty: f64,
+    umag_unit: &str,
+    unit: &str,
+    container_ml: Option<i64>,
+    cost_tyiyn: i64,
+) -> i64 {
     let umag = product_unit(umag_unit);
     let k = match unit {
         "ml" if umag == "ml" => 1000.0,
+        "ml" if liters_as_pieces(cost_tyiyn, container_ml) => 1000.0,
         "ml" => container_ml.unwrap_or(1000) as f64,
         "g" | "mm" if umag == unit => 1000.0,
         _ => 1.0,
     };
     (qty * k).round().clamp(0.0, 1e9) as i64
+}
+
+/// Закупка литра масла не бывает дешевле: ниже — цена в строке за литр, а не за тару.
+const MIN_LITER_COST: i64 = 10_000;
+
+fn liters_as_pieces(cost_tyiyn: i64, container_ml: Option<i64>) -> bool {
+    match container_ml {
+        Some(c) if c > 1000 && cost_tyiyn > 0 => {
+            i128::from(cost_tyiyn) * 1000 < i128::from(MIN_LITER_COST) * i128::from(c)
+        }
+        _ => false,
+    }
 }
 
 #[derive(Deserialize)]
@@ -133,6 +154,7 @@ struct Row {
     name: String,
     qty: Option<f64>,
     unit: String,
+    cost_tyiyn: i64,
     status: String,
     product_id: Option<Uuid>,
     revision_id: Option<Uuid>,
@@ -141,7 +163,7 @@ struct Row {
 
 async fn lock_row(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<Row> {
     let r = sqlx::query!(
-        r#"select name, qty::float8 as qty, unit, intake_status, intake_product_id,
+        r#"select name, qty::float8 as qty, unit, cost_tyiyn, intake_status, intake_product_id,
                   intake_revision_id, intake_counted
            from old_catalog where id = $1 and branch_id = $2 for update"#,
         id,
@@ -154,6 +176,7 @@ async fn lock_row(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResu
         name: r.name,
         qty: r.qty,
         unit: r.unit,
+        cost_tyiyn: r.cost_tyiyn,
         status: r.intake_status,
         product_id: r.intake_product_id,
         revision_id: r.intake_revision_id,
@@ -196,10 +219,26 @@ async fn count_into_draft(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let counted = base_qty(qty, &row.unit, &p.unit, p.container_ml);
+    let counted = base_qty(qty, &row.unit, &p.unit, p.container_ml, row.cost_tyiyn);
     let Some(rev) = revisions::whole_draft_for_intake(&mut *conn, ctx).await? else {
         return Ok((None, None));
     };
+    // Закупок товара в филиале не было — излишек ревизии оценится по закупке строки (задача
+    // 042 §3), а не по 0: «Это он» к товару общей базы без цены (Айкос, 21.11.2026).
+    let value = (qty.max(0.0) * row.cost_tyiyn as f64).round() as i64;
+    if counted > 0 && value > 0 {
+        ops::lock_pool(&mut *conn, ctx.user.branch_id, product_id).await?;
+        sqlx::query!(
+            r#"update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4
+               where branch_id = $1 and product_id = $2 and last_cost_qty = 0"#,
+            ctx.user.branch_id,
+            product_id,
+            counted,
+            value
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
     revisions::add_intake_count(&mut *conn, ctx, rev, product_id, counted).await?;
     Ok((Some(rev), Some(counted)))
 }
@@ -449,10 +488,13 @@ mod tests {
 
     #[test]
     fn umag_qty_in_product_units() {
-        assert_eq!(base_qty(3.0, "шт", "piece", None), 3);
-        assert_eq!(base_qty(2.5, "л", "ml", Some(4000)), 2500);
-        assert_eq!(base_qty(2.0, "шт", "ml", Some(4000)), 8000);
-        assert_eq!(base_qty(1.25, "кг", "g", None), 1250);
-        assert_eq!(base_qty(-1.0, "шт", "piece", None), 0);
+        assert_eq!(base_qty(3.0, "шт", "piece", None, 0), 3);
+        assert_eq!(base_qty(2.5, "л", "ml", Some(4000), 0), 2500);
+        assert_eq!(base_qty(2.0, "шт", "ml", Some(4000), 250_000), 8000);
+        assert_eq!(base_qty(1.25, "кг", "g", None, 0), 1250);
+        assert_eq!(base_qty(-1.0, "шт", "piece", None, 0), 0);
+        // KUNLUN 18 л «756 шт» по 321 с — литры; YUGOIL 4,5 л по 756 с — канистры.
+        assert_eq!(base_qty(756.0, "шт.", "ml", Some(18_000), 32_117), 756_000);
+        assert_eq!(base_qty(27.0, "шт.", "ml", Some(4500), 75_600), 121_500);
     }
 }

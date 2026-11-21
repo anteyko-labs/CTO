@@ -295,6 +295,15 @@ async fn intake_new_link_undo_and_post(pool: PgPool) {
     )
     .await;
     assert_eq!(stock(&pool, &existing).await, 5);
+    // У привязанного товара закупок нет — излишек по закупке строки Умага, а не по 0.
+    let value: i64 = sqlx::query_scalar(
+        "select stock_value_tyiyn from branch_products where product_id = $1::text::uuid",
+    )
+    .bind(&existing)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(value, 5 * 35_000);
     assert_eq!(stock(&pool, &new_id).await, 4);
     let stats = ok(&app, "GET", "/api/v1/old-catalog", &owner, None).await;
     assert_eq!(stats["intake_todo"], 0);
