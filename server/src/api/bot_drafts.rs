@@ -725,7 +725,7 @@ async fn employee(
     q: &str,
 ) -> AppResult<Result<Employee, String>> {
     let all = sqlx::query!(
-        "select id, full_name from employees where branch_id = $1 and active order by full_name",
+        "select id, full_name from employees where branch_id = any(staff_branch_ids($1)) and active order by full_name",
         branch_id
     )
     .fetch_all(&mut *conn)
@@ -2253,7 +2253,7 @@ async fn stale_refs(
     };
     if let Some(id) = employee {
         let e = sqlx::query!(
-            "select full_name, active from employees where id = $1 and branch_id = $2",
+            "select full_name, active from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
             id,
             branch_id
         )

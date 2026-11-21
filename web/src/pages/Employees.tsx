@@ -510,6 +510,7 @@ export default function Employees() {
   )
   const needle = q.trim().toLowerCase()
   const rows = (list.data ?? []).filter((e) => !needle || e.full_name.toLowerCase().includes(needle))
+  const manyBranches = new Set((list.data ?? []).map((e) => e.branch_name)).size > 1
 
   return (
     <div>
@@ -576,7 +577,7 @@ export default function Employees() {
         ) : rows.length === 0 ? (
           <Empty>Никого не найдено</Empty>
         ) : (
-          <Table head={['ФИО', 'Роли', 'Статус', '']}>
+          <Table head={manyBranches ? ['ФИО', 'Филиал', 'Роли', 'Статус', ''] : ['ФИО', 'Роли', 'Статус', '']}>
             {rows.map((e) => (
               <tr
                 key={e.id}
@@ -584,6 +585,7 @@ export default function Employees() {
                 onClick={() => mayEdit && setEditing(e)}
               >
                 <td className="px-2 py-2 font-medium">{e.full_name}</td>
+                {manyBranches && <td className="px-2 py-2 text-slate-500">{e.branch_name}</td>}
                 <td className="px-2 py-2">
                   <Roles e={e} />
                 </td>

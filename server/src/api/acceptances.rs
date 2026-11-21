@@ -765,7 +765,7 @@ pub struct RefuseReq {
 /// PIN: не кассиру попытка PIN не тратится.
 async fn check_cashier(state: &AppState, ctx: &Ctx, employee_id: Uuid) -> AppResult<()> {
     let e = sqlx::query!(
-        "select is_cashier, active from employees where id = $1 and branch_id = $2",
+        "select is_cashier, active from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
         employee_id,
         ctx.user.branch_id
     )

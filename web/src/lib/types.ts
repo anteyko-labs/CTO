@@ -55,6 +55,8 @@ export interface Branch {
   is_main: boolean
   /** «Свой список товаров» (задача 036). */
   own_assortment?: boolean
+  /** «Свои сотрудники» (задача 045): без отметки сотрудники общие. */
+  own_staff?: boolean
 }
 
 export interface User {
@@ -228,6 +230,8 @@ export interface Employee {
   has_pin?: boolean
   /** Вход в программу сотрудника (задача 005 Н1, ADR-170); сервер отдаёт его только владельцу. */
   login?: EmployeeLogin
+  /** Филиал (задача 045: сотрудники общие для филиалов без «Своих сотрудников»). */
+  branch_name?: string
 }
 
 /** Вход сотрудника в его карточке: логин и включён ли он. */

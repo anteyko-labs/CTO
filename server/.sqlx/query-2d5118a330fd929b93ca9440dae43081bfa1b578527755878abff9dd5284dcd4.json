@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, pin_hash from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "pin_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "2d5118a330fd929b93ca9440dae43081bfa1b578527755878abff9dd5284dcd4"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, address, phone, archived, is_main, own_assortment from branches\n           where id = $1 for update",
+  "query": "update branches set name = $2, address = $3, phone = $4, archived = $5, own_assortment = $6,\n               own_staff = $7\n           where id = $1\n           returning id, name, address, phone, archived, is_main, own_assortment, own_staff",
   "describe": {
     "columns": [
       {
@@ -37,11 +37,22 @@
         "ordinal": 6,
         "name": "own_assortment",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "own_staff",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool"
       ]
     },
     "nullable": [
@@ -51,8 +62,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "3cfb814568b19bc868c31eea3e9fde07a9e3b5e705ee94ed64fca71ecc9d1d85"
+  "hash": "9f05056f0d10a3d7da6a576d631de41cb4ac765cf06ef4c9e50ba5ccf1faf914"
 }

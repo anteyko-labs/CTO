@@ -125,7 +125,7 @@ async fn get_days_off(
     let (from, to) = month_range(&mut conn, q.month.as_deref()).await?;
     let offs = days_off_of(&mut conn, user.branch_id, from, to).await?;
     let employees = sqlx::query!(
-        "select id, full_name from employees where branch_id = $1 and active order by full_name",
+        "select id, full_name from employees where branch_id = any(staff_branch_ids($1)) and active order by full_name",
         user.branch_id
     )
     .fetch_all(&mut *conn)
@@ -183,7 +183,7 @@ async fn put_day_off(
     .fetch_one(&mut *tx)
     .await?;
     let emp = sqlx::query!(
-        "select full_name, active from employees where id = $1 and branch_id = $2",
+        "select full_name, active from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
         req.employee_id,
         branch_id
     )
@@ -198,7 +198,7 @@ async fn put_day_off(
     .fetch_one(&mut *tx)
     .await?;
     let staff = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from employees where branch_id = $1 and active"#,
+        r#"select count(*) as "n!" from employees where branch_id = any(staff_branch_ids($1)) and active"#,
         branch_id
     )
     .fetch_one(&mut *tx)

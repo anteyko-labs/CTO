@@ -1085,7 +1085,7 @@ async fn check_employee(
     bypass: &mut Vec<String>,
 ) -> AppResult<()> {
     let r = sqlx::query!(
-        "select full_name, active, is_cashier, is_master from employees where id = $1 and branch_id = $2 and (active or $3)",
+        "select full_name, active, is_cashier, is_master from employees where id = $1 and branch_id = any(staff_branch_ids($2)) and (active or $3)",
         id,
         branch_id,
         offline

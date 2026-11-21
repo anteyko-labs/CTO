@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select exists(select 1 from employees\n                             where id = any($1) and branch_id = $2 and is_cashier) as \"e!\"",
+  "query": "select exists(select 1 from employees\n                             where id = any($1) and branch_id = any(staff_branch_ids($2)) and is_cashier) as \"e!\"",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "4979ee65a16b187e60a37b5ce93f49558d620f438e7671736539704e6b3c5f63"
+  "hash": "c1daf67a0c076cc9a2098bf2654f0b9b3c657969119618c0feaa4f72021f5797"
 }

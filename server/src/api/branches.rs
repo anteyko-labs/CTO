@@ -31,13 +31,26 @@ pub struct BranchOut {
     /// «Свой список товаров» (задача 036): новый товар другого филиала здесь не продаётся.
     #[serde(default)]
     pub own_assortment: bool,
+    /// «Свои сотрудники» (задача 045): без отметки сотрудники общие с такими же филиалами.
+    #[serde(default)]
+    pub own_staff: bool,
+}
+
+/// Филиалы, чьих сотрудников видит филиал (задача 045): все без «Своих сотрудников» или только он.
+/// В SQL то же — функция `staff_branch_ids` (миграция 0125).
+pub async fn staff_branch_ids(conn: &mut PgConnection, branch: Uuid) -> AppResult<Vec<Uuid>> {
+    Ok(
+        sqlx::query_scalar!(r#"select staff_branch_ids($1) as "ids!""#, branch)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
 }
 
 /// Все филиалы: главный первым, закрытые в конце.
 pub async fn all(conn: &mut PgConnection) -> AppResult<Vec<BranchOut>> {
     Ok(sqlx::query_as!(
         BranchOut,
-        r#"select id, name, address, phone, archived, is_main, own_assortment from branches
+        r#"select id, name, address, phone, archived, is_main, own_assortment, own_staff from branches
            order by is_main desc, archived, created_at"#
     )
     .fetch_all(&mut *conn)
@@ -133,6 +146,8 @@ struct CreateReq {
     /// пока владелец не отметит «Есть и в филиале». Без поля — все товары, как было.
     #[serde(default)]
     own_assortment: bool,
+    #[serde(default)]
+    own_staff: bool,
 }
 
 fn clean(name: &str, address: &str, phone: &str) -> AppResult<(String, String, String)> {
@@ -222,12 +237,13 @@ async fn create(
     }
     let id = new_id();
     sqlx::query!(
-        "insert into branches (id, name, address, phone, own_assortment) values ($1, $2, $3, $4, $5)",
+        "insert into branches (id, name, address, phone, own_assortment, own_staff) values ($1, $2, $3, $4, $5, $6)",
         id,
         name,
         address,
         phone,
-        req.own_assortment
+        req.own_assortment,
+        req.own_staff
     )
     .execute(&mut *tx)
     .await
@@ -241,6 +257,7 @@ async fn create(
         archived: false,
         is_main: false,
         own_assortment: req.own_assortment,
+        own_staff: req.own_staff,
     };
     ops::audit(
         &mut tx,
@@ -249,7 +266,7 @@ async fn create(
         "branch",
         Some(id),
         json!({ "name": out.name, "address": out.address, "phone": out.phone,
-                "own_assortment": req.own_assortment }),
+                "own_assortment": req.own_assortment, "own_staff": req.own_staff }),
     )
     .await?;
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
@@ -264,6 +281,7 @@ struct UpdateReq {
     phone: Option<String>,
     archived: Option<bool>,
     own_assortment: Option<bool>,
+    own_staff: Option<bool>,
 }
 
 async fn update(
@@ -276,7 +294,7 @@ async fn update(
     let mut tx = state.pool.begin().await?;
     let before = sqlx::query_as!(
         BranchOut,
-        r#"select id, name, address, phone, archived, is_main, own_assortment from branches
+        r#"select id, name, address, phone, archived, is_main, own_assortment, own_staff from branches
            where id = $1 for update"#,
         id
     )
@@ -296,15 +314,17 @@ async fn update(
     }
     let out = sqlx::query_as!(
         BranchOut,
-        r#"update branches set name = $2, address = $3, phone = $4, archived = $5, own_assortment = $6
+        r#"update branches set name = $2, address = $3, phone = $4, archived = $5, own_assortment = $6,
+               own_staff = $7
            where id = $1
-           returning id, name, address, phone, archived, is_main, own_assortment"#,
+           returning id, name, address, phone, archived, is_main, own_assortment, own_staff"#,
         id,
         name,
         address,
         phone,
         archived,
-        req.own_assortment.unwrap_or(before.own_assortment)
+        req.own_assortment.unwrap_or(before.own_assortment),
+        req.own_staff.unwrap_or(before.own_staff)
     )
     .fetch_one(&mut *tx)
     .await
@@ -316,9 +336,9 @@ async fn update(
     };
     let changes = ops::changes(
         &json!({ "name": before.name, "address": before.address, "phone": before.phone,
-                 "own_assortment": before.own_assortment }),
+                 "own_assortment": before.own_assortment, "own_staff": before.own_staff }),
         &json!({ "name": out.name, "address": out.address, "phone": out.phone,
-                 "own_assortment": out.own_assortment }),
+                 "own_assortment": out.own_assortment, "own_staff": out.own_staff }),
     );
     ops::audit(
         &mut tx,
@@ -623,6 +643,7 @@ mod tests {
             archived: false,
             is_main: false,
             own_assortment: false,
+            own_staff: false,
         }
     }
 

@@ -300,7 +300,7 @@ async fn one_event(conn: &mut PgConnection, branch_id: Uuid, ev: DahuaEvent) -> 
     }
     let employee = match &ev.user_id {
         Some(uid) => sqlx::query!(
-            "select id, full_name from employees where branch_id = $1 and faceid_user_id = $2 and active",
+            "select id, full_name from employees where branch_id = any(staff_branch_ids($1)) and faceid_user_id = $2 and active order by branch_id = $1 desc limit 1",
             branch_id,
             uid
         )
@@ -661,7 +661,7 @@ async fn settings_out(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Set
     let (key, window_min) = device(conn, branch_id).await?;
     let employees = sqlx::query_as!(
         EmployeeId,
-        "select id, full_name, faceid_user_id from employees where branch_id = $1 and active order by full_name",
+        "select id, full_name, faceid_user_id from employees where branch_id = any(staff_branch_ids($1)) and active order by full_name",
         branch_id
     )
     .fetch_all(&mut *conn)
@@ -760,7 +760,7 @@ async fn set_employee_id(
     let mut tx = state.pool.begin().await?;
     require_permission(&mut tx, &ctx.user, PERMISSION).await?;
     let prev = sqlx::query!(
-        "select full_name, faceid_user_id from employees where id = $1 and branch_id = $2 for update",
+        "select full_name, faceid_user_id from employees where id = $1 and branch_id = any(staff_branch_ids($2)) for update",
         id,
         ctx.user.branch_id
     )
@@ -769,7 +769,7 @@ async fn set_employee_id(
     .ok_or(AppError::NotFound)?;
     if let Some(v) = &value {
         let taken = sqlx::query_scalar!(
-            "select full_name from employees where branch_id = $1 and faceid_user_id = $2 and id <> $3",
+            "select full_name from employees where branch_id = any(staff_branch_ids($1)) and faceid_user_id = $2 and id <> $3",
             ctx.user.branch_id,
             v,
             id
@@ -907,7 +907,7 @@ pub async fn timesheet_of(
     let mut people: BTreeMap<(String, Uuid), BTreeMap<NaiveDate, DayOut>> = BTreeMap::new();
     // Работники с номером в терминале — строкой даже без часов.
     for e in sqlx::query!(
-        "select id, full_name from employees where branch_id = $1 and active and faceid_user_id is not null",
+        "select id, full_name from employees where branch_id = any(staff_branch_ids($1)) and active and faceid_user_id is not null",
         branch_id
     )
     .fetch_all(&mut *conn)

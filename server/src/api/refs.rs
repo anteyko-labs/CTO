@@ -85,6 +85,9 @@ struct EmployeeOut {
     /// и меняет вход.
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<EmployeeLogin>,
+    /// Филиал сотрудника (задача 045: сотрудники общие) — только в списке.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_name: Option<String>,
 }
 
 /// Вход сотрудника в карточке: логин и включён ли он.
@@ -121,9 +124,11 @@ async fn list_employees(
     let rows = sqlx::query!(
         r#"select e.id, e.full_name, e.is_cashier, e.is_master, e.active, e.phone,
                   e.pin_hash is not null as "has_pin!",
-                  u.id as "user_id?", u.login as "login?", u.active as "login_active?"
+                  u.id as "user_id?", u.login as "login?", u.active as "login_active?",
+                  b.name as branch_name
            from employees e left join users u on u.employee_id = e.id
-           where e.branch_id = $1 order by e.full_name"#,
+           join branches b on b.id = e.branch_id
+           where e.branch_id = any(staff_branch_ids($1)) order by e.full_name"#,
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -145,6 +150,7 @@ async fn list_employees(
             }),
             _ => None,
         },
+        branch_name: Some(r.branch_name),
     })
     .collect();
     Ok(Json(rows))
@@ -262,6 +268,7 @@ async fn create_employee(
         phone: ctx.user.is_owner().then_some(phone),
         has_pin,
         login: None,
+        branch_name: None,
     }))
 }
 
@@ -286,7 +293,7 @@ async fn update_employee(
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "employees").await?;
     let prev = sqlx::query!(
-        "select full_name, is_cashier, is_master, active, phone from employees where id = $1 and branch_id = $2 for update",
+        "select full_name, is_cashier, is_master, active, phone from employees where id = $1 and branch_id = any(staff_branch_ids($2)) for update",
         id,
         ctx.user.branch_id
     )
@@ -385,6 +392,7 @@ async fn update_employee(
         phone: ctx.user.is_owner().then(|| r.phone.clone()),
         has_pin: r.has_pin,
         login: login_of(&mut tx, ctx.user.is_owner(), id).await?,
+        branch_name: None,
     };
     // Правила по умолчанию — только когда сотрудник становится кассиром и правил кассира у него
     // никогда не было: правка имени и повторное назначение не возвращают закрытый оклад (ADR-062).
@@ -478,6 +486,7 @@ async fn set_pin(
         phone: Some(r.phone),
         has_pin: hash.is_some(),
         login: None,
+        branch_name: None,
     }))
 }
 

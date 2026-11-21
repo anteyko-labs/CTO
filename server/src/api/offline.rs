@@ -243,7 +243,7 @@ async fn snapshot(
     let employees = sqlx::query_as!(
         SnapEmployee,
         r#"select id, full_name, is_cashier, is_master from employees
-           where branch_id = $1 and active order by full_name"#,
+           where branch_id = any(staff_branch_ids($1)) and active order by full_name"#,
         user.branch_id
     )
     .fetch_all(&mut *conn)

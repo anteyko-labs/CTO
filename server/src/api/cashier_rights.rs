@@ -61,7 +61,7 @@ async fn get_rights(
 ) -> AppResult<Json<RightsOut>> {
     user.require_owner()?;
     let r = sqlx::query!(
-        "select full_name, cashier_denied from employees where id = $1 and branch_id = $2",
+        "select full_name, cashier_denied from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
         id,
         user.branch_id
     )
@@ -101,7 +101,7 @@ async fn put_rights(
     }
     let prev = sqlx::query!(
         r#"select full_name, is_cashier, cashier_denied from employees
-           where id = $1 and branch_id = $2 for update"#,
+           where id = $1 and branch_id = any(staff_branch_ids($2)) for update"#,
         id,
         ctx.user.branch_id
     )

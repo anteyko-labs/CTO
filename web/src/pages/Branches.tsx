@@ -32,7 +32,7 @@ interface SettlementEntry {
   user_name: string
 }
 
-type Form = { id?: string; name: string; address: string; phone: string; ownAssortment?: boolean }
+type Form = { id?: string; name: string; address: string; phone: string; ownAssortment?: boolean; ownStaff?: boolean }
 
 export default function Branches() {
   const user = useUser()
@@ -48,10 +48,10 @@ export default function Branches() {
     if (!form) return
     void act.run(async () => {
       if (form.id) {
-        await patch<Branch>(`/branches/${form.id}`, { name: form.name, address: form.address, phone: form.phone, own_assortment: Boolean(form.ownAssortment) })
+        await patch<Branch>(`/branches/${form.id}`, { name: form.name, address: form.address, phone: form.phone, own_assortment: Boolean(form.ownAssortment), own_staff: Boolean(form.ownStaff) })
         toast('Филиал сохранён')
       } else {
-        await post<Branch>('/branches', { op_id: opId, name: form.name, address: form.address, phone: form.phone, own_assortment: Boolean(form.ownAssortment) })
+        await post<Branch>('/branches', { op_id: opId, name: form.name, address: form.address, phone: form.phone, own_assortment: Boolean(form.ownAssortment), own_staff: Boolean(form.ownStaff) })
         setOpId(newOpId())
         toast('Филиал заведён: кассы, счета и настройки — как в главном')
       }
@@ -111,7 +111,7 @@ export default function Branches() {
                   <RowMenu
                     items={[
                       ...(b.id !== user.branch_id ? [{ label: 'Перейти в филиал', onClick: () => switchBranch(b.id) }] : []),
-                      { label: 'Изменить', onClick: () => setForm({ id: b.id, name: b.name, address: b.address, phone: b.phone, ownAssortment: Boolean(b.own_assortment) }) },
+                      { label: 'Изменить', onClick: () => setForm({ id: b.id, name: b.name, address: b.address, phone: b.phone, ownAssortment: Boolean(b.own_assortment), ownStaff: Boolean(b.own_staff) }) },
                       ...(b.is_main
                         ? []
                         : b.archived
@@ -191,6 +191,7 @@ export default function Branches() {
             </Field>
             <div data-testid="branch-own-assortment">
               <Checkbox label="Свой список товаров" checked={Boolean(form.ownAssortment)} onChange={(v) => setForm({ ...form, ownAssortment: v })} />
+              <Checkbox label="Свои сотрудники" checked={Boolean(form.ownStaff)} onChange={(v) => setForm({ ...form, ownStaff: v })} />
               <p className="mt-1 text-xs text-slate-500">
                 {form.id
                   ? 'Отмечено — новые товары других филиалов здесь не продаются, пока в карточке товара не отметить «Продаётся в филиалах». Уже заведённые товары не меняются.'

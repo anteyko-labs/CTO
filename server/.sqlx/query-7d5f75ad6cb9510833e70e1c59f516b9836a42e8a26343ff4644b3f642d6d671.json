@@ -1,12 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select full_name, active from employees where id = $1 and branch_id = $2",
+  "query": "select is_cashier, active from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "full_name",
-        "type_info": "Text"
+        "name": "is_cashier",
+        "type_info": "Bool"
       },
       {
         "ordinal": 1,
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "d2dbf81ad3d5ed501519cb5611b8ccb381903fded0daf2f3bd7ca1070966ef28"
+  "hash": "7d5f75ad6cb9510833e70e1c59f516b9836a42e8a26343ff4644b3f642d6d671"
 }

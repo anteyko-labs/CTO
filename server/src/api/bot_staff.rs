@@ -218,7 +218,7 @@ pub async fn of_login(
     };
     let r = sqlx::query!(
         "select id, branch_id, full_name, is_cashier, is_master from employees
-         where id = $1 and branch_id = $2 and active",
+         where id = $1 and branch_id = any(staff_branch_ids($2)) and active",
         id,
         user.branch_id
     )

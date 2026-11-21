@@ -1111,7 +1111,7 @@ async fn open_shift(
         return Err(AppError::Conflict("смена уже открыта".into()));
     }
     let cashier = sqlx::query!(
-        "select is_cashier, active from employees where id = $1 and branch_id = $2",
+        "select is_cashier, active from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
         cashier_id,
         branch_id
     )
@@ -1237,7 +1237,7 @@ async fn close_shift(
     let to_cashier = !paid.is_empty()
         && sqlx::query_scalar!(
             r#"select exists(select 1 from employees
-                             where id = any($1) and branch_id = $2 and is_cashier) as "e!""#,
+                             where id = any($1) and branch_id = any(staff_branch_ids($2)) and is_cashier) as "e!""#,
             &paid,
             branch_id
         )

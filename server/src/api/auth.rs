@@ -179,7 +179,7 @@ pub(crate) async fn check_cashier_pin(
     p: CashierPin<'_>,
 ) -> AppResult<String> {
     let emp = sqlx::query!(
-        "select full_name, pin_hash from employees where id = $1 and branch_id = $2",
+        "select full_name, pin_hash from employees where id = $1 and branch_id = any(staff_branch_ids($2))",
         p.employee_id,
         ctx.user.branch_id
     )

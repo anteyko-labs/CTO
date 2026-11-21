@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select full_name, is_cashier, is_master, active, phone from employees where id = $1 and branch_id = $2 for update",
+  "query": "select full_name, is_cashier, is_master, active, phone from employees where id = $1 and branch_id = any(staff_branch_ids($2)) for update",
   "describe": {
     "columns": [
       {
@@ -43,5 +43,5 @@
       false
     ]
   },
-  "hash": "633ae486a2e78cf5d658344bbe311a308c52e04df31d572c0e0a483146bafe39"
+  "hash": "e64eebe8adac9fd1c8217f2f5e9df8707eeb71ed021fb250409b05e1ed9c1646"
 }

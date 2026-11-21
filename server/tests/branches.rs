@@ -669,6 +669,12 @@ fn leaks(body: &str, a_ids: &HashSet<String>, own: Option<&str>) -> Vec<String> 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn admin_of_branch_b_sees_and_changes_nothing_of_branch_a(pool: PgPool) {
     let w = world(pool.clone()).await;
+    // Полная изоляция — у филиала со «Своими сотрудниками» (задача 045: по умолчанию общие).
+    sqlx::query("update branches set own_staff = true where id = $1")
+        .bind(w.b)
+        .execute(&pool)
+        .await
+        .unwrap();
     fill_branch(&w, w.a, &w.admin_a, SECRET).await;
     fill_branch(&w, w.b, &w.admin_b, "Б").await;
     let ids = branch_ids(&pool, w.a).await;

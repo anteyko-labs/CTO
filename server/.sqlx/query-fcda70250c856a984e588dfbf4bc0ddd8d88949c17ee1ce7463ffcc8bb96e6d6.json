@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select staff_branch_ids($1) as \"ids!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ids!",
+        "type_info": "UuidArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fcda70250c856a984e588dfbf4bc0ddd8d88949c17ee1ce7463ffcc8bb96e6d6"
+}

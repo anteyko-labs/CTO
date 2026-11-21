@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, full_name, faceid_user_id from employees where branch_id = $1 and active order by full_name",
+  "query": "select id, full_name, is_cashier, is_master from employees\n           where branch_id = any(staff_branch_ids($1)) and active order by full_name",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,13 @@
       },
       {
         "ordinal": 2,
-        "name": "faceid_user_id",
-        "type_info": "Text"
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_master",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -27,8 +32,9 @@
     "nullable": [
       false,
       false,
-      true
+      false,
+      false
     ]
   },
-  "hash": "af389454a48ebb3e7da1327ecdea7adfc0cccf9f8521bd2b607baacab0c4e873"
+  "hash": "f11ed1653dae3e9fd12c1a5f6922389cbd4b32599225954395e6c35af0e2fe8e"
 }

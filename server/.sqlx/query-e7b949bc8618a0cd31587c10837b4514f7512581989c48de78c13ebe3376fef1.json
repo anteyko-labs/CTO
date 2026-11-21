@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, full_name from employees where branch_id = $1 and active and faceid_user_id is not null",
+  "query": "select id, full_name from employees where branch_id = any(staff_branch_ids($1)) and active order by full_name",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "e4f87865be84a464b328fc4df445e4d087475b1f7a75f6d21fb685b53ff9f645"
+  "hash": "e7b949bc8618a0cd31587c10837b4514f7512581989c48de78c13ebe3376fef1"
 }

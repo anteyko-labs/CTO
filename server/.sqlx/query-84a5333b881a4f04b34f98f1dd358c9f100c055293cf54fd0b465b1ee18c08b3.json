@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select count(*) as \"n!\" from employees where branch_id = $1 and active",
+  "query": "select count(*) as \"n!\" from employees where branch_id = any(staff_branch_ids($1)) and active",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       null
     ]
   },
-  "hash": "d41765144bd91ae4958ae2460c350595f29a747287f3246edeb54f94e1f9cba0"
+  "hash": "84a5333b881a4f04b34f98f1dd358c9f100c055293cf54fd0b465b1ee18c08b3"
 }

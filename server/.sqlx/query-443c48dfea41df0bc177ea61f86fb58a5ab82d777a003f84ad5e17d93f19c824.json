@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select e.id, e.full_name, e.is_cashier, e.is_master, e.active, e.phone,\n                  e.pin_hash is not null as \"has_pin!\",\n                  u.id as \"user_id?\", u.login as \"login?\", u.active as \"login_active?\"\n           from employees e left join users u on u.employee_id = e.id\n           where e.branch_id = $1 order by e.full_name",
+  "query": "select e.id, e.full_name, e.is_cashier, e.is_master, e.active, e.phone,\n                  e.pin_hash is not null as \"has_pin!\",\n                  u.id as \"user_id?\", u.login as \"login?\", u.active as \"login_active?\",\n                  b.name as branch_name\n           from employees e left join users u on u.employee_id = e.id\n           join branches b on b.id = e.branch_id\n           where e.branch_id = any(staff_branch_ids($1)) order by e.full_name",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,11 @@
         "ordinal": 9,
         "name": "login_active?",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "branch_name",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -69,8 +74,9 @@
       null,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "9f25dc504b7bce4e96fb4d8f4b670df565609db7043e2686699343353b465648"
+  "hash": "443c48dfea41df0bc177ea61f86fb58a5ab82d777a003f84ad5e17d93f19c824"
 }
