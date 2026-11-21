@@ -68,7 +68,7 @@ fn new_key() -> String {
 /// Что взято из одного события терминала.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DahuaEvent {
-    /// Номер лица в терминале (UserID / PersonID / CardName).
+    /// Номер лица в терминале (Dahua: UserID / PersonID / CardName; Hikvision: employeeNoString).
     pub user_id: Option<String>,
     /// Терминал сказал «не узнал» (Status = 0).
     pub failed: bool,
@@ -154,12 +154,33 @@ pub fn parse_dahua(body: &[u8]) -> Vec<DahuaEvent> {
             _ => vec![part],
         };
         for ev in list {
-            let user_id = find(&ev, &["UserID", "PersonID", "CardName"]).and_then(|v| scalar(&v));
+            let user_id = find(
+                &ev,
+                &[
+                    "UserID",
+                    "PersonID",
+                    "CardName",
+                    "employeeNoString",
+                    "employeeNo",
+                ],
+            )
+            .and_then(|v| scalar(&v));
             let failed = find(&ev, &["Status"])
                 .and_then(|v| scalar(&v))
                 .is_some_and(|s| s == "0");
-            let when = find(&ev, &["UTC", "CreateTime", "RecNo", "Time", "EventTime"])
-                .and_then(|v| scalar(&v));
+            let when = find(
+                &ev,
+                &[
+                    "UTC",
+                    "CreateTime",
+                    "RecNo",
+                    "Time",
+                    "EventTime",
+                    "serialNo",
+                    "dateTime",
+                ],
+            )
+            .and_then(|v| scalar(&v));
             let fingerprint = match &when {
                 Some(t) => format!("{}|{t}", user_id.as_deref().unwrap_or("")),
                 None => ev.to_string(),
@@ -1045,6 +1066,16 @@ mod tests {
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].user_id.as_deref(), Some("12"));
         assert!(!e[0].failed);
+    }
+
+    #[test]
+    fn hikvision_access_event() {
+        let b = b"--MIME_boundary\r\nContent-Disposition: form-data; name=\"event_log\"\r\nContent-Type: application/json\r\n\r\n{\"ipAddress\":\"192.168.150.4\",\"dateTime\":\"2026-11-21T19:40:00+06:00\",\"eventType\":\"AccessControllerEvent\",\"AccessControllerEvent\":{\"majorEventType\":5,\"subEventType\":75,\"employeeNoString\":\"12\",\"serialNo\":345}}\r\n--MIME_boundary--";
+        let e = parse_dahua(b);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].user_id.as_deref(), Some("12"));
+        assert!(!e[0].failed);
+        assert_eq!(e[0].fingerprint, "12|2026-11-21T19:40:00+06:00");
     }
 
     #[test]
