@@ -119,6 +119,20 @@ pub struct CashierSettings {
     /// «Грузовая / Легковая» нового чека (задача 040 A, ADR-205): `car` или `truck`; кассир
     /// переключает на каждом чеке. По умолчанию — легковая (как было).
     pub vehicle_kind_default: String,
+    /// «Услуги легковых» и «Услуги грузовых» на кассе филиала (задача 044): выключенный вид не
+    /// показывается и не принимается в чек. По умолчанию оба включены (I21).
+    pub services_car: bool,
+    pub services_truck: bool,
+}
+
+impl CashierSettings {
+    /// Включён ли на кассе филиала вид услуг `car` / `truck` (задача 044).
+    pub fn services_kind_on(&self, kind: &str) -> bool {
+        match kind {
+            "truck" => self.services_truck,
+            _ => self.services_car,
+        }
+    }
 }
 
 impl Default for CashierSettings {
@@ -149,6 +163,8 @@ impl Default for CashierSettings {
             repay_other_branches: false,
             services_free: false,
             vehicle_kind_default: "car".into(),
+            services_car: true,
+            services_truck: true,
         }
     }
 }
@@ -202,6 +218,13 @@ pub fn normalize(mut s: CashierSettings) -> AppResult<CashierSettings> {
     }
     if !is_vehicle_kind(&s.vehicle_kind_default) {
         return Err(invalid("вид машины — car или truck"));
+    }
+    if !s.services_car && !s.services_truck {
+        return Err(invalid("Включите хотя бы один вид услуг"));
+    }
+    // Новый чек — вид, услуги которого включены в филиале (задача 044).
+    if !s.services_kind_on(&s.vehicle_kind_default) {
+        s.vehicle_kind_default = if s.services_car { "car" } else { "truck" }.into();
     }
     s.discount_quick.sort_unstable();
     s.discount_quick.dedup();
@@ -335,6 +358,27 @@ mod tests {
         );
         let parsed: CashierSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(normalize(parsed).unwrap(), d);
+    }
+
+    #[test]
+    fn service_kinds() {
+        let d = CashierSettings::default();
+        assert!(d.services_car && d.services_truck);
+        assert!(
+            normalize(CashierSettings {
+                services_car: false,
+                services_truck: false,
+                ..CashierSettings::default()
+            })
+            .is_err()
+        );
+        let s = normalize(CashierSettings {
+            services_car: false,
+            ..CashierSettings::default()
+        })
+        .unwrap();
+        assert_eq!(s.vehicle_kind_default, "truck");
+        assert!(s.services_kind_on("truck") && !s.services_kind_on("car"));
     }
 
     #[test]

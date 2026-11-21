@@ -307,8 +307,41 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
             </select>
           </label>
           <p className="mt-2 text-sm text-slate-500">
-            С этого значения начинается каждый чек в этом филиале; кассир переключает ползунок «Грузовая / Легковая» на кассе для каждого чека. Только
-            отметка в чеке и масляной книжке: цены не меняются.
+            С этого значения начинается каждый чек в этом филиале; кассир переключает ползунок «Грузовая / Легковая» на кассе для каждого чека. Касса
+            показывает услуги только этого вида машины, цены не меняются.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-4 text-sm">
+            {(
+              [
+                ['services_car', 'Услуги легковых'],
+                ['services_truck', 'Услуги грузовых'],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="inline-flex items-center gap-2">
+                <input
+                  id={key.replace('_', '-')}
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={s[key]}
+                  // Хотя бы один вид остаётся включённым; новый чек — вид с включёнными услугами.
+                  onChange={(e) => {
+                    const next = { ...s, [key]: e.target.checked }
+                    if (!next.services_car && !next.services_truck) return
+                    set({
+                      [key]: e.target.checked,
+                      ...(!e.target.checked && s.vehicle_kind_default === (key === 'services_car' ? 'car' : 'truck')
+                        ? { vehicle_kind_default: key === 'services_car' ? 'truck' : 'car' }
+                        : {}),
+                    })
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <p className="mt-2 text-sm text-slate-500">
+            Выключенный вид в этом филиале не показывается на кассе и не пробивается: кнопка «Грузовая / Легковая» оставляет только включённый. Хотя бы
+            один вид включён.
           </p>
           <label className="mt-3 inline-flex items-center gap-2 text-sm">
             <input

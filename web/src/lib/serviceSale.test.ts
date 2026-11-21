@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientNamed, isDiscount, kindChoices, looksLikePlate, oilAmountText, oilEnough, returnWithholds, serviceClientMissing, servicePrice, servicePriceText, withholdAmount } from './serviceSale'
+import { clientNamed, isDiscount, kindChoices, kindOn, looksLikePlate, oilAmountText, oilEnough, returnWithholds, serviceClientMissing, serviceFits, servicePrice, servicePriceText, vehicleKindChoices, vehicleKindForText, withholdAmount, wrongKindServices } from './serviceSale'
 import type { Party } from './types'
 
 const money = (v: number) => `${v / 100} с`
@@ -120,5 +120,34 @@ describe('окно «Вид замены» (SPEC-36 §5)', () => {
       { name: 'Развал', book_slot: undefined },
     ]
     expect(kindChoices(list).map((s) => s.name)).toEqual(['Замена масла в моторе', 'Замена масла в коробке', 'Мойка', 'Развал'])
+  })
+})
+
+describe('услуги по виду машины (задача 044)', () => {
+  const both = { services_car: true, services_truck: true }
+  const noCar = { services_car: false, services_truck: true }
+  const car = { name: 'Замена масла', vehicle_kind: 'car' as const }
+  const old: { name: string; vehicle_kind?: 'car' | 'truck' } = { name: 'Старая' }
+  const truck = { name: 'Замена масла грузовой', vehicle_kind: 'truck' as const }
+
+  it('касса показывает услуги вида машины чека', () => {
+    expect(serviceFits(car, 'car', both)).toBe(true)
+    expect(serviceFits(old, 'car', both)).toBe(true)
+    expect(serviceFits(car, 'truck', both)).toBe(false)
+    expect(serviceFits(truck, 'truck', both)).toBe(true)
+  })
+
+  it('выключенный в филиале вид не показывается и не выбирается', () => {
+    expect(serviceFits(car, 'car', noCar)).toBe(false)
+    expect(vehicleKindChoices(noCar)).toEqual(['truck'])
+    expect(vehicleKindChoices(both)).toEqual(['truck', 'car'])
+    expect(kindOn('truck', noCar)).toBe(true)
+  })
+
+  it('переключили вид — неподходящие строки чека для предупреждения', () => {
+    expect(wrongKindServices([car, truck, old], 'truck', both).map((s) => s.name)).toEqual(['Замена масла', 'Старая'])
+    expect(wrongKindServices([truck], 'truck', both)).toEqual([])
+    expect(vehicleKindForText('truck')).toBe('для грузовых')
+    expect(vehicleKindForText(undefined)).toBe('для легковых')
   })
 })

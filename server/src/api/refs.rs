@@ -510,6 +510,8 @@ struct ServiceOut {
     interval_days: Option<i32>,
     /// Доливка — продаётся на вынос, без клиента и книжки (ADR-118).
     takeaway: bool,
+    /// Для легковых (`car`) или грузовых (`truck`), задача 044.
+    vehicle_kind: String,
 }
 
 impl ServiceOut {
@@ -617,7 +619,7 @@ async fn list_services(
 ) -> AppResult<Json<Vec<ServiceOut>>> {
     let rows = sqlx::query_as!(
         ServiceOut,
-        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days, takeaway from services order by name"
+        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days, takeaway, vehicle_kind from services order by name"
     )
     .fetch_all(&state.pool)
     .await?;
@@ -648,6 +650,18 @@ struct ServiceReq {
     /// Доливка на вынос (ADR-118); не прислан — по названию («долив»).
     #[serde(default)]
     takeaway: Option<bool>,
+    /// Вид машины услуги (задача 044); не прислан — легковая.
+    #[serde(default)]
+    vehicle_kind: Option<String>,
+}
+
+/// Вид машины услуги (задача 044): `car` или `truck`, не прислан — легковая.
+fn service_vehicle_kind(k: Option<&str>) -> AppResult<&'static str> {
+    match k {
+        None | Some("car") => Ok("car"),
+        Some("truck") => Ok("truck"),
+        Some(_) => Err(invalid("вид машины услуги — car или truck")),
+    }
 }
 
 /// Услуга-доливка по названию (ADR-118, как в миграции 0070): слово «долив».
@@ -708,6 +722,7 @@ async fn create_service(
         }
     }
     let takeaway = req.takeaway.unwrap_or_else(|| takeaway_by_name(&name));
+    let vehicle_kind = service_vehicle_kind(req.vehicle_kind.as_deref())?;
     check_service_book(
         req.book_slot.as_deref(),
         req.book_interval_km,
@@ -729,8 +744,8 @@ async fn create_service(
     };
     sqlx::query!(
         r#"insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id,
-                                 book_slot, book_interval_km, book_interval_days, takeaway)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                                 book_slot, book_interval_km, book_interval_days, takeaway, vehicle_kind)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         id,
         ctx.user.branch_id,
         name,
@@ -741,7 +756,8 @@ async fn create_service(
         book_slot,
         req.book_interval_km,
         req.book_interval_days,
-        takeaway
+        takeaway,
+        vehicle_kind
     )
     .execute(&mut *tx)
     .await?;
@@ -759,7 +775,7 @@ async fn create_service(
         "service",
         Some(id),
         json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil, "oil_category_id": oil_category_id,
-                "book_slot": book_slot, "book_km": req.book_interval_km, "book_days": req.book_interval_days, "takeaway": takeaway }),
+                "book_slot": book_slot, "book_km": req.book_interval_km, "book_days": req.book_interval_days, "takeaway": takeaway, "vehicle_kind": vehicle_kind }),
     )
     .await?;
     tx.commit().await?;
@@ -778,6 +794,7 @@ async fn create_service(
             interval_km: None,
             interval_days: None,
             takeaway,
+            vehicle_kind: vehicle_kind.to_string(),
         }
         .with_default_interval(),
     ))
@@ -788,6 +805,9 @@ async fn create_service(
 pub struct ServiceImportItem {
     pub name: String,
     pub price_tyiyn: i64,
+    /// Вид машины (задача 044); нет — легковая.
+    #[serde(default)]
+    pub vehicle_kind: Option<String>,
 }
 
 /// Загрузка услуг списком (SPEC-02 §услуги, проверка 20.10.2026): одна операция с `op_id`.
@@ -844,7 +864,8 @@ pub async fn import_services_tx(
             return Err(invalid("суммы не отрицательны"));
         }
         ops::check_amount(i.price_tyiyn)?;
-        items.push((name, i.price_tyiyn));
+        let kind = service_vehicle_kind(i.vehicle_kind.as_deref())?;
+        items.push((name, i.price_tyiyn, kind));
     }
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
@@ -857,21 +878,22 @@ pub async fn import_services_tx(
     let default_fee = crate::api::sales::oil_change_fee(&mut *conn, ctx.user.branch_id).await?;
     let mut created = 0i64;
     let mut skipped = Vec::new();
-    for (name, price) in items {
+    for (name, price, kind) in items {
         if !seen.insert(name.to_lowercase()) {
             skipped.push(name);
             continue;
         }
         let id = new_id();
         sqlx::query!(
-            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot, takeaway) values ($1, $2, $3, $4, $5, $6, $7)",
+            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot, takeaway, vehicle_kind) values ($1, $2, $3, $4, $5, $6, $7, $8)",
             id,
             ctx.user.branch_id,
             name,
             price,
             default_fee,
             crate::api::oil_book::service_slot_by_name(&name),
-            takeaway_by_name(&name)
+            takeaway_by_name(&name),
+            kind
         )
         .execute(&mut *conn)
         .await?;
@@ -881,7 +903,7 @@ pub async fn import_services_tx(
             "service.create",
             "service",
             Some(id),
-            json!({ "name": name, "price": price, "fee": 0, "import": true }),
+            json!({ "name": name, "price": price, "fee": 0, "import": true, "vehicle_kind": kind }),
         )
         .await?;
         created += 1;
@@ -909,6 +931,8 @@ struct ServicePatch {
     book_interval_reset: bool,
     /// Доливка на вынос (ADR-118): меняет владелец.
     takeaway: Option<bool>,
+    /// Вид машины (задача 044): меняет владелец.
+    vehicle_kind: Option<String>,
 }
 
 async fn update_service(
@@ -941,7 +965,7 @@ async fn update_service(
     // Строку книжки и интервал услуги меняет владелец (SPEC-34 §1).
     if !ctx.user.is_owner() {
         let cur = sqlx::query!(
-            "select book_slot, book_interval_km, book_interval_days, takeaway from services where id = $1",
+            "select book_slot, book_interval_km, book_interval_days, takeaway, vehicle_kind from services where id = $1",
             id
         )
         .fetch_optional(&mut *tx)
@@ -949,6 +973,10 @@ async fn update_service(
         .ok_or(AppError::NotFound)?;
         if req.book_slot.as_ref().is_some_and(|s| *s != cur.book_slot)
             || req.takeaway.is_some_and(|t| t != cur.takeaway)
+            || req
+                .vehicle_kind
+                .as_ref()
+                .is_some_and(|k| *k != cur.vehicle_kind)
             || req.book_interval_reset
             || req
                 .book_interval_km
@@ -993,6 +1021,10 @@ async fn update_service(
     if let Some(c) = req.oil_category_id {
         check_oil_category(&mut tx, c).await?;
     }
+    let vehicle_kind = match req.vehicle_kind.as_deref() {
+        Some(k) => Some(service_vehicle_kind(Some(k))?),
+        None => None,
+    };
     let mut out = sqlx::query_as!(
         ServiceOut,
         r#"update services set name = coalesce($2, name), price_tyiyn = coalesce($3, price_tyiyn),
@@ -1002,9 +1034,10 @@ async fn update_service(
              book_slot = coalesce($8, book_slot),
              book_interval_km = case when $11 then null else coalesce($9, book_interval_km) end,
              book_interval_days = case when $11 then null else coalesce($10, book_interval_days) end,
-             takeaway = coalesce($12, takeaway)
+             takeaway = coalesce($12, takeaway),
+             vehicle_kind = coalesce($13, vehicle_kind)
            where id = $1
-           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days, takeaway"#,
+           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days, takeaway, vehicle_kind"#,
         id,
         name,
         req.price_tyiyn,
@@ -1016,7 +1049,8 @@ async fn update_service(
         req.book_interval_km,
         req.book_interval_days,
         req.book_interval_reset,
-        req.takeaway
+        req.takeaway,
+        vehicle_kind
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -1039,7 +1073,7 @@ async fn update_service(
         "service",
         Some(id),
         json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "free_with_oil": out.free_with_oil, "oil_category_id": out.oil_category_id, "active": out.active,
-                "book_slot": out.book_slot, "book_km": out.book_interval_km, "book_days": out.book_interval_days, "takeaway": out.takeaway }),
+                "book_slot": out.book_slot, "book_km": out.book_interval_km, "book_days": out.book_interval_days, "takeaway": out.takeaway, "vehicle_kind": out.vehicle_kind }),
     )
     .await?;
     tx.commit().await?;

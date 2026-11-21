@@ -270,6 +270,19 @@ impl Point {
         ok(&self.app, "POST", "/api/v1/sales", &self.owner, body).await
     }
 
+    /// Вид машины услуги (задача 044).
+    async fn service_kind(&self, key: &str, kind: &str) -> Value {
+        let id = self.services[key]["id"].as_str().unwrap().to_string();
+        ok(
+            &self.app,
+            "PATCH",
+            &format!("/api/v1/services/{id}"),
+            &self.owner,
+            json!({ "vehicle_kind": kind }),
+        )
+        .await
+    }
+
     /// Тело чека «В сервис» — как `sell`, без отправки.
     fn sale_body(
         &self,
@@ -1727,6 +1740,8 @@ async fn truck_sale_marks_check_and_splits_filters(pool: PgPool) {
         ("fuel_f2", "piece", 1),
     ];
     let next = || json!([{ "service_id": p.services["oil"]["id"], "next_mileage": 260_000 }]);
+    // Услуга грузовой машины — только для грузовых (задача 044).
+    p.service_kind("oil", "truck").await;
     // Без поля — значение филиала: грузовая.
     let truck = p.sell(250_000, &goods, &["oil"], next()).await;
     assert_eq!(truck["vehicle_kind"], "truck");
@@ -1755,6 +1770,7 @@ async fn truck_sale_marks_check_and_splits_filters(pool: PgPool) {
         .unwrap();
     assert_eq!(rec["vehicle_kind"], "truck");
     // Присланное — как есть: легковая, фильтры одной строки — вместе.
+    p.service_kind("oil", "car").await;
     let mut body = p.sale_body(251_000, &goods, &["oil"], next());
     body["vehicle_kind"] = json!("car");
     let car = ok(&p.app, "POST", "/api/v1/sales", &p.owner, body).await;
@@ -1950,4 +1966,165 @@ async fn filter_placed_as_gearbox_or_cabin(pool: PgPool) {
                 .unwrap();
         assert_eq!(n, 1, "{name}");
     }
+}
+
+/// Задача 044: услуга для легковых или грузовых; касса филиала включает виды услуг.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn services_by_vehicle_kind(pool: PgPool) {
+    let p = Point::new(pool.clone()).await;
+    // Без вида — легковая; вид меняется правкой и задаётся при создании.
+    let list = |v: &Value, name: &str| {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap()["vehicle_kind"]
+            .clone()
+    };
+    let (_, all) = call(&p.app, "GET", "/api/v1/services", &p.owner, None).await;
+    assert_eq!(list(&all, "Замена масла в моторе"), "car");
+    let truck = ok(
+        &p.app,
+        "POST",
+        "/api/v1/services",
+        &p.owner,
+        json!({ "name": "Замена масла грузовой", "price_tyiyn": 50_000, "vehicle_kind": "truck" }),
+    )
+    .await;
+    assert_eq!(truck["vehicle_kind"], "truck");
+    let (s, v) = call(
+        &p.app,
+        "POST",
+        "/api/v1/services",
+        &p.owner,
+        Some(json!({ "name": "Х", "price_tyiyn": 0, "vehicle_kind": "bus" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let patched = p.service_kind("bridge", "truck").await;
+    assert_eq!(patched["vehicle_kind"], "truck");
+    // Импорт: колонка вида, без неё — легковая.
+    ok(
+        &p.app,
+        "POST",
+        "/api/v1/services/import",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "items": [
+            { "name": "Мойка грузовой", "price_tyiyn": 10_000, "vehicle_kind": "truck" },
+            { "name": "Мойка", "price_tyiyn": 5_000 }
+        ] }),
+    )
+    .await;
+    let (_, all) = call(&p.app, "GET", "/api/v1/services", &p.owner, None).await;
+    assert_eq!(list(&all, "Мойка грузовой"), "truck");
+    assert_eq!(list(&all, "Мойка"), "car");
+    // Офлайн-снимок отдаёт вид услуги.
+    let (s, snap) = call(&p.app, "GET", "/api/v1/offline/snapshot", &p.owner, None).await;
+    assert_eq!(s, StatusCode::OK, "{snap}");
+    assert_eq!(list(&snap["services"], "Мойка грузовой"), "truck");
+
+    // Легковая услуга в чеке грузовой — 422.
+    let mut body = p.sale_body(100_000, &[], &["oil"], json!([]));
+    body["vehicle_kind"] = json!("truck");
+    let (s, v) = call(
+        &p.app,
+        "POST",
+        "/api/v1/sales",
+        &p.owner,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v.to_string().contains("для легковых"), "{v}");
+    // Та же легковая — проходит.
+    body["vehicle_kind"] = json!("car");
+    body["op_id"] = json!(Uuid::now_v7());
+    ok(&p.app, "POST", "/api/v1/sales", &p.owner, body).await;
+
+    // Оба вида выключить нельзя; выключили легковые — новый чек грузовой.
+    let (s, v) = call(
+        &p.app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        &p.owner,
+        Some(json!({ "op_id": Uuid::now_v7(), "services_car": false, "services_truck": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let cs = ok(
+        &p.app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "services_car": false, "sale_allow_negative": true }),
+    )
+    .await;
+    assert_eq!(cs["vehicle_kind_default"], "truck");
+    assert_eq!(cs["services_truck"], true);
+    // Легковая услуга в легковом чеке филиала, где легковые выключены, — 422.
+    let mut body = p.sale_body(101_000, &[], &["oil"], json!([]));
+    body["vehicle_kind"] = json!("car");
+    let (s, v) = call(
+        &p.app,
+        "POST",
+        "/api/v1/sales",
+        &p.owner,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    // Чек без сети уже состоялся — проводится, причина владельцу.
+    body["offline"] = json!(true);
+    body["op_id"] = json!(Uuid::now_v7());
+    let sale = ok(&p.app, "POST", "/api/v1/sales", &p.owner, body).await;
+    let why: Vec<String> =
+        sqlx::query_scalar("select data::text from audit_log where entity_id = $1")
+            .bind(Uuid::parse_str(sale["id"].as_str().unwrap()).unwrap())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        why.iter().any(|w| w.contains("для легковых")),
+        "причина в журнале: {why:?}"
+    );
+    // Грузовая услуга в грузовом чеке — проходит.
+    let mut body = p.sale_body(102_000, &[], &["bridge"], json!([]));
+    body["vehicle_kind"] = json!("truck");
+    ok(&p.app, "POST", "/api/v1/sales", &p.owner, body).await;
+}
+
+/// Задача 044: миграция — в Айкосе легковые услуги выключены, в остальных — грузовые.
+#[sqlx::test(migrations = false)]
+async fn service_kinds_migration(pool: PgPool) {
+    let m = &avtodom_server::MIGRATOR;
+    for mig in m.iter().filter(|x| x.version < 123) {
+        sqlx::raw_sql(&mig.sql).execute(&pool).await.unwrap();
+    }
+    let aikos = Uuid::now_v7();
+    let main = Uuid::now_v7();
+    sqlx::query("insert into branches (id, name) values ($1, 'Айкос'), ($2, 'Автодом')")
+        .bind(aikos)
+        .bind(main)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mig = m.iter().find(|x| x.version == 123).unwrap();
+    sqlx::raw_sql(&mig.sql).execute(&pool).await.unwrap();
+    let get = |b: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Value>(
+                "select value from settings where branch_id = $1 and key = 'cashier'",
+            )
+            .bind(b)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let a = get(aikos).await;
+    assert_eq!(a["services_car"], false);
+    assert_eq!(a["vehicle_kind_default"], "truck");
+    let d = get(main).await;
+    assert_eq!(d["services_truck"], false);
 }

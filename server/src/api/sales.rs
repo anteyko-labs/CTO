@@ -477,6 +477,38 @@ async fn takeaway_rejects(
     .await?)
 }
 
+/// Услуги чека не того вида машины или вида, выключенного в кассе филиала (задача 044).
+async fn vehicle_kind_rejects(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    prepared: &[Prepared],
+    vehicle_kind: &str,
+) -> AppResult<Vec<String>> {
+    let ids: Vec<Uuid> = prepared.iter().filter_map(|p| p.service_id).collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cs = crate::api::cashier_settings::load(conn, branch_id).await?;
+    let rows = sqlx::query!(
+        "select name, vehicle_kind from services where id = any($1) order by name",
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|r| r.vehicle_kind != vehicle_kind || !cs.services_kind_on(&r.vehicle_kind))
+        .map(|r| {
+            let kind = if r.vehicle_kind == "truck" {
+                "грузовых"
+            } else {
+                "легковых"
+            };
+            format!("Услуга «{}» — для {kind}", r.name)
+        })
+        .collect())
+}
+
 async fn prepare_line(
     conn: &mut PgConnection,
     branch_id: Uuid,
@@ -1667,6 +1699,16 @@ pub async fn post_sale_core(
             bypass.push(format!("на вынос с услугой «{}»", names.join("», «")));
         }
     }
+    // Услуги по виду машины (задача 044): вид услуги — как у чека и включён в кассе филиала.
+    // Чек без сети уже состоялся — проводится с причиной владельцу (I10).
+    let vehicle_kind = sale_vehicle_kind(conn, branch_id, &req).await?;
+    let wrong = vehicle_kind_rejects(conn, branch_id, &prepared, &vehicle_kind).await?;
+    if !wrong.is_empty() {
+        if !lenient {
+            return Err(invalid(wrong.join("; ")));
+        }
+        bypass.extend(wrong);
+    }
     // Мастер не выбран (доливка на вынос, ADR-118) — ставки мастеру нет ни в строках, ни в чеке.
     if req.master_id.is_none() {
         for p in &mut prepared {
@@ -1899,7 +1941,6 @@ pub async fn post_sale_core(
             }
         }
     }
-    let vehicle_kind = sale_vehicle_kind(conn, branch_id, &req).await?;
     let number = ops::next_counter(conn, branch_id, "sale").await?;
     let id = new_id();
     sqlx::query!(

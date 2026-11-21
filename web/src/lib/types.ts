@@ -259,6 +259,8 @@ export interface Service {
   interval_days?: number | null
   /** Доливка — продаётся на вынос, без клиента и книжки (ADR-118). */
   takeaway?: boolean
+  /** Для легковых или грузовых (задача 044); нет поля — легковая. */
+  vehicle_kind?: VehicleKind
 }
 
 export interface Supplier {

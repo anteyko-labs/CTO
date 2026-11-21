@@ -33,15 +33,18 @@ export function CashierFavorites({
   onProduct,
   onService,
   compact = false,
+  fits,
 }: {
   onProduct: (p: Product) => void
   onService: (s: Service) => void
   compact?: boolean
+  /** Услуга подходит чеку по виду машины (задача 044): другие плитки услуг не показываются. */
+  fits?: (s: Service) => boolean
 }) {
   const owner = useUser().role === 'owner'
   const tiles = useLoad(() => get<FavoriteTile[]>('/settings/favorites'), [])
   const [editing, setEditing] = useState(false)
-  const list = (tiles.data ?? []).filter((t) => (t.kind === 'product' ? t.product : t.service))
+  const list = (tiles.data ?? []).filter((t) => (t.kind === 'product' ? t.product : t.service && (!fits || fits(t.service))))
 
   // Пока грузится или без сети — плиток нет, касса работает поиском.
   if (!tiles.data && !editing) return null

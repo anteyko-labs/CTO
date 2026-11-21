@@ -122,6 +122,9 @@ export interface CashierSettings {
   services_free: boolean
   /** «Грузовая / Легковая» нового чека (задача 040 A): кассир переключает на каждом чеке. */
   vehicle_kind_default: 'car' | 'truck'
+  /** «Услуги легковых» и «Услуги грузовых» на кассе филиала (задача 044): хотя бы один включён. */
+  services_car: boolean
+  services_truck: boolean
 }
 
 export const DEFAULT_CASHIER: CashierSettings = {
@@ -144,6 +147,8 @@ export const DEFAULT_CASHIER: CashierSettings = {
   repay_other_branches: false,
   services_free: false,
   vehicle_kind_default: 'car',
+  services_car: true,
+  services_truck: true,
 }
 
 export const buttonDef = (id: ButtonId): ButtonDef | undefined => BUTTONS.find((b) => b.id === id)

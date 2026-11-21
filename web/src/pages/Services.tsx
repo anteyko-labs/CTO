@@ -13,7 +13,7 @@ import { formatSom, parseSom, plural, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useCan } from '../lib/permissions'
 import { useAction, useLoad } from '../lib/hooks'
-import { BOOK_SLOT_LABELS, type BookSlot, type Category, type Service } from '../lib/types'
+import { BOOK_SLOT_LABELS, type BookSlot, type Category, type Service, type VehicleKind } from '../lib/types'
 import { mapUmagRows, preselected, serviceCandidates, type ServiceCandidate } from '../lib/umag'
 import { readXlsx } from '../lib/xlsx'
 
@@ -24,6 +24,33 @@ const ABOUT =
   'Вид замены выбирается в каждом чеке «В сервис» — без него чек не провести. Мастеру начисляется ставка каждой услуги чека. ' +
   'У услуги «Бесплатно с нашим маслом» цена — 0, если в чеке нашего масла её категории не меньше канистры; иначе — цена клиенту. ' +
   'Если клиент вернёт масло и его останется меньше канистры, цена замены удержится из возврата.'
+
+const KIND_LABELS: Record<VehicleKind, string> = { car: '🚗 Легковые', truck: '🚚 Грузовые' }
+
+/** Вид машины услуги (задача 044): касса показывает услугу только в чеке этого вида. */
+function KindPick({ value, onChange, disabled = false, id }: { value: VehicleKind; onChange: (k: VehicleKind) => void; disabled?: boolean; id: string }) {
+  return (
+    <div className="flex flex-col gap-1" role="radiogroup" aria-label="Для каких машин" data-testid={id}>
+      <span className="text-sm font-medium text-slate-700">Для каких машин</span>
+      <div className="flex gap-2">
+        {(['car', 'truck'] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            role="radio"
+            aria-checked={value === k}
+            disabled={disabled}
+            data-testid={`${id}-${k}`}
+            className={`flex-1 rounded-md border-2 px-3 py-1.5 text-sm font-semibold ${value === k ? 'border-sky-500 bg-sky-50 text-sky-900' : 'border-slate-200 bg-white text-slate-500'} disabled:opacity-60`}
+            onClick={() => onChange(k)}
+          >
+            {KIND_LABELS[k]}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 const TAKEAWAY_LABEL = 'Доливка — продаётся на вынос'
 const TAKEAWAY_HINT = 'Касса пробивает её «На вынос» без клиента, машины и книжки; мастер — по желанию. В окне «Вид замены» её нет'
@@ -152,6 +179,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
     oilCat: service.oil_category_id ?? '',
     active: service.active,
     takeaway: Boolean(service.takeaway),
+    kind: (service.vehicle_kind ?? 'car') as VehicleKind,
   })
   const [book, setBook] = useState<BookForm>({
     slot: service.book_slot ?? 'other',
@@ -168,7 +196,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
         free_with_oil: form.free,
         ...(owner && form.oilCat ? { oil_category_id: form.oilCat } : {}),
         ...(owner ? bookPayload(book, true) : {}),
-        ...(owner ? { takeaway: form.takeaway } : {}),
+        ...(owner ? { takeaway: form.takeaway, vehicle_kind: form.kind } : {}),
         active: form.active,
       })
       onSaved()
@@ -209,6 +237,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
         ) : (
           service.takeaway && <div className="text-sm text-slate-600">{TAKEAWAY_LABEL} — меняет владелец</div>
         )}
+        <KindPick id="service-edit-kind" value={form.kind} disabled={!owner} onChange={(kind) => setForm({ ...form, kind })} />
         <Checkbox label="Активна" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
@@ -255,12 +284,13 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
       return next
     })
   const items = candidates.filter((c) => picked.has(c.name) && !c.exists)
+  const [kind, setKind] = useState<VehicleKind>('car')
 
   const save = () =>
     void run(async () => {
       const r = await post<{ created: number; skipped: string[] }>('/services/import', {
         op_id: opId,
-        items: items.map((c) => ({ name: c.name, price_tyiyn: c.price_tyiyn })),
+        items: items.map((c) => ({ name: c.name, price_tyiyn: c.price_tyiyn, vehicle_kind: kind })),
       })
       toast(
         `Заведено ${r.created} ${plural(r.created, ['услуга', 'услуги', 'услуг'])}` +
@@ -276,6 +306,7 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
           Отмечены строки, похожие на услуги: категория «Незаданные» или без закупочной цены, единица — штуки. Уже заведённые услуги не
           загружаются. Ставку мастеру задайте потом в карточке услуги.
         </div>
+        <KindPick id="service-import-kind" value={kind} onChange={setKind} />
         <input aria-label="Поиск по файлу" placeholder="Поиск" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="max-h-[55vh] overflow-y-auto">
           <Table head={['', 'Название', 'Цена', 'Категория', 'Ед.']}>
@@ -327,6 +358,9 @@ export default function Services() {
   const list = useLoad(() => get<Service[]>('/services'), [])
   // Флажок доливки: пока владелец его не трогал (null) — по названию услуги, как на сервере.
   const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean; oilCat: string; takeaway: boolean | null }>({ name: '', price: '', fee: '', free: false, oilCat: '', takeaway: null })
+  // Вид машины новой услуги и фильтр списка (задача 044).
+  const [newKind, setNewKind] = useState<VehicleKind>('car')
+  const [kindFilter, setKindFilter] = useState<'' | VehicleKind>('')
   const takeawayShown = form.takeaway ?? /долив/i.test(form.name)
   // Ставка мастеру по умолчанию — за каждую услугу (ADR-112): подсказка в пустом поле.
   const salesSettings = useLoad(
@@ -365,6 +399,7 @@ export default function Services() {
         ...(owner && form.free && form.oilCat ? { oil_category_id: form.oilCat } : {}),
         ...(owner ? bookPayload(book, false) : {}),
         ...(owner && form.takeaway !== null ? { takeaway: form.takeaway } : {}),
+        vehicle_kind: newKind,
       })
       setForm({ name: '', price: '', fee: '', free: false, oilCat: '', takeaway: null })
       setBook({ slot: '', km: '', days: '' })
@@ -386,7 +421,7 @@ export default function Services() {
     [!form.free || Boolean(form.oilCat), 'категорию масла', '#service-oil'],
   )
   const needle = q.trim().toLowerCase()
-  const rows = (list.data ?? []).filter((s) => !needle || s.name.toLowerCase().includes(needle))
+  const rows = (list.data ?? []).filter((s) => (!needle || s.name.toLowerCase().includes(needle)) && (!kindFilter || (s.vehicle_kind ?? 'car') === kindFilter))
 
   return (
     <div>
@@ -428,10 +463,15 @@ export default function Services() {
               {(list.data?.length ?? 0) > 5 && (
                 <input aria-label="Поиск услуги" className="w-full sm:w-64" placeholder="Поиск" value={q} onChange={(e) => setQ(e.target.value)} />
               )}
+              <select aria-label="Для каких машин" data-testid="service-kind-filter" value={kindFilter} onChange={(e) => setKindFilter(e.target.value as '' | VehicleKind)}>
+                <option value="">Все машины</option>
+                <option value="car">{KIND_LABELS.car}</option>
+                <option value="truck">{KIND_LABELS.truck}</option>
+              </select>
               <ExportButton
                 file="Услуги"
                 disabled={rows.length === 0}
-                sheets={() => [listSheet('Услуги в кассе', serviceCols((id) => catName(id) ?? ''), rows, { sheet: 'Услуги', filter: [q.trim() && `поиск «${q.trim()}»`] })]}
+                sheets={() => [listSheet('Услуги в кассе', serviceCols((id) => catName(id) ?? ''), rows, { sheet: 'Услуги', filter: [q.trim() && `поиск «${q.trim()}»`, kindFilter && KIND_LABELS[kindFilter]] })]}
               />
             </div>
           }
@@ -470,6 +510,11 @@ export default function Services() {
                   {s.takeaway && (
                     <span className="ml-2 align-middle">
                       <Badge tone="amber">на вынос</Badge>
+                    </span>
+                  )}
+                  {s.vehicle_kind === 'truck' && (
+                    <span className="ml-2 align-middle">
+                      <Badge tone="amber">🚚 грузовые</Badge>
                     </span>
                   )}
                 </td>
@@ -563,6 +608,7 @@ export default function Services() {
               />
             )}
             {owner && <BookFields idPrefix="service-book" value={book} onChange={setBook} byName />}
+            <KindPick id="service-kind" value={newKind} onChange={setNewKind} />
             {owner && <TakeawayBox checked={takeawayShown} onChange={(v) => setForm({ ...form, takeaway: v })} />}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -613,6 +659,7 @@ function serviceCols(category: (id: string) => string): ExportCol<Service>[] {
     { label: 'Книжка', value: (s) => (!s.book_slot || s.book_slot === 'other' ? 'без напоминания' : BOOK_SLOT_LABELS[s.book_slot]) },
     { label: 'Интервал, км', value: (s) => (s.interval_km != null && s.book_slot && s.book_slot !== 'other' ? xl.int(s.interval_km) : null) },
     { label: 'На вынос', value: (s) => (s.takeaway ? 'да' : '') },
+    { label: 'Для машин', value: (s) => ((s.vehicle_kind ?? 'car') === 'truck' ? 'грузовые' : 'легковые') },
     { label: 'Статус', value: (s) => (s.active ? 'активна' : 'отключена') },
   ]
 }

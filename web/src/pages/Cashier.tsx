@@ -56,7 +56,7 @@ import {
   type NextEdits,
   type OwnIntervals,
 } from '../lib/nextChange'
-import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, withFreeServices, type OilEnough } from '../lib/serviceSale'
+import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, serviceFits, servicePrice, vehicleKindChoices, vehicleKindForText, withFreeServices, wrongKindServices, type OilEnough } from '../lib/serviceSale'
 import { printBotQr, printOilBook, saleCheckOf, saleRecordOf } from '../lib/oilBookPrint'
 import { loadOilBookSettings, OIL_BOOK_DEFAULTS, shouldAutoReceipt, type OilBookSettings } from '../lib/oilBookSettings'
 import { ServicePicker } from '../components/ServicePicker'
@@ -474,6 +474,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // у «Исправить» — исходного чека.
   const [vehicleKindPick, setVehicleKind] = useState<VehicleKind | null>(fix?.state.vehicleKind ?? null)
   const vehicleKind: VehicleKind = vehicleKindPick ?? cs.vehicle_kind_default
+  // Услуги по виду машины чека (задача 044): касса показывает только подходящие.
+  const fitsKind = (sv: Service) => serviceFits(sv, vehicleKind, cs)
   const [cashierId, setCashierId] = useState(() => fix?.state.cashierId ?? remembered(CASHIER_KEY))
   const [masterId, setMasterId] = useState(draft?.masterId ?? '')
   const [lines, setLines] = useState<CartLine[]>(draft?.lines ?? [])
@@ -1308,7 +1310,16 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       )
   const needShift = !fix && cs.sale_requires_shift && online && shiftKnown && shift.data === null
   // Короткое название (четвёртое) — для строки «Не хватает: …» в режиме кассы.
+  // Услуги не того вида машины (переключили «Грузовая / Легковая») — предупреждение и «Убрать»
+  // (задача 044); онлайн сервер такой чек не примет.
+  const wrongKind = wrongKindServices(
+    lines.flatMap((l) => (l.kind === 'service' && l.service ? [l.service] : [])),
+    vehicleKind,
+    cs,
+  )
+  const dropWrongKind = () => setLines((ls) => ls.filter((l) => !(l.kind === 'service' && l.service && !fitsKind(l.service))))
   const blockers = missingWithFocus(
+    [wrongKind.length === 0, `убрать услуги не того вида машины: ${wrongKind.map((x) => x.name).join(', ')}`, '[data-testid="wrong-kind"]', 'услуги не того вида'],
     [lines.length > 0, 'товары', '[data-picker]', 'товары'],
     [lines.length === 0 || valid, 'количество и цены в строках', undefined, 'кол-во и цены'],
     // Сверх остатка (задача 018): касса сверяет по остатку с сервера или снимка, решает сервер (409).
@@ -2314,7 +2325,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // иначе — над позициями чека.
   const vehicleToggle = (
     <div className={`flex shrink-0 items-center gap-2 ${touch ? '' : 'px-1 py-0.5'}`} role="radiogroup" aria-label="Грузовая или легковая" data-testid="vehicle-kind">
-            {(['truck', 'car'] as const).map((k) => (
+            {vehicleKindChoices(cs).map((k) => (
               <button
                 key={k}
                 type="button"
@@ -2337,8 +2348,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             ))}
           </div>
   )
+  const wrongKindBox = wrongKind.length > 0 && (
+    <div className="flex shrink-0 items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-900" data-testid="wrong-kind">
+      <span className="flex-1">
+        {wrongKind.map((x) => `«${x.name}» — услуга ${vehicleKindForText(x.vehicle_kind)}`).join('; ')}
+      </span>
+      <button type="button" className="rounded border border-amber-400 bg-white px-2 py-0.5 font-semibold" onClick={dropWrongKind}>
+        Убрать
+      </button>
+    </div>
+  )
   const submitBlock = (
     <>
+      {touch && wrongKindBox}
       <ErrorBox error={error} />
       {touch ? (
         // Режим кассы: чего не хватает — одной строкой; касание ведёт к первому полю (ui-rules §9).
@@ -2570,10 +2592,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             style={{ '--tiles-h': `${cs.tiles_dvh}dvh` } as CSSProperties}
             data-testid="mode-tiles"
           >
-            <CashierFavorites compact onProduct={addProduct} onService={addService} />
+            <CashierFavorites compact onProduct={addProduct} onService={addService} fits={fitsKind} />
           </div>
         ) : (
-          <CashierFavorites onProduct={addProduct} onService={addService} />
+          <CashierFavorites onProduct={addProduct} onService={addService} fits={fitsKind} />
         )}
 
         {done && (
@@ -2696,6 +2718,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           )}
           {!touch && vehicleToggle}
+          {!touch && wrongKindBox}
           <div
             ref={cartRef}
             className={touch ? 'relative lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : ''}
@@ -3772,6 +3795,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <ServicePicker
           kinds
           ourOil={ourOil}
+          vehicleKind={vehicleKind}
+          fits={fitsKind}
           selected={serviceKinds.flatMap((l) => (l.service ? [l.service.id] : []))}
           onPick={addService}
           onDone={setKinds}
@@ -3781,6 +3806,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       {servicesOpen && (
         <ServicePicker
           ourOil={ourOil}
+          vehicleKind={vehicleKind}
+          fits={fitsKind}
           onPick={addService}
           onClose={() => setServicesOpen(false)}
           onBatteryIntake={

@@ -2,7 +2,7 @@
 // правила, что на сервере (ADR-096, ADR-100, ADR-097). Сервер решает окончательно; здесь —
 // чтобы касса показала цену и недостающее до «Провести».
 import { formatLiters } from './format'
-import type { Party, Service, ServiceOil } from './types'
+import type { Party, Service, ServiceOil, VehicleKind } from './types'
 
 /** Категории масла, которого в чеке не меньше канистры (ADR-104): строки нашего масла (не подарок)
  *  по категориям, канистра — наименьший объём канистры среди строк категории, розлив — в мл. */
@@ -202,4 +202,36 @@ export function looksLikePlate(text: string): boolean {
   if (!/\d/.test(t) || t.length > 12) return false
   const onlyDigits = /^[\d\s+()-]+$/.test(t)
   return !(onlyDigits && t.replace(/\D/g, '').length >= 9)
+}
+
+/** Включённые на кассе филиала виды услуг (задача 044). */
+export interface ServiceKindsOn {
+  services_car: boolean
+  services_truck: boolean
+}
+
+/** Вид услуги включён в филиале (задача 044). */
+export function kindOn(kind: VehicleKind, on: ServiceKindsOn): boolean {
+  return kind === 'truck' ? on.services_truck : on.services_car
+}
+
+/** Виды машины, которые можно выбрать в чеке: только с включёнными услугами (задача 044). */
+export function vehicleKindChoices(on: ServiceKindsOn): VehicleKind[] {
+  return (['truck', 'car'] as const).filter((k) => kindOn(k, on))
+}
+
+/** Услуга подходит чеку: её вид — вид машины чека и включён в филиале (задача 044). */
+export function serviceFits(s: Pick<Service, 'vehicle_kind'>, kind: VehicleKind, on: ServiceKindsOn): boolean {
+  const own = s.vehicle_kind ?? 'car'
+  return own === kind && kindOn(own, on)
+}
+
+/** Услуги чека, которые не подходят виду машины, — для предупреждения на кассе (задача 044). */
+export function wrongKindServices<T extends Pick<Service, 'vehicle_kind' | 'name'>>(services: readonly T[], kind: VehicleKind, on: ServiceKindsOn): T[] {
+  return services.filter((s) => !serviceFits(s, kind, on))
+}
+
+/** «Услуга для грузовых» / «для легковых». */
+export function vehicleKindForText(kind: VehicleKind | undefined): string {
+  return (kind ?? 'car') === 'truck' ? 'для грузовых' : 'для легковых'
 }

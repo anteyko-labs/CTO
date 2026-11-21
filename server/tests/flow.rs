@@ -10571,6 +10571,7 @@ async fn services_import_skips_existing_names(pool: PgPool) {
     let item = |name: &str, price: i64| ServiceImportItem {
         name: name.into(),
         price_tyiyn: price,
+        vehicle_kind: None,
     };
     let op_id = Uuid::now_v7();
     let req = || ServicesImportReq {

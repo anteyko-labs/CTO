@@ -89,6 +89,8 @@ struct SnapService {
     interval_days: Option<i32>,
     /// Доливка — продаётся на вынос (ADR-118): касса без сети не переключает чек в «В сервис».
     takeaway: bool,
+    /// Для легковых или грузовых (задача 044): касса показывает услуги вида машины чека.
+    vehicle_kind: String,
 }
 
 #[derive(Serialize)]
@@ -248,7 +250,7 @@ async fn snapshot(
     .await?;
     let services = sqlx::query!(
         r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active,
-                  book_slot, book_interval_km, book_interval_days, takeaway from services
+                  book_slot, book_interval_km, book_interval_days, takeaway, vehicle_kind from services
            where active order by name"#
     )
     .fetch_all(&mut *conn)
@@ -272,6 +274,7 @@ async fn snapshot(
             interval_km,
             interval_days,
             takeaway: r.takeaway,
+            vehicle_kind: r.vehicle_kind,
         }
     })
     .collect::<Vec<_>>();

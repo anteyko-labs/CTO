@@ -7,7 +7,7 @@ import { missingWithFocus } from '../lib/forms'
 import { errorText, useAction } from '../lib/hooks'
 import { kindChoices, servicePriceText, type OilEnough } from '../lib/serviceSale'
 import { FIRST_TILES, sameServices } from '../lib/serviceList'
-import type { Service } from '../lib/types'
+import type { Service, VehicleKind } from '../lib/types'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
 
 const NO_OIL: OilEnough = new Set<string>()
@@ -68,6 +68,8 @@ export function ServicePicker({
   kinds = false,
   selected = [],
   onDone,
+  vehicleKind,
+  fits,
 }: {
   onPick: (s: Service) => void
   onClose: () => void
@@ -82,6 +84,10 @@ export function ServicePicker({
   selected?: string[]
   /** «Готово» в выборе видов замены: все отмеченные. */
   onDone?: (picked: Service[]) => void
+  /** Вид машины чека (задача 044): новая услуга заводится этого вида. */
+  vehicleKind?: VehicleKind
+  /** Услуга подходит чеку по виду машины (задача 044); нет — все. */
+  fits?: (s: Service) => boolean
 }) {
   const owner = useUser().role === 'owner'
   // Без связи — услуги из снимка кассы: работа уже сделана, чек пробивается (SPEC-09).
@@ -95,7 +101,7 @@ export function ServicePicker({
 
   // Виды замены — сверху: их выбирают в каждом чеке «В сервис». В окне «Вид замены» доливок нет
   // (они на вынос, ADR-118), сначала замены — услуги со строкой книжки (SPEC-36 §5).
-  const enabled = (list.data ?? []).filter((s) => s.active)
+  const enabled = (list.data ?? []).filter((s) => s.active && (!fits || fits(s)))
   const active = kinds ? kindChoices(enabled) : enabled.sort((a, b) => Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
   const q = query.trim().toLowerCase()
   const shown = q ? active.filter((s) => s.name.toLowerCase().includes(q)) : active
@@ -117,6 +123,7 @@ export function ServicePicker({
         price_tyiyn: parseSom(form.price) ?? 0,
         master_fee_tyiyn: owner && form.fee.trim() ? (parseSom(form.fee) ?? 0) : 0,
         free_with_oil: owner && form.free,
+        ...(vehicleKind ? { vehicle_kind: vehicleKind } : {}),
       })
       if (lastServices) lastServices = [...lastServices, created]
       onPick(created)
