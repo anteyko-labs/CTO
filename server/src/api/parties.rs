@@ -461,7 +461,16 @@ async fn require_party_right(
     role: &str,
 ) -> AppResult<()> {
     if role == "customer" {
-        crate::auth::require_permission(conn, user, "clients").await
+        // Данные клиента для долга заполняет и администратор с правом «Продажа в долг» (задача 048).
+        // Нет ни того, ни другого — отказ называет «Клиенты».
+        match crate::auth::require_permission(&mut *conn, user, "clients").await {
+            Err(e @ (AppError::Forbidden | AppError::ForbiddenWith(_))) => {
+                crate::auth::require_permission(conn, user, "sale_debt")
+                    .await
+                    .map_err(|_| e)
+            }
+            r => r,
+        }
     } else {
         // Поставщика заводят и правят с правом «Приход товара» (ADR-097, ADR-128).
         crate::auth::require_permission(conn, user, "receipts").await
@@ -1249,6 +1258,52 @@ pub(crate) async fn add_ledger_at(
         crate::api::supplier_debts::allocate(conn, party_id).await?;
     }
     Ok((next, id))
+}
+
+/// Чего не хватает в карточке для долга (задача 048): физлицо — фамилия, имя, телефон, ПИН
+/// (14 цифр), как в расписке; фирма — название, телефон, ИНН. Телефон — карточки (как в расписке).
+pub async fn debt_data_missing(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+) -> AppResult<Vec<&'static str>> {
+    let Some(p) = sqlx::query!(
+        r#"select kind, name, first_name, last_name, inn,
+                  btrim(phone) <> '' as "has_phone!"
+           from parties p where id = $1"#,
+        party_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let inn = p.inn.trim();
+    let mut out = Vec::new();
+    if p.kind == "company" {
+        if p.name.trim().is_empty() {
+            out.push("название");
+        }
+        if !p.has_phone {
+            out.push("телефон");
+        }
+        if !(10..=14).contains(&inn.len()) || !inn.bytes().all(|b| b.is_ascii_digit()) {
+            out.push("ИНН");
+        }
+    } else {
+        if p.last_name.trim().is_empty() {
+            out.push("фамилия");
+        }
+        if p.first_name.trim().is_empty() {
+            out.push("имя");
+        }
+        if !p.has_phone {
+            out.push("телефон");
+        }
+        if inn.len() != 14 || !inn.bytes().all(|b| b.is_ascii_digit()) {
+            out.push("ПИН");
+        }
+    }
+    Ok(out)
 }
 
 /// Проверяет, что клиент может брать в долг, и что работник с машиной — его.

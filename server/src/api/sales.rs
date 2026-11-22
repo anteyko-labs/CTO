@@ -1631,6 +1631,26 @@ pub async fn post_sale_core(
     } else {
         None
     };
+    // Долг — только с полными данными клиента, как в расписке (задача 048). Исправление и
+    // «Изменить оплату» не спрашивают; чек без сети уже состоялся — владелец узнает.
+    if debt_total > 0
+        && req.correction.is_none()
+        && replay.is_none()
+        && let Some(pid) = req.party_id
+    {
+        let missing = parties::debt_data_missing(conn, pid).await?;
+        if !missing.is_empty() {
+            let text = format!("Заполните данные клиента: {}", missing.join(", "));
+            if offline {
+                bypass.push(format!(
+                    "чек в долг без данных клиента ({})",
+                    missing.join(", ")
+                ));
+            } else {
+                return Err(invalid(text));
+            }
+        }
+    }
     match req.party_id {
         // Клиент исходного чека при «Изменить оплату» уже проверен при продаже: отключённый клиент
         // или убранная машина чек не останавливают и не возвращаются в список (SPEC-37 §2).

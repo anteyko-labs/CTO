@@ -273,7 +273,7 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
         &app,
         &admin,
         "/api/v1/parties",
-        json!({ "name": "ОсОО Клиент", "kind": "company", "inn": "01234567890123" }),
+        json!({ "name": "ОсОО Клиент", "kind": "company", "inn": "01234567890123", "phone": "0555 10 10 10" }),
     )
     .await["id"]
         .as_str()
@@ -818,7 +818,7 @@ async fn shift_net_profit_and_noncash_by_account(pool: PgPool) {
         &app,
         &admin,
         "/api/v1/parties",
-        json!({ "name": "ОсОО Клиент", "kind": "company", "inn": "01234567890123" }),
+        json!({ "name": "ОсОО Клиент", "kind": "company", "inn": "01234567890123", "phone": "0555 10 10 10" }),
     )
     .await["id"]
         .as_str()

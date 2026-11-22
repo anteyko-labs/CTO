@@ -6541,7 +6541,7 @@ async fn bank_screen_income_report_and_dashboard_period(pool: PgPool) {
     let (_, _, party) = post(
         &owner,
         "/api/v1/parties",
-        json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" }),
+        json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123", "phone": "0555 10 10 10" }),
     )
     .await;
     let pid = party["id"].as_str().unwrap().to_string();
@@ -6876,7 +6876,7 @@ async fn bot_customer_debt_matches_client_card(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         Some(&owner),
-        Some(json!({ "name": "Эрлан", "phone": "+996 555 12-34-56", "inn": "21201199000123", "due_days": 10 })),
+        Some(json!({ "first_name": "Эрлан", "last_name": "Асанов", "phone": "+996 555 12-34-56", "inn": "21201199000123", "due_days": 10 })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{party}");
@@ -7343,7 +7343,7 @@ async fn mixed_sale_cash_and_debt_shows_in_repayment_window(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         Some(&owner),
-        Some(json!({ "name": "Нурлан", "inn": "21201199000777", "due_days": 10 })),
+        Some(json!({ "first_name": "Нурлан", "last_name": "Асанов", "phone": "0555 10 10 10", "inn": "21201199000777", "due_days": 10 })),
     )
     .await;
     let pid = party["id"].as_str().unwrap().to_string();
@@ -7847,7 +7847,7 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
         &owner,
         "POST",
         "/api/v1/parties",
-        Some(json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" })),
+        Some(json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123", "phone": "0555 10 10 10" })),
     )
     .await;
     let pid = party["id"].as_str().unwrap().to_string();
@@ -8197,7 +8197,7 @@ async fn bank_fee_per_account_and_default_bank_per_method(pool: PgPool) {
         &owner,
         "POST",
         "/api/v1/parties",
-        Some(json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" })),
+        Some(json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123", "phone": "0555 10 10 10" })),
     )
     .await;
     let pid = party["id"].as_str().unwrap().to_string();
@@ -10564,7 +10564,7 @@ async fn refunds_fees_and_forgiveness_reverse_exactly(pool: PgPool) {
     //    на «Счёт» пришло 398, комиссии 2,00.
     let client = post(
         "/api/v1/parties".into(),
-        json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" }),
+        json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123", "phone": "0555 10 10 10" }),
     )
     .await["id"]
         .as_str()
@@ -11283,7 +11283,7 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         Some(&owner),
-        Some(json!({ "name": "Эрлан", "phone": "+996 555 12-34-56", "inn": "21201199000123" })),
+        Some(json!({ "first_name": "Эрлан", "last_name": "Асанов", "phone": "+996 555 12-34-56", "inn": "21201199000123" })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{party}");
@@ -11542,18 +11542,8 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
             "/api/v1/categories".into(),
             Box::new(move || json!({ "name": format!("Кат {}", op()), "kind": "filter" })),
         ),
-        (
-            "clients",
-            "POST",
-            "/api/v1/parties".into(),
-            Box::new(move || json!({ "kind": "company", "name": format!("ОсОО {}", op()) })),
-        ),
-        (
-            "clients",
-            "PATCH",
-            format!("/api/v1/parties/{client}"),
-            Box::new(|| json!({ "comment": "постоянный" })),
-        ),
+        // Карточку клиента заводит и правит также право «Продажа в долг» (задача 048) — эти
+        // действия проверены ниже, без обоих прав.
         (
             "clients",
             "POST",
@@ -11759,6 +11749,40 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         set_admin_permissions(&app, &owner, &with).await;
         let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body())).await;
         assert_eq!(s, StatusCode::OK, "{perm} {uri}: {out}");
+    }
+    // Клиента без «Клиентов и машин» заводит и правит «Продажа в долг» (задача 048); без обоих — 403.
+    let without: Vec<&str> = all
+        .iter()
+        .copied()
+        .filter(|p| *p != "clients" && *p != "sale_debt")
+        .collect();
+    let party_cases: [(&str, String, Value); 2] = [
+        (
+            "POST",
+            "/api/v1/parties".into(),
+            json!({ "kind": "company", "name": format!("ОсОО {}", Uuid::now_v7()) }),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/parties/{client}"),
+            json!({ "comment": "постоянный" }),
+        ),
+    ];
+    for (method, uri, body) in &party_cases {
+        set_admin_permissions(&app, &owner, &without).await;
+        let (s, _, err) = call(&app, method, uri, Some(&admin), Some(body.clone())).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{uri}: {err}");
+        for keep in ["clients", "sale_debt"] {
+            let mut with = without.clone();
+            with.push(keep);
+            set_admin_permissions(&app, &owner, &with).await;
+            let mut body = body.clone();
+            if *method == "POST" {
+                body["name"] = json!(format!("ОсОО {}", Uuid::now_v7()));
+            }
+            let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body)).await;
+            assert_eq!(s, StatusCode::OK, "{keep} {uri}: {out}");
+        }
     }
     // Каждое право, кроме скидки (её проверяет чек), перелива, аванса, приёмки, заработка
     // кассиров и кодов на кассе (свои проверки: аванс — в tests/payouts.rs, приёмка — в
@@ -12309,7 +12333,7 @@ async fn invoice_payment_lands_on_its_account(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         Some(&admin),
-        Some(json!({ "name": "ОсОО Транзит", "kind": "company", "inn": inn })),
+        Some(json!({ "name": "ОсОО Транзит", "kind": "company", "inn": inn, "phone": "0555 10 10 10" })),
     )
     .await;
     let firm = firm["id"].as_str().unwrap().to_string();

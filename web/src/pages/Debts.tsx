@@ -8,6 +8,7 @@ import { ExportButton } from '../components/ExportButton'
 import { OldDebtModal } from '../components/OldDebtModal'
 import { SupplierOldDebtModal } from '../components/SupplierOldDebtModal'
 import { RepaymentModal } from '../components/RepaymentModal'
+import { PartyDataModal, debtDataMissing } from '../components/PartyDataModal'
 import { Button, Card, Empty, ErrorBox, Loading, Money, PageHeader } from '../components/ui'
 import { get } from '../lib/api'
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
@@ -48,6 +49,7 @@ function Side({
   actionLabel,
   onOpen,
   onPay,
+  onEdit,
   action,
 }: {
   title: string
@@ -63,6 +65,8 @@ function Side({
   onOpen: (p: DebtRow) => void
   /** Без права на оплату (ADR-097) кнопки нет. */
   onPay?: (p: DebtRow) => void
+  /** «✏️ Данные клиента» (задача 048): владелец и администратор с правом «Клиенты» или «Продажа в долг». */
+  onEdit?: (p: DebtRow) => void
   /** Кнопка в заголовке списка: «Занести долг поставщику» (задача 003 Н15). */
   action?: ReactNode
 }) {
@@ -129,6 +133,11 @@ function Side({
                         {p.kind === 'company' ? 'Юрлицо' : 'Физлицо'}
                         {p.inn && named(p) && ` · ${p.kind === 'company' ? 'ИНН' : 'ПИН'} ${p.inn}`}
                       </div>
+                      {onEdit && debtDataMissing(p).length > 0 && (
+                        <div className="text-xs text-amber-700" data-testid="debt-row-missing">
+                          нет: {debtDataMissing(p).join(', ')}
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-2 py-2" data-label="Телефон">
                       {p.phone || '—'}
@@ -155,7 +164,21 @@ function Side({
                     <td className="px-2 py-2 text-right" data-label="Лимит">
                       {p.credit_limit_tyiyn === null ? <span className="text-slate-400">—</span> : <Money value={p.credit_limit_tyiyn} />}
                     </td>
-                    <td className="px-2 py-2 text-right">
+                    <td className="whitespace-nowrap px-2 py-2 text-right">
+                      {onEdit && (
+                        <Button
+                          variant="secondary"
+                          className="mr-1 min-h-9 px-2 py-1 text-xs"
+                          title="Данные клиента"
+                          data-testid="debt-row-edit"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onEdit(p)
+                          }}
+                        >
+                          ✏️
+                        </Button>
+                      )}
                       {onPay && (
                         <Button
                           variant="secondary"
@@ -218,6 +241,7 @@ export default function Debts() {
   // «Занести старый долг» из тетради (SPEC-38): владелец или администратор с правом; в «Все
   // филиалы» кнопки нет — долг заносится в филиал (ADR-108).
   const [oldDebt, setOldDebt] = useState(false)
+  const [editing, setEditing] = useState<DebtRow | null>(null)
   // Старый долг Автодома поставщику (задача 003 Н15): то же право, кнопка у «Должны мы».
   const [supplierDebt, setSupplierDebt] = useState(false)
   const mayOldDebt = can('old_debts') && !all
@@ -279,6 +303,7 @@ export default function Debts() {
             actionLabel="Погасить"
             onOpen={open}
             onPay={can('debt_payment') && !all ? pay : undefined}
+            onEdit={(can('clients') || can('sale_debt')) && !all ? setEditing : undefined}
           />
           <Side
             title="Должны мы"
@@ -299,6 +324,16 @@ export default function Debts() {
             }
           />
         </>
+      )}
+      {editing && (
+        <PartyDataModal
+          party={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            reload()
+          }}
+        />
       )}
       {oldDebt && <OldDebtModal onClose={() => setOldDebt(false)} onSaved={reload} />}
       {supplierDebt && <SupplierOldDebtModal onClose={() => setSupplierDebt(false)} onSaved={reload} />}

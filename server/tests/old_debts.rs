@@ -191,10 +191,10 @@ impl World {
     /// «Фамилия Имя».
     async fn client(&self, kind: &str, name: &str, due_days: Option<i32>) -> String {
         let mut body = if kind == "company" {
-            json!({ "kind": "company", "name": name, "inn": "01204201910123" })
+            json!({ "kind": "company", "name": name, "inn": "01204201910123", "phone": "0555 10 10 10" })
         } else {
             let (last, first) = name.split_once(' ').unwrap();
-            json!({ "kind": "person", "first_name": first, "last_name": last })
+            json!({ "kind": "person", "first_name": first, "last_name": last, "phone": "0555 10 10 10", "inn": "21201199000123" })
         };
         if let Some(d) = due_days {
             body["due_days"] = json!(d);
@@ -492,7 +492,8 @@ async fn new_client_and_old_debt_are_one_transaction(pool: PgPool) {
         "{v}"
     );
 
-    // Администратор со «Старыми долгами», но без «Клиентов и машин»: нового клиента не заводит.
+    // Администратор со «Старыми долгами», но без «Клиентов и машин» и «Продажи в долг»: нового
+    // клиента не заводит (задача 048: данные клиента правит и право «Продажа в долг»).
     w.grant(&["old_debts"], false).await;
     let (s, v) = w
         .old_debt(

@@ -428,7 +428,7 @@ async fn invoice_repayment_is_not_card(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         &w.admin,
-        json!({ "name": "ОсОО Транзит", "kind": "company", "inn": "01204201910777" }),
+        json!({ "name": "ОсОО Транзит", "kind": "company", "inn": "01204201910777", "phone": "0555 10 10 10" }),
     )
     .await;
     let firm = firm["id"].as_str().unwrap().to_string();
@@ -492,7 +492,7 @@ async fn debt_sale_after_partial_repayment_can_be_corrected(pool: PgPool) {
             "POST",
             "/api/v1/parties",
             &w.admin,
-            json!({ "name": name, "kind": "company", "inn": inn }),
+            json!({ "name": name, "kind": "company", "inn": inn, "phone": "0555 10 10 10" }),
         )
         .await;
         let firm = firm["id"].as_str().unwrap().to_string();

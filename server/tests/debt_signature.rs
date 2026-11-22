@@ -445,3 +445,56 @@ async fn extra_documents_saved_with_debt_docs(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// Задача 048: долг — только с полными данными клиента, как в расписке; правка карточки
+/// администратором с правом «Продажа в долг».
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn debt_needs_full_client_data(pool: PgPool) {
+    let w = W::new(pool).await;
+    // Старый долг из тетради: только имя, без телефона и ПИН.
+    let bare = w
+        .ok(
+            "POST",
+            "/api/v1/parties",
+            json!({ "kind": "person", "first_name": "Нурлан", "last_name": "Тетрадь" }),
+        )
+        .await;
+    let id = bare["id"].as_str().unwrap();
+    let mut b = w.sale(100_000, Some(SIG));
+    b["party_id"] = json!(id);
+    let (s, v) = w.sell(b.clone()).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(message(&v), "Заполните данные клиента: телефон, ПИН");
+    // Без долга данные не нужны.
+    let mut card = w.sale(0, None);
+    card["party_id"] = json!(id);
+    let (s, v) = w.sell(card).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Администратор дописывает данные — долг проводится.
+    let (s, _, v) = call(
+        &w.app,
+        "PATCH",
+        &format!("/api/v1/parties/{id}"),
+        Some(&w.admin),
+        Some(json!({ "phone": "0700 55-66-77", "inn": "21201199000777" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    b["op_id"] = json!(Uuid::now_v7());
+    let (s, v) = w.sell(b).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Без сети — проводится, владельцу причина.
+    let nopin = w
+        .ok(
+            "POST",
+            "/api/v1/parties",
+            json!({ "kind": "person", "first_name": "Азат", "last_name": "Без" }),
+        )
+        .await;
+    let mut b = w.sale(100_000, Some(SIG));
+    b["party_id"] = nopin["id"].clone();
+    b["offline"] = json!(true);
+    b["client_time"] = json!((chrono::Utc::now() - chrono::Duration::minutes(3)).to_rfc3339());
+    let (s, v) = w.sell(b).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}

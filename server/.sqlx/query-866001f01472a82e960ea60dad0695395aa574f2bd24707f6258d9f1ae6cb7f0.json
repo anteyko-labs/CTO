@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, name, first_name, last_name, inn,\n                  btrim(phone) <> '' as \"has_phone!\"\n           from parties p where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "has_phone!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "866001f01472a82e960ea60dad0695395aa574f2bd24707f6258d9f1ae6cb7f0"
+}

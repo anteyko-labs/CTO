@@ -749,7 +749,7 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
     receive(&pool, &w.admin, w.filter, 10, 100).await;
     let party = Uuid::now_v7();
     sqlx::query(
-        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Тест', '12345')",
+        "insert into parties (id, branch_id, role, kind, name, inn, phone) values ($1, $2, 'customer', 'company', 'ОсОО Тест', '01204201910125', '0555 10 10 10')",
     )
     .bind(party)
     .bind(w.owner.user.branch_id)
@@ -886,7 +886,7 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
     .unwrap();
     let party = Uuid::now_v7();
     sqlx::query(
-        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Процент', '01204201910123')",
+        "insert into parties (id, branch_id, role, kind, name, inn, phone) values ($1, $2, 'customer', 'company', 'ОсОО Процент', '01204201910123', '0555 10 10 10')",
     )
     .bind(party)
     .bind(w.owner.user.branch_id)
@@ -1464,7 +1464,16 @@ async fn debt_needs_pin_or_inn(pool: PgPool) {
     };
     assert!(matches!(
         sell(&pool, &w.admin, debt()).await,
-        Err(AppError::Validation(_))
+        Err(AppError::Validation(m)) if m == "Заполните данные клиента: фамилия, имя, телефон, ПИН"
+    ));
+    sqlx::query("update parties set first_name = 'Бакыт', last_name = 'Асанов', phone = '0555 10 10 10' where id = $1")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        sell(&pool, &w.admin, debt()).await,
+        Err(AppError::Validation(m)) if m == "Заполните данные клиента: ПИН"
     ));
     sqlx::query("update parties set inn = '21201199000123' where id = $1")
         .bind(party)
@@ -2337,7 +2346,7 @@ async fn returns_respect_debt_points_and_bank_fee(pool: PgPool) {
     open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 10, 10_000).await;
     let party = Uuid::now_v7();
-    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone, inn) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456', '12345678901234')")
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, first_name, last_name, phone, inn) values ($1, $2, 'customer', 'person', 'Эрлан', 'Эрлан', 'Асанов', '0555123456', '12345678901234')")
         .bind(party)
         .bind(w.owner.user.branch_id)
         .execute(&pool)
@@ -2542,7 +2551,7 @@ async fn forgiven_debt_does_not_pay_cashier_later(pool: PgPool) {
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let party = Uuid::now_v7();
-    sqlx::query("insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'person', 'Долгов', '12345678901234')")
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, first_name, last_name, phone, inn) values ($1, $2, 'customer', 'person', 'Долгов', 'Бакыт', 'Долгов', '0555123456', '12345678901234')")
         .bind(party)
         .bind(w.owner.user.branch_id)
         .execute(&pool)
@@ -4671,7 +4680,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
     let branch = w.owner.user.branch_id;
     receive(&pool, &w.admin, w.filter, 10, 100_000).await;
     let client = Uuid::now_v7();
-    sqlx::query("insert into parties (id, branch_id, role, kind, name, inn, active) values ($1, $2, 'customer', 'person', 'Отключённый', '123', false)")
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, first_name, last_name, phone, inn, active) values ($1, $2, 'customer', 'person', 'Отключённый', 'Бакыт', 'Асанов', '0555 10 10 10', '21201199000123', false)")
         .bind(client)
         .bind(branch)
         .execute(&pool)
@@ -5063,7 +5072,7 @@ async fn bot_feed_follows_each_owner_settings(pool: PgPool) {
     receive(&pool, &w.admin, w.filter, 10, 30_000).await;
     let party = Uuid::now_v7();
     sqlx::query(
-        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Лента', '01204201910124')",
+        "insert into parties (id, branch_id, role, kind, name, inn, phone) values ($1, $2, 'customer', 'company', 'ОсОО Лента', '01204201910124', '0555 10 10 10')",
     )
     .bind(party)
     .bind(branch)

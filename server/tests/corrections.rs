@@ -1781,7 +1781,7 @@ async fn debt_sale_paid_by_advance_does_not_wait_for_percent(pool: PgPool) {
     .unwrap();
     let party = Uuid::now_v7();
     sqlx::query(
-        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Аванс', '01204201910123')",
+        "insert into parties (id, branch_id, role, kind, name, inn, phone) values ($1, $2, 'customer', 'company', 'ОсОО Аванс', '01204201910123', '0555 10 10 10')",
     )
     .bind(party)
     .bind(branch)

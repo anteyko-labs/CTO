@@ -1,5 +1,6 @@
 // Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
+import { PartyDataModal, debtDataMissing } from '../components/PartyDataModal'
 import { otherBranchDebtText } from '../lib/branchDebt'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -533,8 +534,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   /** Карточка лома аккумуляторов: «средняя закупка» — только у её строки, не у товара в кг (ADR-174). */
   const [batteryId, setBatteryId] = useState<string | null>(null)
   const limitAsk = useAction()
-  const innSave = useAction()
-  const [innText, setInnText] = useState('')
+  const [partyEdit, setPartyEdit] = useState(false)
   const [contactId, setContactId] = useState(draft?.contactId ?? '')
   const [vehicleId, setVehicleId] = useState(draft?.vehicleId ?? '')
   // Машина ждёт подтверждения фирмы или отклонена (ADR-199): в долг фирмы её не провести.
@@ -1164,6 +1164,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }, [nextSourceKey])
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
+  const debtMissing = party ? debtDataMissing(party) : []
   // Подпись дана этому клиенту за эту сумму долга; другой клиент или сумма — расписаться заново.
   const signKey = JSON.stringify([party?.id ?? null, debtAmount])
   const signedForDebt = debtSign !== null && debtSign.key === signKey
@@ -1361,7 +1362,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [!batteryPay || online, 'аккумулятор в оплату — только при связи с сервером', undefined, 'аккумулятор — нет связи'],
     [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес', '#battery-kg', 'аккумулятор дороже чека'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address', 'адрес'],
-    [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn', 'ПИН / ИНН'],
+    [debtAmount === 0 || !party || !online || debtMissing.length === 0, `данные клиента для долга: ${debtMissing.join(', ')}`, '#debt-data', 'данные клиента'],
     [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
     [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
     // В режиме кассы плашки нет (строки не сдвигаются): «Не хватает: … открытая смена».
@@ -3456,37 +3457,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               )}
             </div>
           )}
-          {debtAmount > 0 && party && !party.inn.trim() && (
-            <div className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
-              <div className="text-amber-900">
-                Для документа о долге нужен {party.kind === 'company' ? 'ИНН фирмы' : 'ПИН клиента (14 цифр с паспорта)'}.
-              </div>
-              <div className="flex gap-2">
-                <input
-                  id="debt-inn"
-                  className="min-w-0 flex-1"
-                  {...num('digits')}
-                  placeholder={party.kind === 'company' ? 'ИНН' : 'ПИН'}
-                  value={innText}
-                  onChange={(e) => setInnText(e.target.value)}
-                />
-                <Button
-                  variant="secondary"
-                  disabled={innSave.busy || !/^\d{10,14}$/.test(innText.trim())}
-                  onClick={() =>
-                    void innSave.run(async () => {
-                      const saved = await patch<Party>(`/parties/${party.id}`, { inn: innText.trim() })
-                      setParty({ ...party, inn: saved.inn })
-                      setInnText('')
-                      toast('Записано в карточку клиента')
-                    })
-                  }
-                >
-                  Записать
-                </Button>
-              </div>
-              <ErrorBox error={innSave.error} />
+          {debtAmount > 0 && party && debtMissing.length > 0 && (
+            <div id="debt-data" className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm" data-testid="debt-data">
+              <div className="text-amber-900">Для долга нужны данные клиента, как в расписке. Не хватает: {debtMissing.join(', ')}.</div>
+              <Button variant="secondary" data-testid="debt-data-open" disabled={!online} onClick={() => setPartyEdit(true)}>
+                Заполнить данные клиента
+              </Button>
             </div>
+          )}
+          {partyEdit && party && (
+            <PartyDataModal
+              party={party}
+              onClose={() => setPartyEdit(false)}
+              onSaved={(saved) => {
+                setParty({ ...party, ...saved })
+                setPartyEdit(false)
+              }}
+            />
           )}
           {bankList.length > 1 && noncashMethods.length > 0 && (
             <div className="flex flex-col gap-2 text-sm" data-testid="pay-bank">

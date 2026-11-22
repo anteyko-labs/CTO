@@ -171,7 +171,7 @@ async fn world(pool: PgPool) -> W {
         )
         .await,
     );
-    sqlx::query("update parties set due_days = 10 where id = $1::uuid")
+    sqlx::query("update parties set due_days = 10, first_name = 'Бакыт', last_name = 'Асанов' where id = $1::uuid")
         .bind(&client)
         .execute(&pool)
         .await
