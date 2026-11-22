@@ -550,6 +550,14 @@ async fn update_party(
                 .map(str::to_string)
         })
         .unwrap_or_default();
+    // Сменить физлицо на юрлицо и обратно может только владелец.
+    let kind_before = before
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if kind_now != kind_before && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     let person = person_name(
         &kind_now,
         req.first_name.as_deref(),

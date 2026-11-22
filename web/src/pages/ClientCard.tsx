@@ -518,6 +518,16 @@ export default function ClientCard() {
       toast('Сохранено')
     })
 
+  /** Физлицо ↔ юрлицо — только владелец. */
+  const toggleKind = () =>
+    void row.run(async () => {
+      const to = party.kind === 'company' ? 'person' : 'company'
+      if (!window.confirm(to === 'company' ? 'Сделать клиента юрлицом (фирмой)?' : 'Сделать клиента физлицом?')) return
+      await patch<Party>(`/parties/${party.id}`, { kind: to })
+      card.reload()
+      toast(to === 'company' ? 'Теперь юрлицо' : 'Теперь физлицо')
+    })
+
   const toggleActive = () =>
     void row.run(async () => {
       await patch<Party>(`/parties/${party.id}`, { active: !party.active })
@@ -659,6 +669,15 @@ export default function ClientCard() {
             </button>
           </div>
         )}
+        <div>
+          <div className="text-xs text-slate-500">Вид</div>
+          <div className="font-medium">{party.kind === 'company' ? 'юрлицо' : 'физлицо'}</div>
+          {owner && (
+            <button type="button" data-testid="party-kind-toggle" className="mt-1 text-xs text-sky-700 underline" onClick={toggleKind}>
+              {party.kind === 'company' ? 'сделать физлицом' : 'сделать юрлицом'}
+            </button>
+          )}
+        </div>
         <div>
           <div className="text-xs text-slate-500">Телефон</div>
           <div className="font-medium">{party.phone || '—'}</div>

@@ -13486,3 +13486,60 @@ async fn owner_qr_on_safe_return_pay_change_offline_and_income(pool: PgPool) {
         "{inc}"
     );
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn only_owner_changes_party_kind(pool: PgPool) {
+    // Физлицо ↔ юрлицо меняет только владелец; администратор с правом «Клиенты» — 403.
+    let app = setup(pool.clone()).await;
+    grant_admin(&pool, "clients").await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (s, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&owner),
+        Some(json!({ "role": "customer", "kind": "person", "first_name": "Асан", "last_name": "Фирмов", "phone": "0700111222" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let url = format!("/api/v1/parties/{}", p["id"].as_str().unwrap());
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &url,
+        Some(&admin),
+        Some(json!({ "kind": "company" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &url,
+        Some(&admin),
+        Some(json!({ "phone": "0700333444" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, p) = call(
+        &app,
+        "PATCH",
+        &url,
+        Some(&owner),
+        Some(json!({ "kind": "company" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["kind"], "company");
+    let (s, _, p) = call(
+        &app,
+        "PATCH",
+        &url,
+        Some(&owner),
+        Some(json!({ "kind": "person" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["kind"], "person");
+}
