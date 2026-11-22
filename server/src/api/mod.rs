@@ -16,6 +16,7 @@ pub mod bot_debtors;
 pub mod bot_drafts;
 pub mod bot_feed;
 pub mod bot_reports;
+pub mod bot_signs;
 pub mod bot_staff;
 pub mod branches;
 pub mod cabinet;

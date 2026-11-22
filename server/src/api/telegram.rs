@@ -389,7 +389,7 @@ const ASK_ENDED: &str = "Режим вопросов закрыт. Спроси�
 const ASK_EXPIRED: &str = "Режим вопросов закрыт — нажмите «💬 Спросить»";
 
 /// Кнопки клиента: из чата владельца они не вопрос и не команда.
-const CUSTOMER_BUTTONS: [&str; 8] = [
+const CUSTOMER_BUTTONS: [&str; 9] = [
     BTN_CARS,
     BTN_PAST,
     BTN_BONUS,
@@ -398,6 +398,7 @@ const CUSTOMER_BUTTONS: [&str; 8] = [
     BTN_LEAVE_YES,
     BTN_BACK,
     BTN_CONTACT,
+    crate::api::bot_signs::BTN_SIGNS,
 ];
 
 /// Чат клиента отвязан: карточка отключена или номер в ней изменился (ADR-063).
@@ -435,6 +436,7 @@ impl Keys {
         let rows: Vec<Vec<Value>> = match self {
             Keys::Contact => vec![vec![
                 json!({ "text": BTN_CONTACT, "request_contact": true }),
+                json!(crate::api::bot_signs::BTN_SIGNS),
             ]],
             Keys::Owner => vec![
                 vec![json!(BTN_TODAY), json!(BTN_SHIFT), json!(BTN_DEBTS)],
@@ -1238,6 +1240,15 @@ async fn message(
             section_keys(customer.is_some(), employee.is_some()),
         ));
     }
+    // «🔎 Найти себя по ИНН, ФИО или госномеру» (задача 046): два признака из трёх.
+    if !owner
+        && customer.is_none()
+        && employee.is_none()
+        && !chat_admin(conn, chat_id).await?
+        && let Some(r) = crate::api::bot_signs::on_message(conn, chat_id, raw).await?
+    {
+        return Ok(r);
+    }
     let both = customer.is_some() && employee.is_some();
     // Чат работника — не больше 30 действий в минуту (SPEC-23).
     if employee.is_some() && bot_staff::too_often(conn, chat_id).await? {
@@ -1714,31 +1725,57 @@ async fn link_by_code(
             },
         ));
     };
+    link_party(
+        conn,
+        chat_id,
+        p.id,
+        &p.name,
+        &p.phone,
+        p.branch_id,
+        "link",
+        employee,
+    )
+    .await
+}
+
+/// Привязать чат к карточке клиента без телефона (код из ссылки, два признака — задача 046):
+/// номер из карточки — номер подключения, журнал `telegram.customer_link` с `via`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn link_party(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    party_id: Uuid,
+    name: &str,
+    phone: &str,
+    branch_id: Uuid,
+    via: &str,
+    employee: bool,
+) -> AppResult<Reply> {
     let mut tx = conn.begin().await?;
     sqlx::query!(
         r#"insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, $3)
            on conflict (chat_id) do update set party_id = excluded.party_id, phone = excluded.phone, linked_at = now()"#,
         chat_id,
-        p.id,
-        p.phone
+        party_id,
+        phone
     )
     .execute(&mut *tx)
     .await?;
     bot_journal(
         &mut tx,
-        p.branch_id,
+        branch_id,
         "telegram.customer_link",
         "party",
-        Some(p.id),
-        json!({ "chat": chat_id, "via": "link" }),
+        Some(party_id),
+        json!({ "chat": chat_id, "via": via }),
     )
     .await?;
     tx.commit().await?;
-    let book = customer_book(conn, p.id).await?;
+    let book = customer_book(conn, party_id).await?;
     Ok(Reply::new(
         format!(
             "{}, вы подключены ✅\n\n• Напомним о замене масла.\n• За каждую замену масла — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «📜 Прошлые ТО», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
-            p.name
+            name
         ),
         section_keys(true, employee),
     ))

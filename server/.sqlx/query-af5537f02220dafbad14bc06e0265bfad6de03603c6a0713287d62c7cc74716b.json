@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_sign_wait (chat_id, expires_at) values ($1, now() + interval '15 minutes')\n               on conflict (chat_id) do update set expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "af5537f02220dafbad14bc06e0265bfad6de03603c6a0713287d62c7cc74716b"
+}

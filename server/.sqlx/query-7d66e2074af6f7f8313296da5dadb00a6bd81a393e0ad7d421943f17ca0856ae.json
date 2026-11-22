@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_sign_tries (chat_id) values ($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d66e2074af6f7f8313296da5dadb00a6bd81a393e0ad7d421943f17ca0856ae"
+}
