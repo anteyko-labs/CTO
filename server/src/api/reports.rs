@@ -368,6 +368,7 @@ async fn totals_in(
     let revaluation = sqlx::query_scalar!(
         r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
            where branch_id = $1 and doc_type in ('revaluation', 'revision')
+             and not public.opening_doc(doc_id)
              and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
              and public.pnl_in_window(created_at, $4, $5)"#,
         branch_id,
@@ -633,6 +634,7 @@ pub async fn totals_between(
     let revaluation = sqlx::query_scalar!(
         r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
            where branch_id = $1 and doc_type in ('revaluation', 'revision')
+             and not public.opening_doc(doc_id)
              and created_at >= $2 and created_at <= coalesce($3, now())"#,
         branch_id,
         start,
@@ -967,6 +969,7 @@ async fn profit_in(
            rv as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, sum(m.value_delta_tyiyn) as v
                   from stock_movements m
                   where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')
+                    and not public.opening_doc(m.doc_id)
                     and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
                     and public.pnl_in_window(m.created_at, $4, $5)
                   group by 1),

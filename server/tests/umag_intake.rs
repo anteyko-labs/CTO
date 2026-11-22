@@ -304,6 +304,13 @@ async fn intake_new_link_undo_and_post(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(value, 5 * 35_000);
+    // Начальный остаток: в прибыль не входит.
+    let opening: bool = sqlx::query_scalar("select public.opening_doc($1::text::uuid)")
+        .bind(&rev)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(opening);
     assert_eq!(stock(&pool, &new_id).await, 4);
     let stats = ok(&app, "GET", "/api/v1/old-catalog", &owner, None).await;
     assert_eq!(stats["intake_todo"], 0);

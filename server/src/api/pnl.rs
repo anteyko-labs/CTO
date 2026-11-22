@@ -477,6 +477,7 @@ pub async fn detail(
            left join revisions r on r.id = m.doc_id
            left join users u on u.id = coalesce(r.posted_by, r.user_id)
            where m.branch_id = $1 and m.doc_type = 'revision' and m.doc_id is not null
+             and not public.opening_doc(m.doc_id)
              and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
              and public.pnl_in_window(m.created_at, $4, $5)
            group by m.doc_id, r.number, r.posted_at, u.full_name
@@ -504,7 +505,7 @@ pub async fn detail(
     // Движения ревизии без документа (их нет, но сумма должна сойтись с итогом) — в итог.
     let revision_tyiyn = sqlx::query_scalar!(
         r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
-           where branch_id = $1 and doc_type = 'revision'
+           where branch_id = $1 and doc_type = 'revision' and not public.opening_doc(doc_id)
              and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3
              and public.pnl_in_window(created_at, $4, $5)"#,
         b,
@@ -522,7 +523,7 @@ pub async fn detail(
                   (-sum(m.value_delta_tyiyn))::bigint as "amount!"
            from stock_movements m
            left join products p on p.id = m.product_id
-           where m.branch_id = $1 and m.doc_type = 'revaluation'
+           where m.branch_id = $1 and m.doc_type = 'revaluation' and not public.opening_doc(m.doc_id)
              and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
              and public.pnl_in_window(m.created_at, $4, $5)
            group by 1, p.id, p.name

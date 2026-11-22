@@ -1304,8 +1304,9 @@ pub(crate) async fn whole_draft_for_intake(
     let number = ops::next_counter(&mut *conn, ctx.user.branch_id, "revision").await?;
     let id = new_id();
     sqlx::query!(
-        r#"insert into revisions (id, branch_id, number, category_id, comment, user_id, device_id)
-           values ($1, $2, $3, null, $4, $5, $6)"#,
+        // Начальный остаток: в прибыль и отчёты не входит (миграция 0127).
+        r#"insert into revisions (id, branch_id, number, category_id, comment, user_id, device_id, opening)
+           values ($1, $2, $3, null, $4, $5, $6, true)"#,
         id,
         ctx.user.branch_id,
         number,
