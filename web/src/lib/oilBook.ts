@@ -95,6 +95,8 @@ export interface VehicleBook {
   comment?: string
   /** Машина в списке клиента; убранная клиентом в боте — false (ADR-062). */
   active?: boolean
+  /** Личная машина работника, которую оплачивает фирма (ADR-199): имя работника. */
+  personal_of?: string | null
   /** Пробег машины — в км или милях (ADR-084). */
   mileage_unit?: MileageUnit
   /** Следующая замена масла в единице машины. */

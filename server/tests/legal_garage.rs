@@ -605,3 +605,83 @@ async fn cabinet_driver_waits_for_approval(pool: PgPool) {
     let n = w.get("/api/v1/notifications").await;
     assert!(n.to_string().contains("водитель отклонён"), "{n}");
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn personal_car_from_card_is_separate(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.mode("off", 10).await;
+    let firm = w
+        .firm("ОсОО Карта", "0700 44-55-66", "05050505050505")
+        .await;
+    // Машина фирмы и личная машина работника — из карточки фирмы.
+    let own = w
+        .ok(
+            "POST",
+            &format!("/api/v1/parties/{firm}/vehicles"),
+            json!({ "plate": "01KG100AAA" }),
+        )
+        .await;
+    assert_eq!(own["personal_of"], Value::Null);
+    let car = w
+        .ok(
+            "POST",
+            &format!("/api/v1/parties/{firm}/vehicles"),
+            json!({ "plate": "01KG200BBB", "owner_name": "Бакыт", "owner_phone": "0555 11 22 33" }),
+        )
+        .await;
+    assert_eq!(car["personal_of"], "Бакыт");
+    assert_eq!(car["status"], "active");
+    let car_id = car["id"].as_str().unwrap().to_string();
+
+    // В книжке фирмы — обе, личная с именем работника и после машины фирмы.
+    let book = w.get(&format!("/api/v1/parties/{firm}/oil-book")).await;
+    let plates: Vec<(&str, &Value)> = book
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["plate"].as_str().unwrap(), &b["personal_of"]))
+        .collect();
+    assert_eq!(
+        plates,
+        vec![
+            ("01KG100AAA", &Value::Null),
+            ("01KG200BBB", &json!("Бакыт"))
+        ]
+    );
+
+    // Тот же телефон — тот же работник, вторая машина ему же.
+    let car2 = w
+        .ok(
+            "POST",
+            &format!("/api/v1/parties/{firm}/vehicles"),
+            json!({ "plate": "01KG300CCC", "owner_name": "Бакыт", "owner_phone": "+996 555 112 233" }),
+        )
+        .await;
+    let owners: i64 = sqlx::query_scalar(
+        "select count(distinct party_id) from party_vehicles where id in ($1::uuid, $2::uuid)",
+    )
+    .bind(&car_id)
+    .bind(car2["id"].as_str().unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(owners, 1);
+
+    // Долг за личную машину, проданную на фирму, — на фирме.
+    w.ok("POST", "/api/v1/sales", w.sale_car(&firm, &car_id))
+        .await;
+    assert_eq!(w.balance(&firm).await, 100_000);
+
+    // У физлица «личной машины работника» нет.
+    let (s, _) = w
+        .req(
+            "POST",
+            &format!(
+                "/api/v1/parties/{}/vehicles",
+                w.worker(&firm, "0700 99 88 77").await
+            ),
+            Some(json!({ "plate": "01KG400DDD", "owner_name": "Кто-то" })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}

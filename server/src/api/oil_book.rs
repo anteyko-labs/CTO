@@ -547,6 +547,8 @@ pub struct VehicleBook {
     pub active: bool,
     /// Пробег машины — в км или милях (ADR-084).
     pub mileage_unit: String,
+    /// Личная машина работника, которую оплачивает фирма (ADR-199): имя работника.
+    pub personal_of: Option<String>,
     /// Следующая замена масла в единице машины.
     pub next_mileage: Option<i32>,
     /// Интервал и следующая замена масла: последний известный пробег + интервал, дата
@@ -1412,11 +1414,15 @@ pub async fn books_with_removed(
 ) -> AppResult<Vec<VehicleBook>> {
     // Машины и книжка общие для филиалов (SPEC-33): без отбора по филиалу.
     let vehicles = sqlx::query!(
-        r#"select id, plate, brand, model, comment, active, mileage_unit
-           from party_vehicles
-           where ($1::uuid is null or party_id = $1) and ($2::uuid is null or id = $2)
-             and (active or $2::uuid is not null or $3)
-           order by active desc, plate"#,
+        r#"select v.id, v.plate, v.brand, v.model, v.comment, v.active, v.mileage_unit,
+                  (select o.name from parties o where o.id = v.party_id and v.party_id <> $1)
+                      as "personal_of?"
+           from party_vehicles v
+           where ($1::uuid is null or v.party_id = $1
+                  or (v.paid_by_party_id = $1 and v.status <> 'rejected'))
+             and ($2::uuid is null or v.id = $2)
+             and (v.active or $2::uuid is not null or $3)
+           order by v.active desc, (v.party_id <> $1) nulls first, v.plate"#,
         party_id,
         vehicle_id,
         removed
@@ -1612,6 +1618,7 @@ pub async fn books_with_removed(
             active: v.active,
             next_mileage: oil.next_mileage,
             mileage_unit: v.mileage_unit,
+            personal_of: v.personal_of,
             interval_km: oil.interval_km.unwrap_or(8000),
             interval_days: oil.interval_days.unwrap_or(31),
             next_km: oil.next_km,

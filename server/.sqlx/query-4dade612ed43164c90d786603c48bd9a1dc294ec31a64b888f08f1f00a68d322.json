@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from parties\n              where role = 'customer' and kind = 'person' and active and merged_into is null\n                and phone_norm(phone) = $1\n              order by created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4dade612ed43164c90d786603c48bd9a1dc294ec31a64b888f08f1f00a68d322"
+}

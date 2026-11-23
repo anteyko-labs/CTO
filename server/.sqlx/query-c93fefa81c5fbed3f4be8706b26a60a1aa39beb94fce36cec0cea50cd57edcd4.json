@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment, plate_norm,\n                                       mileage_unit, paid_by_party_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c93fefa81c5fbed3f4be8706b26a60a1aa39beb94fce36cec0cea50cd57edcd4"
+}

@@ -777,6 +777,55 @@ struct VehicleReq {
     /// Пробег в км или милях (ADR-084); без него — км у новой, прежняя у правки.
     #[serde(default)]
     mileage_unit: Option<String>,
+    /// Личная машина работника фирмы, которую оплачивает фирма (ADR-199): ФИО работника.
+    /// Пусто — машина самой фирмы (или клиента-физлица).
+    #[serde(default)]
+    owner_name: String,
+    #[serde(default)]
+    owner_phone: String,
+}
+
+/// Работник фирмы — владелец личной машины: физлицо с этим телефоном, иначе новое физлицо.
+async fn personal_owner(
+    tx: &mut sqlx::PgConnection,
+    ctx: &Ctx,
+    name: &str,
+    phone: &str,
+) -> AppResult<Uuid> {
+    if let Some(key) = crate::domain::phone::key(phone) {
+        let found = sqlx::query_scalar!(
+            "select id from parties
+              where role = 'customer' and kind = 'person' and active and merged_into is null
+                and phone_norm(phone) = $1
+              order by created_at limit 1",
+            key
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(found) = found {
+            return Ok(found);
+        }
+    }
+    let pid = new_id();
+    sqlx::query!(
+        "insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', $3, $4)",
+        pid,
+        ctx.user.branch_id,
+        name,
+        phone
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut *tx,
+        ctx,
+        "party.create",
+        "party",
+        Some(pid),
+        json!({ "name": name, "source": "personal_car" }),
+    )
+    .await?;
+    Ok(pid)
 }
 
 fn check_unit(unit: Option<&str>) -> AppResult<()> {
@@ -807,10 +856,27 @@ async fn create_vehicle(
         crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
     let unit = req.mileage_unit.clone().unwrap_or_else(|| "km".into());
     // Блокировка клиента: два одновременных добавления одного номера не заведут две машины.
-    let party_name = sqlx::query_scalar!("select name from parties where id = $1 for update", id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let party = sqlx::query!(
+        "select name, kind from parties where id = $1 for update",
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let party_name = party.name;
+    // Личная машина работника: машина записана на работника (физлицо), платит фирма.
+    let owner_name = req.owner_name.trim().to_string();
+    let (owner_id, paid_by) = if owner_name.is_empty() {
+        (id, None)
+    } else {
+        if party.kind != "company" {
+            return Err(invalid("личная машина работника — только у юрлица"));
+        }
+        (
+            personal_owner(&mut tx, &ctx, &owner_name, req.owner_phone.trim()).await?,
+            Some(id),
+        )
+    };
     // Этот номер у клиента уже есть — возвращаем его машину с историей, а не заводим дубль.
     // Убранную (клиентом в боте или точкой) — возвращаем в список (ADR-062).
     let own = sqlx::query_as!(
@@ -819,15 +885,26 @@ async fn create_vehicle(
                   null::text as "personal_of?" from party_vehicles
            where party_id = $1 and plate_norm = $2
            order by active desc, created_at limit 1"#,
-        id,
+        owner_id,
         norm
     )
     .fetch_optional(&mut *tx)
     .await?;
     if let Some(mut v) = own {
         if !v.active {
-            restore_vehicle_tx(&mut tx, &ctx, id, v.id, "add").await?;
+            restore_vehicle_tx(&mut tx, &ctx, owner_id, v.id, "add").await?;
             v.active = true;
+        }
+        if let Some(firm) = paid_by {
+            sqlx::query!(
+                "update party_vehicles set paid_by_party_id = $2, status = 'active' where id = $1",
+                v.id,
+                firm
+            )
+            .execute(&mut *tx)
+            .await?;
+            v.status = "active".into();
+            v.personal_of = Some(owner_name.clone());
         }
         tx.commit().await?;
         return Ok(Json(v));
@@ -835,17 +912,18 @@ async fn create_vehicle(
     let vid = new_id();
     sqlx::query!(
         r#"insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment, plate_norm,
-                                       mileage_unit)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+                                       mileage_unit, paid_by_party_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
         vid,
         branch_id,
-        id,
+        owner_id,
         plate,
         brand,
         model,
         req.comment.trim(),
         norm,
-        unit
+        unit,
+        paid_by
     )
     .execute(&mut *tx)
     .await?;
@@ -856,7 +934,7 @@ async fn create_vehicle(
            where v.plate_norm = $1 and v.party_id <> $2
            order by p.name"#,
         norm,
-        id
+        owner_id
     )
     .fetch_all(&mut *tx)
     .await?;
@@ -883,7 +961,7 @@ async fn create_vehicle(
         "party.vehicle",
         "party",
         Some(id),
-        json!({ "plate": plate, "vehicle_id": vid }),
+        json!({ "plate": plate, "vehicle_id": vid, "personal_of": paid_by.map(|_| owner_name.clone()) }),
     )
     .await?;
     tx.commit().await?;
@@ -896,7 +974,7 @@ async fn create_vehicle(
         active: true,
         mileage_unit: unit,
         status: "active".into(),
-        personal_of: None,
+        personal_of: paid_by.map(|_| owner_name),
     }))
 }
 

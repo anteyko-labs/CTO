@@ -1004,6 +1004,7 @@ export default function ClientCard() {
       {adding === 'vehicle' && (
         <VehicleFormModal
           partyId={party.id}
+          company={party.kind === 'company'}
           onClose={() => setAdding(null)}
           onSaved={() => {
             setAdding(null)
