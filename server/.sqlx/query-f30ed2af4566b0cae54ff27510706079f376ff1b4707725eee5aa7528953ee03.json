@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.number, coalesce(p.name, '') as \"party!\",\n                  coalesce((select full_name from employees where id = $2), '') as \"cashier!\"\n           from sales s left join parties p on p.id = $3 where s.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "party!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "cashier!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "f30ed2af4566b0cae54ff27510706079f376ff1b4707725eee5aa7528953ee03"
+}

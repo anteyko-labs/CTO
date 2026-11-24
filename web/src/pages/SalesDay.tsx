@@ -44,6 +44,11 @@ function Marks({ s, fix }: { s: SaleListItem; fix?: CorrectionMark }) {
       {s.kind === 'return' && <Badge tone="rose">{s.no_receipt ? 'возврат без чека' : 'возврат'}</Badge>}
       {s.debt_tyiyn !== 0 && <Badge tone="amber">в долг {formatSom(Math.abs(s.debt_tyiyn))}</Badge>}
       <CorrectionBadges mark={fix} />
+      {s.responsibility && (
+        <span className="text-xs text-amber-800" data-testid="sale-responsibility">
+          {s.responsibility}
+        </span>
+      )}
     </>
   )
 }
@@ -202,6 +207,11 @@ export default function SalesDay() {
                       <div>
                         <CorrectionBadges mark={fixes.data?.get(s.id)} />
                       </div>
+                      {s.responsibility && (
+                        <div className="text-xs text-amber-800" data-testid="sale-responsibility">
+                          {s.responsibility}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-2">
                       <Client name={s.party_name} phone={s.party_phone} fallback="—" />

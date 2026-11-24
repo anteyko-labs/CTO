@@ -187,6 +187,18 @@ export interface ShiftReport {
   after_close?: AfterClose | null
   /** Изменения оплаты чеков и переносы, деньги которых легли в эту смену, — каждое отдельно. */
   pay_fix_items?: AfterItem[]
+  /** Чеки юрлиц под ответственность кассира (задача 046). */
+  responsibility?: ResponsibilityRow[]
+}
+
+export interface ResponsibilityRow {
+  sale_id: string | null
+  sale_number: number
+  party_name: string
+  debt_tyiyn: number
+  reasons: string[]
+  note: string
+  cashier: string
 }
 
 /** Вкладки отчёта в порядке Умага. */

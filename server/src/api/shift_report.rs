@@ -338,6 +338,18 @@ pub struct PayoutRow {
     pub user_name: String,
 }
 
+/// Чек юрлица под ответственность кассира (задача 046, ADR-213).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ResponsibilityRow {
+    pub sale_id: Option<Uuid>,
+    pub sale_number: i64,
+    pub party_name: String,
+    pub debt_tyiyn: i64,
+    pub reasons: Vec<String>,
+    pub note: String,
+    pub cashier: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ShiftReport {
     pub shift: ShiftOut,
@@ -371,6 +383,9 @@ pub struct ShiftReport {
     /// каждое отдельной строкой (задача 003 Н1).
     #[serde(default)]
     pub pay_fix_items: Vec<crate::api::pay_fix::AfterItem>,
+    /// Блок «Под ответственность кассира» (задача 046).
+    #[serde(default)]
+    pub responsibility: Vec<ResponsibilityRow>,
 }
 
 /// Вид движения наличных и сторона: приход (`true`) или расход.
@@ -548,6 +563,7 @@ pub async fn load(
     let pay_fix_items = crate::api::pay_fix::shift_items(conn, branch_id, &shift).await?;
     let (money, money_totals) = money(conn, branch_id, owner, &shift, &w, &pay_fix_items).await?;
     let debts = debts(conn, branch_id, &w).await?;
+    let responsibility = responsibility(conn, branch_id, &w).await?;
     let payouts = payouts(conn, branch_id, owner, &w).await?;
     let payouts_tyiyn = sum(payouts.iter().map(|p| &p.amount_tyiyn))?;
     let cancelled = cancelled_lines::of_shift(conn, id).await?;
@@ -586,6 +602,7 @@ pub async fn load(
         transfers,
         after_close,
         pay_fix_items,
+        responsibility,
     })
 }
 
@@ -1369,6 +1386,70 @@ async fn debts(conn: &mut PgConnection, branch_id: Uuid, w: &Window) -> AppResul
         .collect())
 }
 
+/// Чеки смены под ответственность кассира — из журнала (отдельной таблицы нет).
+async fn responsibility(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    w: &Window,
+) -> AppResult<Vec<ResponsibilityRow>> {
+    let rows = sqlx::query!(
+        r#"select entity_id, data from audit_log
+           where branch_id = $1 and action = 'sale.cashier_responsibility'
+             and created_at >= $2 and created_at <= coalesce($3, now())
+           order by created_at, id"#,
+        branch_id,
+        w.start,
+        w.end
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let d = &r.data;
+            let text = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let num = |k: &str| d.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            ResponsibilityRow {
+                sale_id: r.entity_id,
+                sale_number: num("number"),
+                party_name: text("party"),
+                debt_tyiyn: num("debt_tyiyn"),
+                reasons: d
+                    .get("reasons")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                note: text("note"),
+                cashier: text("cashier"),
+            }
+        })
+        .collect())
+}
+
+/// Строки «Под ответственность кассира» для текста отчёта.
+pub fn responsibility_lines(rows: &[ResponsibilityRow]) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![format!("⚠ Под ответственность кассира: {}", rows.len())];
+    for r in rows {
+        out.push(format!(
+            "№ {} «{}» {} — {}. Кассир {}: «{}»",
+            r.sale_number,
+            r.party_name,
+            format_som(r.debt_tyiyn),
+            r.reasons.join("; "),
+            r.cashier,
+            r.note
+        ));
+    }
+    out
+}
+
 /// Выплаты сотрудникам за время смены: кому, сколько, за что и откуда.
 async fn payouts(
     conn: &mut PgConnection,
@@ -1778,6 +1859,7 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
 
     let mut more = payout_lines(&r.payouts);
     more.extend(debt_lines(&r.debts));
+    more.extend(responsibility_lines(&r.responsibility));
     let repaid: Vec<String> = r
         .debts
         .iter()

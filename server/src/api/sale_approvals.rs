@@ -492,6 +492,8 @@ async fn force(
 /// Проверка в проведении чека: долг фирме в режимах «ждать» и «с таймаутом» — только по
 /// подтверждённому (или проведённому без подтверждения) запросу; режим «после» — запрос после
 /// чека. Чек без сети уже состоялся — не останавливается.
+/// `responsibility` — пояснение кассира (задача 046, ADR-213): нет ответа фирмы — чек проводится,
+/// запрос остаётся открытым с `forced_*`, возвращается причина для журнала. Отказ фирмы не обходится.
 pub async fn on_sale(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -499,12 +501,13 @@ pub async fn on_sale(
     req: &SaleReq,
     debt: i64,
     offline: bool,
-) -> AppResult<()> {
+    responsibility: Option<&str>,
+) -> AppResult<Option<String>> {
     let Some(party_id) = req.party_id else {
-        return Ok(());
+        return Ok(None);
     };
     if debt <= 0 {
-        return Ok(());
+        return Ok(None);
     }
     expire_due(conn).await?;
     let row = sqlx::query!(
@@ -522,14 +525,26 @@ pub async fn on_sale(
             ));
         }
         let ok = matches!(r.status.as_str(), "approved" | "skipped") || r.forced_at.is_some();
+        let mut reason = None;
         if !ok && !offline {
-            return Err(match r.status.as_str() {
-                "rejected" => AppError::ConflictCode(
-                    "approval_rejected",
-                    "Фирма отклонила обслуживание — чек не проведён".into(),
-                ),
-                _ => AppError::ConflictCode("approval_required", "Ждём подтверждения фирмы".into()),
-            });
+            match (r.status.as_str(), responsibility) {
+                ("rejected", _) => {
+                    return Err(AppError::ConflictCode(
+                        "approval_rejected",
+                        "Фирма отклонила обслуживание — чек не проведён".into(),
+                    ));
+                }
+                (_, Some(note)) => {
+                    force_by_cashier(conn, ctx, r.id, note).await?;
+                    reason = Some(NO_ANSWER.to_string());
+                }
+                _ => {
+                    return Err(AppError::ConflictCode(
+                        "approval_required",
+                        "Ждём подтверждения фирмы".into(),
+                    ));
+                }
+            }
         }
         sqlx::query!(
             "update sale_approvals set sale_id = $2 where id = $1 and sale_id is null",
@@ -538,21 +553,21 @@ pub async fn on_sale(
         )
         .execute(&mut *conn)
         .await?;
-        return Ok(());
+        return Ok(reason);
     }
     if req.correction.is_some() {
-        return Ok(());
+        return Ok(None);
     }
     let s = load_settings(conn, ctx.user.branch_id).await?;
     let mode = s.approval_mode.as_str();
     if mode == "off" || !is_company(conn, party_id, ctx.user.branch_id).await? {
-        return Ok(());
+        return Ok(None);
     }
     // Чек без сети уже состоялся (I10): после синхронизации — запрос фирме с отметкой
     // «проведено без сети», фирма отвечает как в режиме «после», владельцу — событие.
     if offline {
         if !reachable(conn, party_id).await? {
-            return Ok(());
+            return Ok(None);
         }
         let id = insert(
             conn,
@@ -568,7 +583,7 @@ pub async fn on_sale(
         )
         .await?;
         journal(conn, id, "offline", "").await?;
-        return Ok(());
+        return Ok(None);
     }
     if !reachable(conn, party_id).await? {
         // Спросить некого — чек как раньше, отметка «не спрошено».
@@ -585,7 +600,7 @@ pub async fn on_sale(
             false,
         )
         .await?;
-        return Ok(());
+        return Ok(None);
     }
     if mode == "after" {
         insert(
@@ -601,12 +616,53 @@ pub async fn on_sale(
             false,
         )
         .await?;
-        return Ok(());
+        return Ok(None);
+    }
+    if let Some(note) = responsibility {
+        // Запроса ещё не было — он появляется уже с чеком, фирма ответит позже (отметка).
+        let id = insert(
+            conn,
+            ctx,
+            req,
+            party_id,
+            mode,
+            "pending",
+            None,
+            Some(sale_id),
+            None,
+            false,
+        )
+        .await?;
+        force_by_cashier(conn, ctx, id, note).await?;
+        return Ok(Some(NO_ANSWER.to_string()));
     }
     Err(AppError::ConflictCode(
         "approval_required",
         "Сначала запросите подтверждение фирмы".into(),
     ))
+}
+
+/// Причина в журнале чека под ответственность кассира, когда фирма ещё не ответила.
+const NO_ANSWER: &str = "фирма ещё не подтвердила обслуживание";
+
+/// Чек проведён под ответственность кассира до ответа фирмы: запрос остаётся открытым.
+async fn force_by_cashier(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    note: &str,
+) -> AppResult<()> {
+    sqlx::query!(
+        "update sale_approvals set forced_at = now(), forced_by = $2, forced_note = $3
+         where id = $1",
+        id,
+        ctx.user.id,
+        note
+    )
+    .execute(&mut *conn)
+    .await?;
+    // Владельцу — одно событие чека `sale.cashier_responsibility`, а не ещё и ответ фирмы.
+    Ok(())
 }
 
 /// Отметка запроса на экране чека.
@@ -619,11 +675,19 @@ pub struct SaleMark {
     /// Чек проведён без сети, фирму спросили после синхронизации.
     #[serde(default)]
     pub offline: bool,
+    /// Под ответственность кассира (задача 046): кто провёл и его пояснение.
+    #[serde(default)]
+    pub forced_note: Option<String>,
+    #[serde(default)]
+    pub forced_by: Option<String>,
 }
 
 pub async fn mark_of(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option<SaleMark>> {
     let r = sqlx::query!(
-        "select status, forced_at, reason, decided_by, offline from sale_approvals where sale_id = $1",
+        r#"select a.status, a.forced_at, a.reason, a.decided_by, a.offline, a.forced_note,
+                  u.full_name as "forced_by?"
+           from sale_approvals a left join users u on u.id = a.forced_by
+           where a.sale_id = $1"#,
         sale_id
     )
     .fetch_optional(&mut *conn)
@@ -634,6 +698,8 @@ pub async fn mark_of(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option
         reason: r.reason,
         decided_by: r.decided_by,
         offline: r.offline,
+        forced_by: r.forced_note.as_ref().and(r.forced_by),
+        forced_note: r.forced_note,
     }))
 }
 
@@ -796,7 +862,8 @@ pub async fn notices(conn: &mut PgConnection) -> AppResult<Vec<Notice>> {
     expire_due(conn).await?;
     let rows = sqlx::query!(
         r#"select a.id, a.party_id, p.name from sale_approvals a join parties p on p.id = a.party_id
-           where a.status in ('pending', 'expired') and a.forced_at is null
+           where a.status in ('pending', 'expired')
+             and (a.forced_at is null or (a.forced_note is not null and a.status = 'pending'))
              and a.created_at > now() - interval '1 day'
            order by a.created_at"#
     )

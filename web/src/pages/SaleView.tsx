@@ -453,6 +453,11 @@ export default function SaleView() {
             <Badge tone={sale.approval.status === 'rejected' ? 'rose' : sale.approval.status === 'approved' ? 'green' : 'amber'}>{approvalMarkText(sale.approval)}</Badge>
           </div>
         )}
+        {sale.responsibility && (
+          <div data-testid="sale-responsibility">
+            <Badge tone="amber">{sale.responsibility}</Badge>
+          </div>
+        )}
         {sale.master_fee_tyiyn !== 0 && (
           <div data-testid="master-fee">
             Мастеру за замену: {formatSom(sale.master_fee_tyiyn)}

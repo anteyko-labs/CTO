@@ -278,6 +278,7 @@ fn takeaway(w: &World, party: Option<Uuid>, lines: Vec<SaleLineReq>, total: i64)
         debt_signature_png: None,
         correction: None,
         vehicle_kind: None,
+        responsibility: None,
     }
 }
 

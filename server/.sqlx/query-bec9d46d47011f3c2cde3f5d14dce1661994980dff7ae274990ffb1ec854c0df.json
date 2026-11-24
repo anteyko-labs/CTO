@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as \"master_name?\",\n                  pt.name as \"party_name?\", nullif(pt.phone, '') as \"party_phone?\",\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as \"debt_tyiyn!\",\n                  s.total_tyiyn, s.reversal_of, s.no_receipt, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           where s.branch_id = $1\n             and s.business_date = $2\n           order by s.created_at desc",
+  "query": "select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as \"master_name?\",\n                  pt.name as \"party_name?\", nullif(pt.phone, '') as \"party_phone?\",\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as \"debt_tyiyn!\",\n                  s.total_tyiyn, s.reversal_of, s.no_receipt, s.created_at,\n                  (select 'Под ответственность: ' || coalesce(a.data->>'cashier', '') || ' — «'\n                          || coalesce(a.data->>'note', '') || '»'\n                   from audit_log a\n                   where a.action = 'sale.cashier_responsibility' and a.entity_id = s.id\n                   limit 1) as \"responsibility?\"\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           where s.branch_id = $1\n             and s.business_date = $2\n           order by s.created_at desc",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,11 @@
         "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "responsibility?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -88,8 +93,9 @@
       false,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "8fb5732756653903cfffcc5924f258193f36d6fbfdf103e1502b098ff67dc676"
+  "hash": "bec9d46d47011f3c2cde3f5d14dce1661994980dff7ae274990ffb1ec854c0df"
 }

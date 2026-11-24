@@ -24,7 +24,18 @@ export async function askApproval(body: unknown): Promise<SaleApproval> {
   return post<SaleApproval>('/sales/approvals', { draft: body })
 }
 
-export function SaleApprovalWait({ approval, onReady, onClose }: { approval: SaleApproval; onReady: () => void; onClose: () => void }) {
+export function SaleApprovalWait({
+  approval,
+  onReady,
+  onClose,
+  onResponsibility,
+}: {
+  approval: SaleApproval
+  onReady: () => void
+  onClose: () => void
+  /** «Провести под мою ответственность» (задача 046): фирма ещё не ответила; отказ фирмы — нельзя. */
+  onResponsibility?: () => void
+}) {
   const [a, setA] = useState(approval)
   const { run, busy, error } = useAction()
   const id = a.id
@@ -64,6 +75,11 @@ export function SaleApprovalWait({ approval, onReady, onClose }: { approval: Sal
           {a.can_force && (
             <Button disabled={busy} onClick={() => void force()}>
               Провести без подтверждения
+            </Button>
+          )}
+          {onResponsibility && waiting && !a.can_force && (
+            <Button variant="secondary" onClick={onResponsibility}>
+              Провести под мою ответственность
             </Button>
           )}
           <Button variant="secondary" onClick={onClose}>

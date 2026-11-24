@@ -66,6 +66,7 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon, type IconName } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, toast } from '../components/ui'
+import { addReason, canTakeResponsibility, noteError } from '../lib/responsibility'
 import { ApiError, get, newOpId, noServerAnswer, patch, post, qs, randomId, serverReachable } from '../lib/api'
 import { priceChangeText, repriceLines, type FreshCatalog, type PriceChange } from '../lib/cartPrices'
 import { debtSignatures, printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
@@ -639,6 +640,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [priceChanges, setPriceChanges] = useState<PriceChange[]>([])
   // Чек в долг фирмы ждёт её подтверждения (задача 039 C, ADR-202).
   const [approvalWait, setApprovalWait] = useState<SaleApproval | null>(null)
+  // «Провести под мою ответственность» (задача 046): причины отказа и окно с пояснением; пояснение
+  // уходит только с повтором этого же чека (тот же op_id).
+  const [resp, setResp] = useState<{ reasons: string[]; open: boolean; note: string; tried: boolean } | null>(null)
+  const respNote = useRef<string | null>(null)
 
   // Исправление оставляет кассира и мастера исходного чека, даже если их уже отключили.
   const cashiers = employees.data?.filter((e) => e.is_cashier && (e.active || e.id === fix?.state.cashierId)) ?? []
@@ -1353,7 +1358,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     ],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]', 'получено мало'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]', 'клиент для долга'],
-    [debtAmount === 0 || !carUnconfirmed || !online, 'машина не подтверждена фирмой — в долг нельзя: другая оплата или машина', '[data-client]', 'машина не подтверждена'],
+    // Машина ждёт ответа фирмы — решает сервер: её можно провести под ответственность кассира
+    // (задача 046); отклонённую фирмой — нельзя.
+    [debtAmount === 0 || !carUnconfirmed || carStatus === 'pending' || !online, 'машина не подтверждена фирмой — в долг нельзя: другая оплата или машина', '[data-client]', 'машина не подтверждена'],
     [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента', undefined, 'баллы другого клиента'],
     [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново', undefined, 'баллов больше итога'],
     [!bonus || online, 'баллы списываются только при связи с сервером', undefined, 'баллы — нет связи'],
@@ -1375,6 +1382,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       try {
         await submitNow()
       } finally {
+        respNote.current = null
         sending.current = false
         autoPrint.current = false
         // Отсканированное, пока чек проводился, — в следующий чек (или в этот, если сервер отказал).
@@ -1457,6 +1465,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       ...content,
       removed_lines: forServer(dropped),
       ...(debtAmount > 0 && debtSign ? { debt_signature_png: debtSign.png } : {}),
+      ...(respNote.current ? { responsibility: { note: respNote.current } } : {}),
     }
     // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
     // нет связи, и после отправки (SPEC-09).
@@ -1502,7 +1511,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     // Долг фирме — сначала запрос подтверждения фирме (задача 039 C): режимы «ждать» и «с
     // таймаутом» держат чек, пока фирма не ответит; тот же op_id — тот же запрос. Нет связи — чек
     // уходит как без сети.
-    if (debtAmount > 0 && party?.kind === 'company') {
+    if (debtAmount > 0 && party?.kind === 'company' && !respNote.current) {
       let approval: SaleApproval | null = null
       try {
         approval = await askApproval(body)
@@ -1510,6 +1519,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         if (!(e instanceof ApiError ? keepInQueue(e) : !navigator.onLine)) throw e
       }
       if (approval && !approval.can_post) {
+        // Окно оплаты закрывается — иначе оно поверх окна ожидания фирмы.
+        setPayOpen(false)
         setApprovalWait(approval)
         return
       }
@@ -1529,6 +1540,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         // открыта» (задача 005 Н4) — смену перечитать: кнопка станет «Открыть смену».
         await removeSale(opId).catch(() => undefined)
         if (e instanceof ApiError && e.status === 409) shift.reload()
+        // Нет ответа фирмы — кассир может провести чек под свою ответственность (задача 046).
+        if (e instanceof ApiError && canTakeResponsibility(e.code) && !respNote.current) {
+          const why = e.message
+          setResp((r) => ({ reasons: addReason(r?.reasons ?? [], why), open: false, note: r?.note ?? '', tried: false }))
+        } else setResp(null)
         throw e
       }
       await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
@@ -1545,6 +1561,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       return
     }
     await markSent(opId, sale.number).catch(() => undefined)
+    setResp(null)
     const saleChange = payMode === 'cash' ? change : null
     setDone({ sale, change: saleChange })
     // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
@@ -2363,6 +2380,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     <>
       {touch && wrongKindBox}
       <ErrorBox error={error} />
+      {resp && error && (
+        <Button
+          variant="secondary"
+          data-testid="responsibility-open"
+          onClick={() => {
+            // Окно оплаты закрывается — окно пояснения поверх него не встало бы.
+            setPayOpen(false)
+            setResp({ ...resp, open: true })
+          }}
+        >
+          Провести под мою ответственность
+        </Button>
+      )}
       {touch ? (
         // Режим кассы: чего не хватает — одной строкой; касание ведёт к первому полю (ui-rules §9).
         blockers.length > 0 && (
@@ -2675,7 +2705,48 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             approval={approvalWait}
             onClose={() => setApprovalWait(null)}
             onReady={approvalReady}
+            onResponsibility={() => {
+              setApprovalWait(null)
+              setResp({ reasons: ['Ждём подтверждения фирмы'], open: true, note: '', tried: false })
+            }}
           />
+        )}
+        {resp?.open && (
+          <Modal title="Провести под мою ответственность" onClose={() => setResp({ ...resp, open: false })}>
+            <div className="flex flex-col gap-3" data-testid="responsibility">
+              <div>
+                <div className="text-sm font-medium text-slate-700">Почему чек не проходит:</div>
+                <ul className="ml-4 list-disc text-sm">
+                  {resp.reasons.map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+              <Field label="Почему проводите" required error={resp.tried ? noteError(resp.note) : null}>
+                <textarea id="responsibility-note" rows={3} maxLength={300} value={resp.note} onChange={(e) => setResp({ ...resp, note: e.target.value })} />
+              </Field>
+              <div className="text-xs text-slate-500">Владелец сразу получит уведомление с вашим пояснением.</div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    if (noteError(resp.note)) {
+                      setResp({ ...resp, tried: true })
+                      return
+                    }
+                    respNote.current = resp.note.trim()
+                    setResp({ ...resp, open: false })
+                    void submit()
+                  }}
+                >
+                  Провести
+                </Button>
+                <Button variant="secondary" onClick={() => setResp({ ...resp, open: false })}>
+                  Отмена
+                </Button>
+              </div>
+            </div>
+          </Modal>
         )}
         {priceChanges.length > 0 && (
           <div

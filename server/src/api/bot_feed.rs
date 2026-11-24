@@ -26,9 +26,10 @@ pub fn routes() -> Router<AppState> {
 #[cfg(test)]
 const SALE_ACTIONS: [&str; 3] = ["sale.post", "sale.return", "sale.return_no_receipt"];
 
-/// Закрытие смены с её отчётом приходит всегда: за ним идёт «Итог дня» (ADR-121).
+/// Закрытие смены с её отчётом приходит всегда: за ним идёт «Итог дня» (ADR-121). Чек под
+/// ответственность кассира — тоже, выключателя нет (задача 046, ADR-213).
 #[cfg(test)]
-const ALWAYS: [&str; 1] = ["shift.close"];
+const ALWAYS: [&str; 2] = ["shift.close", "sale.cashier_responsibility"];
 
 /// Режимы чеков: каждый чек; только в долг и возвраты; не присылать (по умолчанию).
 const SALE_MODES: [&str; 3] = ["all", "debt_returns", "none"];

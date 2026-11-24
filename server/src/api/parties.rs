@@ -1395,6 +1395,9 @@ pub async fn debt_data_missing(
 /// Проверяет, что клиент может брать в долг, и что работник с машиной — его.
 /// Чек без сети уже состоялся: отключённого клиента и убранную машину он не отклоняет —
 /// машина возвращается в список, а причины уходят владельцу (ADR-062). Возвращает эти причины.
+/// `responsibility` — чек под ответственность кассира (задача 046, ADR-213): водитель или машина,
+/// ещё ждущие подтверждения фирмы, не отклоняют чек, а дают причину; отклонённые фирмой — отклоняют.
+#[allow(clippy::too_many_arguments)]
 pub async fn check_sale_party(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -1403,6 +1406,7 @@ pub async fn check_sale_party(
     vehicle_id: Option<Uuid>,
     offline: bool,
     on_debt: bool,
+    responsibility: bool,
 ) -> AppResult<Vec<String>> {
     let mut bypass = Vec::new();
     let p = sqlx::query!(
@@ -1436,7 +1440,7 @@ pub async fn check_sale_party(
         .ok_or_else(|| invalid("работник не из этой фирмы"))?;
         // Водитель из кабинета ждёт подтверждения (или отклонён) — в долг фирмы нельзя (ADR-199).
         if on_debt && c.status != "active" {
-            if !offline {
+            if !offline && !(responsibility && c.status == "pending") {
                 return Err(AppError::ConflictCode(
                     "contact_pending",
                     if c.status == "pending" {
@@ -1471,7 +1475,7 @@ pub async fn check_sale_party(
         .ok_or_else(|| invalid("машина не из этой фирмы"))?;
         // Машина ждёт подтверждения фирмы (или отклонена) — в долг фирмы её не провести (п. 3).
         if on_debt && v.status != "active" {
-            if !offline {
+            if !offline && !(responsibility && v.status == "pending") {
                 return Err(AppError::ConflictCode(
                     "vehicle_pending",
                     if v.status == "pending" {
@@ -2545,6 +2549,9 @@ pub(crate) struct TimelineItem {
     pub(crate) debt_date: Option<NaiveDate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) user_name: Option<String>,
+    /// Чек под ответственность кассира (задача 046): метка с пояснением.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) responsibility: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2691,6 +2698,7 @@ pub(crate) async fn party_card_data(
         .map(|l| -l.amount_tyiyn)
         .fold(0i64, |acc, v| acc.saturating_add(v));
 
+    let mut marks = crate::api::sales::responsibility_marks(conn, &sale_ids).await?;
     let mut timeline: Vec<TimelineItem> = Vec::with_capacity(sales.len() + ledger.len());
     for s in &sales {
         let who = match (&s.contact, &s.plate) {
@@ -2727,6 +2735,7 @@ pub(crate) async fn party_card_data(
             },
             debt_date: None,
             user_name: None,
+            responsibility: marks.remove(&s.id),
         });
     }
     for l in &ledger {
@@ -2762,6 +2771,7 @@ pub(crate) async fn party_card_data(
             branch_name: (l.branch_id != user.branch_id).then(|| l.branch_name.clone()),
             debt_date: old_debt.then_some(l.business_date),
             user_name: old_debt.then(|| l.user_name.clone()),
+            responsibility: None,
         });
     }
     timeline.sort_by_key(|t| std::cmp::Reverse(t.at));

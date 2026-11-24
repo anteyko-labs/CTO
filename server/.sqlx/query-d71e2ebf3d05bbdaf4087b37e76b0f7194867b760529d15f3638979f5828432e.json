@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update sale_approvals set forced_at = now(), forced_by = $2, forced_note = $3\n         where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d71e2ebf3d05bbdaf4087b37e76b0f7194867b760529d15f3638979f5828432e"
+}

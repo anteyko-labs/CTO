@@ -33,6 +33,7 @@ import {
   type CancelledRow,
   type HourRow,
   type ReportLine,
+  type ResponsibilityRow,
   type SaleRow,
   type ShiftReport as Report,
   type TabKey,
@@ -185,6 +186,7 @@ export default function ShiftReport() {
         />
       )}
       {data.after_close && <AfterCloseBlock a={data.after_close} />}
+      <ResponsibilityBlock rows={data.responsibility ?? []} />
       <TransfersList items={data.transfers ?? []} open={open} onChanged={r.reload} />
 
       {tab === 'overview' && <Overview data={data} />}
@@ -901,5 +903,38 @@ function CancelledTab({ rows, total }: { rows: CancelledRow[]; total: number }) 
         </div>
       </Card>
     </div>
+  )
+}
+
+/** Чеки юрлиц под ответственность кассира (задача 046): видно сразу, на любой вкладке. */
+function ResponsibilityBlock({ rows }: { rows: ResponsibilityRow[] }) {
+  if (rows.length === 0) return null
+  return (
+    <Card>
+      <CardTitle>Под ответственность кассира</CardTitle>
+      <Table head={['Чек', 'Клиент', 'В долг', 'Причины', 'Пояснение']}>
+        {rows.map((r, i) => (
+          <tr key={`${r.sale_id ?? ''}-${i}`} data-testid="responsibility-row">
+            <td className="px-2 py-2">
+              {r.sale_id ? (
+                <Link className="text-sky-700 underline" to={`/sales/${r.sale_id}`}>
+                  № {r.sale_number}
+                </Link>
+              ) : (
+                `№ ${r.sale_number}`
+              )}
+            </td>
+            <td className="px-2 py-2">{r.party_name}</td>
+            <td className="px-2 py-2 md:text-right">
+              <Money value={r.debt_tyiyn} />
+            </td>
+            <td className="px-2 py-2">{r.reasons.join('; ')}</td>
+            <td className="px-2 py-2">
+              {r.cashier}: «{r.note}»
+            </td>
+          </tr>
+        ))}
+      </Table>
+    </Card>
   )
 }

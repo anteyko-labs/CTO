@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select a.id, a.party_id, p.name from sale_approvals a join parties p on p.id = a.party_id\n           where a.status in ('pending', 'expired') and a.forced_at is null\n             and a.created_at > now() - interval '1 day'\n           order by a.created_at",
+  "query": "select a.id, a.party_id, p.name from sale_approvals a join parties p on p.id = a.party_id\n           where a.status in ('pending', 'expired')\n             and (a.forced_at is null or (a.forced_note is not null and a.status = 'pending'))\n             and a.created_at > now() - interval '1 day'\n           order by a.created_at",
   "describe": {
     "columns": [
       {
@@ -28,5 +28,5 @@
       false
     ]
   },
-  "hash": "afd548d3455f97aaa28367ac29efe9d79921d339c3fe2d6523d570b49ac63d8c"
+  "hash": "6f4aae7267ea0a6762e2dd2643368164ac1ce3e641955fc61d9a4f7ce69d0fd8"
 }

@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 89] = [
+pub(crate) const WATCHED: [&str; 90] = [
     // Объединение карточек клиентов или поставщиков с долгом (задача 043).
     "party.merge",
     // Машина фирмы ждёт подтверждения или решена; пересчёт долга клиента (задача 037).
@@ -58,6 +58,8 @@ pub(crate) const WATCHED: [&str; 89] = [
     "vehicle.plate_conflict",
     "receipt.supplier_payment",
     "sale.offline_bypass",
+    // Чек юрлица под ответственность кассира (задача 046, ADR-213).
+    "sale.cashier_responsibility",
     "sale.cost_unknown",
     "party.limit_change",
     "shift.reopen",
@@ -1096,6 +1098,27 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                         .join("; ")
                 })
                 .unwrap_or_default(),
+        ),
+        "sale.cashier_responsibility" => (
+            format!(
+                "Чек № {} в долг «{}» на {} проведён под ответственность кассира {}",
+                num("number").unwrap_or(0),
+                text("party"),
+                money(num("debt_tyiyn")),
+                text("cashier")
+            ),
+            format!(
+                "{}. Кассир: «{}»",
+                data.get("reasons")
+                    .and_then(Value::as_array)
+                    .map(|r| r
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; "))
+                    .unwrap_or_default(),
+                text("note")
+            ),
         ),
         "sale.cost_unknown" => (
             format!(

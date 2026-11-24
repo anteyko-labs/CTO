@@ -599,6 +599,8 @@ export interface Sale {
   has_debt_signature?: boolean
   /** Подтверждение фирмы по чеку в долг (задача 039 C, ADR-202). */
   approval?: SaleApprovalMark | null
+  /** Под ответственность кассира (задача 046): «Под ответственность: Имя — «пояснение»». */
+  responsibility?: string | null
 }
 
 export interface SaleApprovalMark {
@@ -608,10 +610,14 @@ export interface SaleApprovalMark {
   decided_by: string
   /** Чек проведён без сети — фирму спросили после синхронизации. */
   offline?: boolean
+  /** Проведено под ответственность кассира до ответа фирмы (задача 046). */
+  forced_note?: string | null
+  forced_by?: string | null
 }
 
 /** Отметка подтверждения фирмы на чеке. */
 export function approvalMarkText(a: SaleApprovalMark): string {
+  if (a.forced && a.forced_note) return a.status === 'pending' ? 'Под ответственность кассира · ждём ответа фирмы' : `Под ответственность кассира · ${approvalStatusText(a)}`
   if (a.forced) return 'Проведено без подтверждения фирмы'
   const text = approvalStatusText(a)
   return a.offline ? `Проведено без сети · ${text}` : text
@@ -685,6 +691,8 @@ export interface SaleListItem {
   /** Возврат без чека (ADR-105). */
   no_receipt?: boolean
   created_at: string
+  /** Под ответственность кассира (задача 046): метка с пояснением. */
+  responsibility?: string | null
 }
 
 export interface SalesDay {
@@ -804,6 +812,8 @@ export interface PartyTimelineItem {
   number: number | null
   doc_id: string | null
   comment: string
+  /** Чек под ответственность кассира (задача 046): метка с пояснением. */
+  responsibility?: string
   /** Запись другого филиала (SPEC-33): его название; документ открывается только в нём. */
   branch_name?: string
   /** Старый долг из тетради (SPEC-38): дата долга и кто занёс. */

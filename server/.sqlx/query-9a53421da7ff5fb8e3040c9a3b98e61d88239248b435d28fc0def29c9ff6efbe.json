@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select status, forced_at, reason, decided_by, offline from sale_approvals where sale_id = $1",
+  "query": "select a.status, a.forced_at, a.reason, a.decided_by, a.offline, a.forced_note,\n                  u.full_name as \"forced_by?\"\n           from sale_approvals a left join users u on u.id = a.forced_by\n           where a.sale_id = $1",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,16 @@
         "ordinal": 4,
         "name": "offline",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "forced_note",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "forced_by?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -39,8 +49,10 @@
       true,
       false,
       false,
+      false,
+      true,
       false
     ]
   },
-  "hash": "4cb2cb9afba6294782bdf1d1351937b4ca5a3a69c59d5fc94067c24d664c5da6"
+  "hash": "9a53421da7ff5fb8e3040c9a3b98e61d88239248b435d28fc0def29c9ff6efbe"
 }

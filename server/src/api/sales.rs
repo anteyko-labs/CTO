@@ -167,6 +167,65 @@ pub struct SaleReq {
     /// филиала (у исправленного чека — исходного). Только отметка: цены и состав не меняются.
     #[serde(default)]
     pub vehicle_kind: Option<String>,
+    /// «Провести под мою ответственность» (задача 046, ADR-213): чек в долг фирмы проводится без
+    /// её подтверждения водителя, машины или обслуживания; пояснение кассира — владельцу.
+    #[serde(default)]
+    pub responsibility: Option<ResponsibilityReq>,
+}
+
+/// Пояснение кассира к чеку под его ответственность.
+#[derive(Deserialize, Clone, Debug)]
+pub struct ResponsibilityReq {
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Пояснение кассира: пустое — как без него (прежний отказ); иначе от 5 до 300 знаков.
+pub fn responsibility_note(r: Option<&ResponsibilityReq>) -> AppResult<Option<String>> {
+    let Some(note) = r.map(|r| r.note.trim()).filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    let n = note.chars().count();
+    if !(5..=300).contains(&n) {
+        return Err(invalid("почему проводите — от 5 до 300 знаков"));
+    }
+    Ok(Some(note.to_string()))
+}
+
+/// Журнал чека под ответственность кассира (задача 046, ADR-213): владельцу сразу — лента и бот.
+#[allow(clippy::too_many_arguments)]
+async fn cashier_responsibility(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    sale_id: Uuid,
+    cashier_id: Uuid,
+    req: &SaleReq,
+    debt: i64,
+    reasons: &[String],
+    note: &str,
+) -> AppResult<()> {
+    let r = sqlx::query!(
+        r#"select s.number, coalesce(p.name, '') as "party!",
+                  coalesce((select full_name from employees where id = $2), '') as "cashier!"
+           from sales s left join parties p on p.id = $3 where s.id = $1"#,
+        sale_id,
+        cashier_id,
+        req.party_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    ops::audit(
+        conn,
+        ctx,
+        "sale.cashier_responsibility",
+        "sale",
+        Some(sale_id),
+        json!({
+            "number": r.number, "reasons": reasons, "note": note, "cashier": r.cashier,
+            "user": ctx.user.full_name, "party": r.party, "debt_tyiyn": debt,
+        }),
+    )
+    .await
 }
 
 /// Как проводится исправленный чек (SPEC-29 §24, ADR-085).
@@ -301,6 +360,9 @@ pub struct SaleOut {
     /// Подтверждение фирмы по чеку в долг (задача 039 C): статус запроса или ничего.
     #[serde(default)]
     pub approval: Option<crate::api::sale_approvals::SaleMark>,
+    /// Чек юрлица под ответственность кассира (задача 046): «Под ответственность: Имя — «…»».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responsibility: Option<String>,
 }
 
 fn car_kind() -> String {
@@ -430,7 +492,33 @@ pub async fn load_sale(
         has_debt_signature: h.has_debt_signature,
         book: crate::api::oil_book::sale_book(conn, id).await?,
         approval: crate::api::sale_approvals::mark_of(conn, id).await?,
+        responsibility: responsibility_marks(conn, &[id]).await?.remove(&id),
     })
+}
+
+/// Метка «Под ответственность: Имя — «пояснение»» по чекам (задача 046): из журнала.
+pub async fn responsibility_marks(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> AppResult<HashMap<Uuid, String>> {
+    let rows = sqlx::query!(
+        r#"select entity_id as "id!", coalesce(data->>'cashier', '') as "cashier!",
+                  coalesce(data->>'note', '') as "note!"
+           from audit_log
+           where action = 'sale.cashier_responsibility' and entity_id = any($1)"#,
+        ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.id,
+                format!("Под ответственность: {} — «{}»", r.cashier, r.note),
+            )
+        })
+        .collect())
 }
 
 /// Строка, подготовленная к проведению.
@@ -1431,6 +1519,13 @@ pub async fn post_sale_core(
     let offline = req.offline && req.client_time.is_some() && replay.is_none();
     // Проверки справочника не отклоняют чек: он без сети или повторяет исходный.
     let lenient = offline || replay.is_some();
+    // Под ответственность кассира — только онлайн-чек в долг (без сети он и так проводится).
+    let responsibility = match responsibility_note(req.responsibility.as_ref())? {
+        Some(n) if !offline && replay.is_none() && req.correction.is_none() => Some(n),
+        _ => None,
+    };
+    // Что кассир провёл под свою ответственность — владельцу отдельным событием (задача 046).
+    let mut responsible: Vec<String> = Vec::new();
     // Что чек без сети обошёл из проверок онлайн-продажи — владельцу одним уведомлением (ADR-062).
     let mut bypass: Vec<String> = Vec::new();
     // Время устройства впереди сервера: чек из очереди ушёл почти сразу, а часы кассы спешат.
@@ -1664,9 +1759,15 @@ pub async fn post_sale_core(
                 req.vehicle_id,
                 offline,
                 debt_total > 0,
+                responsibility.is_some(),
             )
             .await?;
-            bypass.extend(reasons);
+            // Онлайн-чек причин здесь даёт только под ответственность кассира.
+            if offline {
+                bypass.extend(reasons);
+            } else {
+                responsible.extend(reasons);
+            }
         }
         None if debt_total > 0 => return Err(invalid("для продажи в долг укажите клиента")),
         // «По счёту» платит юрлицо по выставленному счёту — без клиента счёт не выставить (ADR-095).
@@ -2452,7 +2553,30 @@ pub async fn post_sale_core(
     )
     .await?;
     // Подтверждение заправки фирмой (задача 039 C, ADR-202).
-    crate::api::sale_approvals::on_sale(conn, ctx, id, &req, debt_total, offline).await?;
+    let no_answer = crate::api::sale_approvals::on_sale(
+        conn,
+        ctx,
+        id,
+        &req,
+        debt_total,
+        offline,
+        responsibility.as_deref(),
+    )
+    .await?;
+    responsible.extend(no_answer);
+    if let Some(note) = responsibility.as_ref().filter(|_| !responsible.is_empty()) {
+        cashier_responsibility(
+            conn,
+            ctx,
+            id,
+            cashier_id,
+            &req,
+            debt_total,
+            &responsible,
+            note,
+        )
+        .await?;
+    }
     ops::audit(
         conn,
         ctx,
@@ -3804,6 +3928,9 @@ pub(crate) struct SaleListItem {
     /// Возврат без чека (ADR-105).
     pub(crate) no_receipt: bool,
     pub(crate) created_at: DateTime<Utc>,
+    /// Под ответственность кассира (задача 046): метка с пояснением.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) responsibility: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -3869,7 +3996,12 @@ pub(crate) async fn sales_day(
                   pt.name as "party_name?", nullif(pt.phone, '') as "party_phone?",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
                             where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt_tyiyn!",
-                  s.total_tyiyn, s.reversal_of, s.no_receipt, s.created_at
+                  s.total_tyiyn, s.reversal_of, s.no_receipt, s.created_at,
+                  (select 'Под ответственность: ' || coalesce(a.data->>'cashier', '') || ' — «'
+                          || coalesce(a.data->>'note', '') || '»'
+                   from audit_log a
+                   where a.action = 'sale.cashier_responsibility' and a.entity_id = s.id
+                   limit 1) as "responsibility?"
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id

@@ -871,6 +871,11 @@ export default function ClientCard() {
                 </td>
                 <td className="px-2 py-2 text-slate-600">
                   {t.comment || (t.debt_date ? '' : '—')}
+                  {t.responsibility && (
+                    <div className="text-xs text-amber-800" data-testid="timeline-responsibility">
+                      {t.responsibility}
+                    </div>
+                  )}
                   {/* Старый долг из тетради (SPEC-38): дата долга и кто занёс. */}
                   {t.debt_date && (
                     <div className="text-xs text-slate-500" data-testid="old-debt-date">
