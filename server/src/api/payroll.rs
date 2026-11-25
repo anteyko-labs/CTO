@@ -998,6 +998,14 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         }
         return Ok(());
     }
+    // «Процент кассира с долга — сразу» (задача 050, ADR-214): долговая часть считается
+    // оплаченной — процент со всей валовой прибыли сейчас, ожидания погашения нет. Пометка в
+    // комментарии начисления говорит возврату и цене закупки, что долг уже дал процент.
+    let debt_now = debt > 0
+        && crate::api::cashier_settings::load(conn, ctx.user.branch_id)
+            .await?
+            .debt_percent_now;
+    let debt = if debt_now { 0 } else { debt };
     let now_base = paid_share(gross, total.saturating_sub(bonus), debt);
     let amount = div_round(i128::from(now_base) * i128::from(rate), 10_000).unwrap_or(0);
     add_accrual(
@@ -1012,7 +1020,7 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
             rule_id: Some(rule_id),
             doc_type: "sale",
             doc_id: Some(sale_id),
-            comment: "",
+            comment: if debt_now { DEBT_NOW_COMMENT } else { "" },
         },
     )
     .await?;
@@ -1071,6 +1079,28 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         }
     }
     Ok(())
+}
+
+/// Комментарий начисления процента с долгового чека, проведённого с настройкой «Процент кассира
+/// с долга — сразу» (задача 050): процент со всего чека уже начислен, долг его не ждёт.
+const DEBT_NOW_COMMENT: &str = "процент с долга — сразу";
+
+/// Процент чека начислен сразу и с долговой части (задача 050, ADR-214).
+async fn debt_percent_taken(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    sale_id: Uuid,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists(select 1 from payroll_accruals
+                         where branch_id = $1 and doc_type = 'sale' and doc_id = $2
+                           and kind = 'revenue_percent' and comment = $3) as "e!""#,
+        branch_id,
+        sale_id,
+        DEBT_NOW_COMMENT
+    )
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 /// Долговая часть процента ждёт погашения (ADR-035).
@@ -1230,7 +1260,13 @@ pub async fn resolve_cost_pending(
         }
         let rate = i128::from(r.rate_bp);
         // Оплаченная часть чека — процент сейчас; долговая — по мере погашения, как у всего чека.
-        let now_base = paid_share(gross, r.total_tyiyn.saturating_sub(r.bonus), r.debt);
+        // Долг чека уже дал процент сразу (задача 050) — строка тоже целиком сейчас.
+        let debt = if r.debt > 0 && debt_percent_taken(conn, branch_id, r.sale_id).await? {
+            0
+        } else {
+            r.debt
+        };
+        let now_base = paid_share(gross, r.total_tyiyn.saturating_sub(r.bonus), debt);
         let debt_base = gross - now_base;
         let mut base = now_base;
         if debt_base > 0 {
@@ -1337,10 +1373,13 @@ pub async fn reverse_for_return(
     let gross_back =
         r.gross_back
             .saturating_sub(bonus_share(r.bonus_back, r.counted_back, r.total_back));
+    // Процент с долга начислен сразу (задача 050) — возврат снимает его как с оплаченного чека.
+    let debt_paid =
+        r.debt_back > 0 && debt_percent_taken(conn, ctx.user.branch_id, r.orig_sale_id).await?;
     let base_back = paid_share(
         gross_back,
         r.total_back.saturating_sub(r.bonus_back),
-        r.debt_back,
+        if debt_paid { 0 } else { r.debt_back },
     );
     for row in rows {
         if row.net <= 0 {

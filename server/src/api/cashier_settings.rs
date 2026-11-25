@@ -116,6 +116,10 @@ pub struct CashierSettings {
     /// «Услуги бесплатно для клиента» (задача 036): цена услуг в чеке филиала — 0 с, ставка
     /// мастера за услугу начисляется как обычно. По умолчанию выключено — как было.
     pub services_free: bool,
+    /// «Процент кассира с долга — сразу» (задача 050, ADR-214): включено — процент с валовой
+    /// прибыли долгового чека начисляется целиком при проведении, будто долг оплачен; ожидания
+    /// погашения нет. По умолчанию выключено — как было (ADR-035).
+    pub debt_percent_now: bool,
     /// «Грузовая / Легковая» нового чека (задача 040 A, ADR-205): `car` или `truck`; кассир
     /// переключает на каждом чеке. По умолчанию — легковая (как было).
     pub vehicle_kind_default: String,
@@ -162,6 +166,7 @@ impl Default for CashierSettings {
             service_client_required: true,
             repay_other_branches: false,
             services_free: false,
+            debt_percent_now: false,
             vehicle_kind_default: "car".into(),
             services_car: true,
             services_truck: true,
@@ -348,6 +353,7 @@ mod tests {
         assert_eq!(d.barrel_pour_over_l, 150);
         assert!(!d.repay_other_branches);
         assert!(!d.services_free);
+        assert!(!d.debt_percent_now);
         assert_eq!(d.vehicle_kind_default, "car");
         assert!(
             normalize(CashierSettings {

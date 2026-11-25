@@ -357,6 +357,20 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
             Выключено — у клиента в каждом филиале свой долг: здесь гасят только долг этого филиала, долг в других виден в скобках. Включено —
             сначала гасится долг этого филиала, остаток — самые старые долги в других.
           </p>
+          <label className="mt-3 inline-flex items-center gap-2 text-sm">
+            <input
+              id="debt-percent-now"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={s.debt_percent_now}
+              onChange={(e) => set({ debt_percent_now: e.target.checked })}
+            />
+            Процент кассира с долга — сразу
+          </label>
+          <p className="mt-2 text-sm text-slate-500">
+            Выключено — процент кассира с долговой части чека приходит при погашении долга. Включено — процент со всей валовой прибыли чека
+            начисляется сразу, будто долг оплачен; погашение процент не добавляет. Действует для чеков после включения.
+          </p>
         </Card>
 
         <Card data-testid="cashier-profit">

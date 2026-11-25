@@ -120,6 +120,8 @@ export interface CashierSettings {
   repay_other_branches: boolean
   /** «Услуги бесплатно для клиента» (задача 036): услуги в чеке — 0 с, мастеру — его ставка. */
   services_free: boolean
+  /** «Процент кассира с долга — сразу» (задача 050). */
+  debt_percent_now: boolean
   /** «Грузовая / Легковая» нового чека (задача 040 A): кассир переключает на каждом чеке. */
   vehicle_kind_default: 'car' | 'truck'
   /** «Услуги легковых» и «Услуги грузовых» на кассе филиала (задача 044): хотя бы один включён. */
@@ -146,6 +148,7 @@ export const DEFAULT_CASHIER: CashierSettings = {
   barrel_pour_over_l: 150,
   repay_other_branches: false,
   services_free: false,
+  debt_percent_now: false,
   vehicle_kind_default: 'car',
   services_car: true,
   services_truck: true,
