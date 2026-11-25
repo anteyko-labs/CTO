@@ -29,6 +29,10 @@ pub fn routes() -> Router<AppState> {
             routing::get(salary_now).post(post_salary),
         )
         .route("/payroll/remains", routing::get(remains))
+        .route(
+            "/payroll/debt-backfill",
+            routing::get(debt_backfill_list).post(debt_backfill),
+        )
         .route("/payouts", routing::post(post_payout))
         .route("/payouts/{id}/reverse", routing::post(reverse_payout))
         .route(
@@ -1465,10 +1469,15 @@ pub async fn reverse_repayment(
                   debt_total_tyiyn, debt_remaining_tyiyn
            from payroll_pending
            where party_id = $1 and branch_id = $2 and debt_remaining_tyiyn < debt_total_tyiyn
+             and not exists (select 1 from payroll_accruals a
+                             where a.branch_id = payroll_pending.branch_id and a.doc_type = 'sale'
+                               and a.doc_id = payroll_pending.sale_id and a.kind = 'revenue_percent'
+                               and a.comment = $3)
            order by created_at desc
            for update"#,
         party_id,
-        ctx.user.branch_id
+        ctx.user.branch_id,
+        DEBT_NOW_COMMENT
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -1644,10 +1653,16 @@ pub async fn reverse_takes(conn: &mut PgConnection, ctx: &Ctx, ledger_id: Uuid) 
                   sum(t.accrued_tyiyn)::bigint as "accrued!"
            from payroll_pending_takes t join payroll_pending p on p.id = t.pending_id
            where t.ledger_id = $1 and t.branch_id = $2
+             -- Процент с долга чека уже начислен целиком (задачи 050, 054): погашение его не меняет.
+             and not exists (select 1 from payroll_accruals a
+                             where a.branch_id = p.branch_id and a.doc_type = 'sale'
+                               and a.doc_id = p.sale_id and a.kind = 'revenue_percent'
+                               and a.comment = $3)
            group by t.pending_id, p.sale_id, p.employee_id, p.rule_id
            order by t.pending_id"#,
         ledger_id,
-        ctx.user.branch_id
+        ctx.user.branch_id,
+        DEBT_NOW_COMMENT
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -2084,6 +2099,184 @@ pub struct OkOut {
     /// Проведённое начисление: премия, удержание, оклад или сторно.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<Uuid>,
+}
+
+// ---------- Процент с ждущих долговых чеков — разом (задача 054, ADR-216) ----------
+
+/// Ждущий долговой чек: процент с остатка долга по ставке дня чека.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BackfillLine {
+    pub sale_id: Uuid,
+    pub sale_number: i64,
+    pub business_date: NaiveDate,
+    pub party_name: String,
+    pub employee_id: Uuid,
+    pub employee_name: String,
+    pub rate_bp: i32,
+    pub base_tyiyn: i64,
+    pub percent_tyiyn: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BackfillOut {
+    pub lines: Vec<BackfillLine>,
+    pub total_tyiyn: i64,
+    /// Включена ли «Процент кассира с долга — сразу» в филиале: без неё начислять нельзя.
+    pub debt_percent_now: bool,
+}
+
+struct BackfillRow {
+    pending_id: Uuid,
+    rule_id: Option<Uuid>,
+    line: BackfillLine,
+}
+
+/// Ожидания процента филиала с остатком долга (ADR-035): база — доля валовой на остаток.
+async fn backfill_rows(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Vec<BackfillRow>> {
+    let rows = sqlx::query!(
+        r#"select k.id, k.sale_id, k.employee_id, k.rule_id, k.rate_bp, k.gross_tyiyn,
+                  k.debt_total_tyiyn, k.debt_remaining_tyiyn,
+                  s.number, s.business_date, p.name as party_name, e.full_name as employee_name
+           from payroll_pending k
+           join sales s on s.id = k.sale_id
+           join parties p on p.id = k.party_id
+           join employees e on e.id = k.employee_id
+           where k.branch_id = $1 and k.debt_remaining_tyiyn > 0
+           order by s.business_date, s.number, k.created_at
+           for update of k"#,
+        branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let base = div_round(
+                i128::from(r.gross_tyiyn) * i128::from(r.debt_remaining_tyiyn),
+                i128::from(r.debt_total_tyiyn.max(1)),
+            )
+            .unwrap_or(0)
+            .max(0);
+            let percent = div_round(i128::from(base) * i128::from(r.rate_bp), 10_000).unwrap_or(0);
+            BackfillRow {
+                pending_id: r.id,
+                rule_id: r.rule_id,
+                line: BackfillLine {
+                    sale_id: r.sale_id,
+                    sale_number: r.number,
+                    business_date: r.business_date,
+                    party_name: r.party_name,
+                    employee_id: r.employee_id,
+                    employee_name: r.employee_name,
+                    rate_bp: r.rate_bp,
+                    base_tyiyn: base,
+                    percent_tyiyn: percent,
+                },
+            }
+        })
+        .collect())
+}
+
+fn backfill_out(rows: &[BackfillRow], debt_percent_now: bool) -> BackfillOut {
+    BackfillOut {
+        total_tyiyn: rows.iter().map(|r| r.line.percent_tyiyn).sum(),
+        lines: rows.iter().map(|r| r.line.clone()).collect(),
+        debt_percent_now,
+    }
+}
+
+/// Что начислит «Начислить процент по ждущим долгам»: чеки, ставки, итог. Только владелец.
+async fn debt_backfill_list(
+    State(state): State<AppState>,
+    ctx: Ctx,
+) -> AppResult<Json<BackfillOut>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let mut tx = state.pool.begin().await?;
+    let on = crate::api::cashier_settings::load(&mut tx, ctx.user.branch_id)
+        .await?
+        .debt_percent_now;
+    let rows = backfill_rows(&mut tx, ctx.user.branch_id).await?;
+    tx.rollback().await?;
+    Ok(Json(backfill_out(&rows, on)))
+}
+
+#[derive(Deserialize)]
+pub struct BackfillReq {
+    pub op_id: Uuid,
+}
+
+/// Процент по всем ждущим долговым чекам филиала — разом, датой каждого чека (задача 054,
+/// ответы 1б, 2б): долговая часть считается оплаченной, ожидание закрывается, погашение потом
+/// процент не добавляет — как у чека с «процентом с долга — сразу» (задача 050).
+async fn debt_backfill(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<BackfillReq>,
+) -> AppResult<Json<BackfillOut>> {
+    const KIND: &str = "payroll.debt_backfill";
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let branch_id = ctx.user.branch_id;
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let on = crate::api::cashier_settings::load(&mut tx, branch_id)
+        .await?
+        .debt_percent_now;
+    if !on {
+        return Err(AppError::Conflict(
+            "сначала включите «Процент кассира с долга — сразу» в «Настройки → Касса»".into(),
+        ));
+    }
+    let rows = backfill_rows(&mut tx, branch_id).await?;
+    if rows.is_empty() {
+        return Err(AppError::Conflict(
+            "нечего начислять: ждущих долговых чеков нет".into(),
+        ));
+    }
+    for r in &rows {
+        lock_employee(&mut tx, branch_id, r.line.employee_id).await?;
+        add_accrual(
+            &mut tx,
+            &ctx,
+            Some(r.line.business_date),
+            Accrual {
+                employee_id: r.line.employee_id,
+                kind: "revenue_percent",
+                amount: r.line.percent_tyiyn,
+                base: Some(r.line.base_tyiyn),
+                rule_id: r.rule_id,
+                doc_type: "sale",
+                doc_id: Some(r.line.sale_id),
+                comment: DEBT_NOW_COMMENT,
+            },
+        )
+        .await?;
+        // Отметка, а не удаление (ADR-088): ждать больше нечего.
+        sqlx::query!(
+            "update payroll_pending set debt_remaining_tyiyn = 0 where id = $1",
+            r.pending_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    let out = backfill_out(&rows, on);
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "branch",
+        Some(branch_id),
+        json!({ "sales": out.lines.len(), "amount_tyiyn": out.total_tyiyn }),
+    )
+    .await?;
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 async fn post_accrual(

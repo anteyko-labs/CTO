@@ -7,7 +7,7 @@
 Сейчас WhatsApp — только официальный Cloud API Meta по шаблонам (ADR-107, SPEC-32 §1), он не настроен: на 25.11 в журнале 0 сообщений в WhatsApp.
 
 ## Противоречия (нужен ADR)
-ADR-107 «неофициальные шлюзы не используем» и tier2 «шаблоны WhatsApp (Meta не меняем)» — новый ADR-216: канал «WhatsApp по QR» (связанное устройство, как WhatsApp Web) на шлюзе whatsmeow (Go, отдельная служба). Риск блокировки номера Meta — снижаем паузами и дневным пределом. Официальный Cloud API остаётся запасным.
+ADR-107 «неофициальные шлюзы не используем» и tier2 «шаблоны WhatsApp (Meta не меняем)» — новый ADR-217: канал «WhatsApp по QR» (связанное устройство, как WhatsApp Web) на шлюзе whatsmeow (Go, отдельная служба). Риск блокировки номера Meta — снижаем паузами и дневным пределом. Официальный Cloud API остаётся запасным.
 
 ## Что меняется
 1. **Подключение.** «Настройки → Сообщения клиентам → WhatsApp»: «Подключить» → QR-код → владелец сканирует в WhatsApp или WhatsApp Business («Связанные устройства»); без камеры — «Код вместо QR»: 8 знаков, вводятся в «Связанные устройства → Связать по номеру телефона». Состояние: подключён (номер, с какого времени) / отключён / нужен новый QR; «Отключить». Отключился сам — уведомление владельцу в Телеграм (`whatsapp.disconnected`). Номер подключаем позже — программа готова и без него (ответ 1).
@@ -26,7 +26,7 @@ ADR-107 «неофициальные шлюзы не используем» и t
 Умный автоответчик (ответ 4б) — следующей задачей, на уже подключённом сервисе разбора текста (ключ есть, `server/src/api/assistant.rs`). Голосовые, фото, группы.
 
 ## Затронутые файлы
-`server/src/api/client_messages.rs:1898` (`deliver`), `:2060` (`run`), `:1187` (`party_chats`), новый `server/src/api/whatsapp_qr.rs`, `server/src/config.rs`, `deploy/cloud/`, `web/src/pages/ClientMessages.tsx`, `docs/tier-4/spec-32-client-messages.md`, ADR-216.
+`server/src/api/client_messages.rs:1898` (`deliver`), `:2060` (`run`), `:1187` (`party_chats`), новый `server/src/api/whatsapp_qr.rs`, `server/src/config.rs`, `deploy/cloud/`, `web/src/pages/ClientMessages.tsx`, `docs/tier-4/spec-32-client-messages.md`, ADR-217.
 
 ## Проверка
 `server/tests/whatsapp_qr.rs` (подставной шлюз): подключение и состояния; покупка — сразу в WhatsApp и Телеграм тем же текстом; номер без WhatsApp — «не отправлено»; +996; пауза и дневной предел, покупка первой; отключение → уведомление; без подключения — как сейчас. `web/src/lib/whatsappQr.test.ts`; e2e `whatsapp-qr.spec.ts`.

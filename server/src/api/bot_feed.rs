@@ -47,7 +47,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 102] = [
+const EVENTS: [(&str, &str, &str); 103] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -229,6 +229,11 @@ const EVENTS: [(&str, &str, &str); 102] = [
     ("payroll.salary", "payroll", "Начислен оклад"),
     ("payroll.salary_due", "payroll", "Сегодня расчёт оклада"),
     ("payroll.accrual", "payroll", "Премия или удержание"),
+    (
+        "payroll.debt_backfill",
+        "payroll",
+        "Процент кассирам по ждущим долгам",
+    ),
     (
         "payroll.accrual_reverse",
         "payroll",

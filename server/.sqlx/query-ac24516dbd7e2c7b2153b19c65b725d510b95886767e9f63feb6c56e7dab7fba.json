@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, sale_id, employee_id, rule_id, rate_bp, gross_tyiyn,\n                  debt_total_tyiyn, debt_remaining_tyiyn\n           from payroll_pending\n           where party_id = $1 and branch_id = $2 and debt_remaining_tyiyn < debt_total_tyiyn\n           order by created_at desc\n           for update",
+  "query": "select id, sale_id, employee_id, rule_id, rate_bp, gross_tyiyn,\n                  debt_total_tyiyn, debt_remaining_tyiyn\n           from payroll_pending\n           where party_id = $1 and branch_id = $2 and debt_remaining_tyiyn < debt_total_tyiyn\n             and not exists (select 1 from payroll_accruals a\n                             where a.branch_id = payroll_pending.branch_id and a.doc_type = 'sale'\n                               and a.doc_id = payroll_pending.sale_id and a.kind = 'revenue_percent'\n                               and a.comment = $3)\n           order by created_at desc\n           for update",
   "describe": {
     "columns": [
       {
@@ -47,7 +47,8 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -61,5 +62,5 @@
       false
     ]
   },
-  "hash": "522d5cb390f4e45e81ad314248344cdf47a0b10500bdab6b06e912d2039ba6e2"
+  "hash": "ac24516dbd7e2c7b2153b19c65b725d510b95886767e9f63feb6c56e7dab7fba"
 }

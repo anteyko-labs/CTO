@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 90] = [
+pub(crate) const WATCHED: [&str; 91] = [
     // Объединение карточек клиентов или поставщиков с долгом (задача 043).
     "party.merge",
     // Машина фирмы ждёт подтверждения или решена; пересчёт долга клиента (задача 037).
@@ -66,6 +66,7 @@ pub(crate) const WATCHED: [&str; 90] = [
     "debt.reverse",
     "payout.reverse",
     "payroll.accrual_reverse",
+    "payroll.debt_backfill",
     "payroll.rule",
     "payroll.rule_close",
     "settings.loyalty",
@@ -1239,6 +1240,15 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "payout.reverse" => (
             "Сторно выплаты сотруднику".into(),
             format!("{}{}", money(num("amount_tyiyn")), comment(data)),
+        ),
+        // Процент по ждущим долговым чекам — разом (задача 054).
+        "payroll.debt_backfill" => (
+            "Процент кассирам по ждущим долгам".into(),
+            format!(
+                "{} чек(ов) — {}",
+                num("sales").unwrap_or(0),
+                money(num("amount_tyiyn"))
+            ),
         ),
         "payroll.accrual_reverse" => (
             "Сторно начисления сотруднику".into(),

@@ -5,6 +5,7 @@
 // Каждое изменение — в журнал на сервере. Права на кнопки не меняются.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { DebtBackfill } from '../components/DebtBackfill'
 import { Button, Card, CardTitle, ErrorBox, Field, Loading, Notice, PageHeader, toast } from '../components/ui'
 import { newOpId, put } from '../lib/api'
 import {
@@ -371,6 +372,7 @@ function CashierSettingsForm({ initial }: { initial: CashierSettings }) {
             Выключено — процент кассира с долговой части чека приходит при погашении долга. Включено — процент со всей валовой прибыли чека
             начисляется сразу, будто долг оплачен; погашение процент не добавляет. Действует для чеков после включения.
           </p>
+          <DebtBackfill settingOn={s.debt_percent_now} />
         </Card>
 
         <Card data-testid="cashier-profit">

@@ -381,3 +381,217 @@ fn with_debt_signature(uri: &str, mut b: Value) -> Value {
     }
     b
 }
+
+// ---------- Задача 054: процент по ждущим долговым чекам — разом ----------
+
+impl World {
+    async fn backfill(&self, cookie: &str, op_id: Uuid) -> (StatusCode, Value) {
+        call(
+            &self.app,
+            "POST",
+            "/api/v1/payroll/debt-backfill",
+            Some(cookie),
+            Some(json!({ "op_id": op_id })),
+        )
+        .await
+    }
+
+    async fn left_pending(&self) -> i64 {
+        sqlx::query_scalar(
+            "select count(*)::bigint from payroll_pending where debt_remaining_tyiyn > 0",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn last_repayment(&self) -> Uuid {
+        sqlx::query_scalar(
+            "select id from party_ledger where kind = 'repayment' order by created_at desc limit 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn backfill_gives_percent_for_waiting_sales_on_their_dates(pool: PgPool) {
+    let w = World::new(pool).await;
+    // Второй кассир со своей ставкой 3 % (ответ 2б — всем кассирам филиала).
+    let e = ok(
+        &w.app,
+        "POST",
+        "/api/v1/employees",
+        &w.owner,
+        json!({ "full_name": "Эрбол", "is_cashier": true, "pin": "4321" }),
+    )
+    .await;
+    let erbol = e["id"].as_str().unwrap().to_string();
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "delete from employee_pay_rules where employee_id = $1::uuid and kind = 'revenue_percent'",
+    )
+    .bind(&erbol)
+    .execute(&w.pool)
+    .await
+    .ok();
+    sqlx::query(
+        "insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base, rate_bp, user_id)
+         values ($1, $2, $3::uuid, 'revenue_percent', 'cashier', 'gross', 300, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.branch)
+    .bind(&erbol)
+    .bind(owner_id)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    // Два ждущих чека: Айбек (2 %) весь в долг, Эрбол (3 %) — весь в долг; погашенный частично.
+    w.debt_sale(0).await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/sales",
+        &w.admin,
+        json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": erbol,
+            "party_id": w.firm,
+            "lines": [{ "kind": "piece", "product_id": w.filter, "qty": 1, "unit_price_tyiyn": 30_000 }],
+            "payments": [{ "method": "debt", "amount_tyiyn": 30_000 }]
+        }),
+    )
+    .await;
+    // Процент идёт кассиру смены: второй чек — будто со смены Эрбола по его ставке 3 %.
+    sqlx::query(
+        "update payroll_pending set employee_id = $1::uuid, rate_bp = 300
+         where sale_id = (select id from sales order by number desc limit 1)",
+    )
+    .bind(&erbol)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    // Погашение 150 с — половина первого чека: 2 с процента пришли как раньше.
+    w.repay(15_000).await;
+    let before = w.percent().await;
+    assert_eq!(w.left_pending().await, 2);
+
+    // Список: только владелец; без настройки «с долга — сразу» начислить нельзя.
+    let (s, _) = call(
+        &w.app,
+        "GET",
+        "/api/v1/payroll/debt-backfill",
+        Some(&w.admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let list = get(&w.app, "/api/v1/payroll/debt-backfill", &w.owner).await;
+    assert_eq!(list["lines"].as_array().unwrap().len(), 2, "{list}");
+    assert_eq!(list["debt_percent_now"], json!(false));
+    // Остаток первого: валовая 200 с × 1/2 × 2 % = 2 с; второй: 200 с × 3 % = 6 с.
+    assert_eq!(list["total_tyiyn"], json!(800), "{list}");
+    let (s, _) = w.backfill(&w.owner.clone(), Uuid::now_v7()).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = w.backfill(&w.admin.clone(), Uuid::now_v7()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    w.debt_percent_now(&w.owner.clone(), true).await;
+    let op = Uuid::now_v7();
+    let (s, out) = w.backfill(&w.owner.clone(), op).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["total_tyiyn"], json!(800));
+    assert_eq!(w.percent().await, before + 800);
+    assert_eq!(w.left_pending().await, 0);
+    // Датой каждого чека (ответ 1б).
+    let off: i64 = sqlx::query_scalar(
+        "select count(*)::bigint from payroll_accruals a join sales s on s.id = a.doc_id
+         where a.comment = 'процент с долга — сразу' and a.business_date <> s.business_date",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(off, 0);
+    // Повтор op_id — тот же ответ без дубля; новый запуск — «нечего начислять».
+    let (s, again) = w.backfill(&w.owner.clone(), op).await;
+    assert_eq!(
+        (s, again["total_tyiyn"].clone()),
+        (StatusCode::OK, json!(800))
+    );
+    assert_eq!(w.percent().await, before + 800);
+    let (s, _) = w.backfill(&w.owner.clone(), Uuid::now_v7()).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // Погашение остатка процент больше не добавляет.
+    w.repay(45_000).await;
+    assert_eq!(w.percent().await, before + 800);
+    // Журнал действий.
+    let logged: i64 = sqlx::query_scalar(
+        "select count(*)::bigint from audit_log where action = 'payroll.debt_backfill'",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(logged, 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn backfilled_sale_ignores_repayment_reverse_and_return_takes_it_back(pool: PgPool) {
+    let w = World::new(pool).await;
+    let sale = w.debt_sale(0).await;
+    w.repay(10_000).await;
+    let repayment = w.last_repayment().await;
+    w.debt_percent_now(&w.owner.clone(), true).await;
+    let (s, v) = w.backfill(&w.owner.clone(), Uuid::now_v7()).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(w.percent().await, 400, "весь процент чека — 4 с");
+    // Сторно погашения, бывшего до начисления, процент не трогает: долг считается оплаченным.
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/debts/ledger/{repayment}/reverse"),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" }),
+    )
+    .await;
+    assert_eq!(w.percent().await, 400);
+    assert_eq!(w.left_pending().await, 0);
+    // Возврат чека снимает процент, как у оплаченного.
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/sales/{sale}/return"),
+        &w.admin,
+        json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                "payments": [{ "method": "debt", "amount_tyiyn": 30_000 }] }),
+    )
+    .await;
+    assert_eq!(w.percent().await, 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn backfill_does_not_touch_other_branch(pool: PgPool) {
+    let w = World::new(pool).await;
+    w.debt_sale(0).await;
+    let other = ok(
+        &w.app,
+        "POST",
+        "/api/v1/branches",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "name": "Филиал Б", "address": "ул. Б", "phone": "0700 000 002" }),
+    )
+    .await;
+    let other = Uuid::parse_str(other["id"].as_str().unwrap()).unwrap();
+    // Ожидание этого филиала переносим в другой — у этого ждущих нет.
+    sqlx::query("update payroll_pending set branch_id = $1")
+        .bind(other)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    w.debt_percent_now(&w.owner.clone(), true).await;
+    let (s, _) = w.backfill(&w.owner.clone(), Uuid::now_v7()).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(w.left_pending().await, 1);
+}

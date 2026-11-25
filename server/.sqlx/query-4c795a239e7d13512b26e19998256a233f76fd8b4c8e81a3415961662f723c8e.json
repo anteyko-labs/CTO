@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update payroll_pending set debt_remaining_tyiyn = 0 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c795a239e7d13512b26e19998256a233f76fd8b4c8e81a3415961662f723c8e"
+}

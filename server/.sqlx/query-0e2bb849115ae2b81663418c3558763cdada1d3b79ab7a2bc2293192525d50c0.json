@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select k.id, k.sale_id, k.employee_id, k.rule_id, k.rate_bp, k.gross_tyiyn,\n                  k.debt_total_tyiyn, k.debt_remaining_tyiyn,\n                  s.number, s.business_date, p.name as party_name, e.full_name as employee_name\n           from payroll_pending k\n           join sales s on s.id = k.sale_id\n           join parties p on p.id = k.party_id\n           join employees e on e.id = k.employee_id\n           where k.branch_id = $1 and k.debt_remaining_tyiyn > 0\n           order by s.business_date, s.number, k.created_at\n           for update of k",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "rule_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "rate_bp",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "gross_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "debt_total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "debt_remaining_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 10,
+        "name": "party_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "employee_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0e2bb849115ae2b81663418c3558763cdada1d3b79ab7a2bc2293192525d50c0"
+}

@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.pending_id, p.sale_id, p.employee_id, p.rule_id,\n                  sum(t.take_tyiyn)::bigint as \"take!\", sum(t.base_tyiyn)::bigint as \"base!\",\n                  sum(t.accrued_tyiyn)::bigint as \"accrued!\"\n           from payroll_pending_takes t join payroll_pending p on p.id = t.pending_id\n           where t.ledger_id = $1 and t.branch_id = $2\n             -- Процент с долга чека уже начислен целиком (задачи 050, 054): погашение его не меняет.\n             and not exists (select 1 from payroll_accruals a\n                             where a.branch_id = p.branch_id and a.doc_type = 'sale'\n                               and a.doc_id = p.sale_id and a.kind = 'revenue_percent'\n                               and a.comment = $3)\n           group by t.pending_id, p.sale_id, p.employee_id, p.rule_id\n           order by t.pending_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pending_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "rule_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "take!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "base!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "accrued!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "90875afe8ba016b268d438e6247adb8ad81a8da1f0c80bcd996c8e6e94cdd048"
+}
