@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select phone from party_contacts where id = $1 and active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "phone",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "003f448190d4781d2eac2cd8580e55202fce5c56f84b35f60e499f3c91065e9c"
+}

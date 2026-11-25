@@ -20,6 +20,8 @@ import {
   OIL_TEMPLATE_TEXT,
   PAYMENT_MARKS,
   PAYMENT_TEMPLATE_TEXT,
+  PURCHASE_DRIVER_MARKS,
+  PURCHASE_MARKS,
   PURCHASE_TEMPLATE_TEXT,
   SAMPLE_VALUES,
   STATUS_LABELS,
@@ -117,7 +119,7 @@ function DebtorText({
 }: {
   id: string
   label: string
-  kind: 'payment' | 'monthly' | 'debt_due'
+  kind: 'payment' | 'monthly' | 'debt_due' | 'purchase' | 'purchase_debt' | 'purchase_driver'
   value: string
   onChange: (v: string) => void
   marks: readonly string[]
@@ -184,6 +186,12 @@ function editable(s: MessageSettingsOut): MessageSettings {
     monthly_template: s.monthly_template,
     monthly_language: s.monthly_language,
     debt_due_text: s.debt_due_text,
+    purchase_person_enabled: s.purchase_person_enabled,
+    purchase_firm_enabled: s.purchase_firm_enabled,
+    purchase_driver_enabled: s.purchase_driver_enabled,
+    purchase_text: s.purchase_text,
+    purchase_debt_text: s.purchase_debt_text,
+    purchase_driver_text: s.purchase_driver_text,
   }
 }
 
@@ -205,7 +213,10 @@ function SettingsForm({ s }: { s: MessageSettingsOut }) {
     textProblem(f.payment_text, PAYMENT_MARKS) !== null ||
     textProblem(f.monthly_text, MONTHLY_MARKS) !== null ||
     textProblem(f.monthly_firm_text, MONTHLY_FIRM_MARKS, true) !== null ||
-    textProblem(f.debt_due_text, DEBT_DUE_MARKS) !== null
+    textProblem(f.debt_due_text, DEBT_DUE_MARKS) !== null ||
+    textProblem(f.purchase_text, PURCHASE_MARKS) !== null ||
+    textProblem(f.purchase_debt_text, PURCHASE_MARKS) !== null ||
+    textProblem(f.purchase_driver_text, PURCHASE_DRIVER_MARKS) !== null
   const saveButton = (
     <div>
       <ErrorBox error={save.error} />
@@ -287,6 +298,53 @@ function SettingsForm({ s }: { s: MessageSettingsOut }) {
         >
           <input id="km-per-day" className="w-28" inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value)} />
         </Field>
+        {saveButton}
+      </Card>
+      <Card className="flex flex-col gap-4" data-testid="purchase-messages">
+        <CardTitle>Покупка</CardTitle>
+        <div className="-mt-2 text-sm text-slate-600">
+          Сразу после каждого чека — одно сообщение: сумма и, если есть долг, сколько в долг и общий долг. С 09:00 до 20:00, ночью — утром. Отключить
+          одному клиенту — флажок «Не присылать сообщения о закупах» в его карточке.
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+          <Checkbox label="Частным клиентам (в бот)" checked={f.purchase_person_enabled} onChange={set('purchase_person_enabled')} />
+          <DebtorText
+            id="purchase-text"
+            label="Текст, если долга нет"
+            kind="purchase"
+            value={f.purchase_text}
+            onChange={set('purchase_text')}
+            marks={PURCHASE_MARKS}
+          />
+          <DebtorText
+            id="purchase-debt-text"
+            label="Текст, если есть долг"
+            kind="purchase_debt"
+            value={f.purchase_debt_text}
+            onChange={set('purchase_debt_text')}
+            marks={PURCHASE_MARKS}
+          />
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+          <Checkbox
+            label="Юрлицам — фирме и руководителю (бот или WhatsApp по шаблону «закуп юрлица»)"
+            checked={f.purchase_firm_enabled}
+            onChange={set('purchase_firm_enabled')}
+          />
+          <Checkbox
+            label="Водителю из чека фирмы — если он подключён к боту (сумма и машина, без долга фирмы)"
+            checked={f.purchase_driver_enabled}
+            onChange={set('purchase_driver_enabled')}
+          />
+          <DebtorText
+            id="purchase-driver-text"
+            label="Текст водителю"
+            kind="purchase_driver"
+            value={f.purchase_driver_text}
+            onChange={set('purchase_driver_text')}
+            marks={PURCHASE_DRIVER_MARKS}
+          />
+        </div>
         {saveButton}
       </Card>
       <Card className="flex flex-col gap-4" data-testid="debtor-messages">

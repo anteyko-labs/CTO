@@ -293,6 +293,20 @@ pub struct MessageSettings {
     /// Напоминание о сроке долга в бот (SPEC-27 §7, П9): текст с приветствием и именем.
     #[serde(default = "debt_due_text")]
     pub debt_due_text: String,
+    /// Сообщение о покупке (задача 053): выключатели частным, юрлицам и водителю фирмы; тексты
+    /// частному (оплачено и с долгом) и водителю.
+    #[serde(default = "yes")]
+    pub purchase_person_enabled: bool,
+    #[serde(default = "yes")]
+    pub purchase_firm_enabled: bool,
+    #[serde(default = "yes")]
+    pub purchase_driver_enabled: bool,
+    #[serde(default = "purchase_text")]
+    pub purchase_text: String,
+    #[serde(default = "purchase_debt_text")]
+    pub purchase_debt_text: String,
+    #[serde(default = "purchase_driver_text")]
+    pub purchase_driver_text: String,
 }
 
 fn yes() -> bool {
@@ -322,6 +336,15 @@ fn monthly_hour() -> i32 {
 fn debt_due_text() -> String {
     DEBT_DUE_TEXT.into()
 }
+fn purchase_text() -> String {
+    PURCHASE_TEXT.into()
+}
+fn purchase_debt_text() -> String {
+    PURCHASE_DEBT_TEXT.into()
+}
+fn purchase_driver_text() -> String {
+    PURCHASE_DRIVER_TEXT.into()
+}
 
 /// Тексты по умолчанию — как в задаче 002 (П7, П7б, П9). Подстановки — в фигурных скобках.
 pub const PAYMENT_TEXT: &str =
@@ -335,6 +358,22 @@ pub const PAYMENT_MARKS: [&str; 4] = ["имя", "сумма", "долг", "да�
 pub const MONTHLY_MARKS: [&str; 3] = ["имя", "долг", "дата"];
 pub const MONTHLY_FIRM_MARKS: [&str; 4] = ["имя", "долг", "дата", "ссылка"];
 pub const DEBT_DUE_MARKS: [&str; 4] = ["имя", "долг", "когда", "дата"];
+/// Покупка частного клиента (задача 053): оплачено и с долгом; водителю фирмы — без долга фирмы.
+pub const PURCHASE_TEXT: &str =
+    "Здравствуйте, {имя}! {событие} на {сумма}{машина}. Спасибо, что вы с нами!";
+pub const PURCHASE_DEBT_TEXT: &str = "Здравствуйте, {имя}! {событие} на {сумма}{машина}{в долг}. Ваш долг на сегодня — {долг}. Подробнее — кнопка «💳 Мой долг».";
+pub const PURCHASE_DRIVER_TEXT: &str =
+    "Здравствуйте, {имя}! {событие} для {фирма} на {сумма}{машина}.";
+pub const PURCHASE_MARKS: [&str; 7] = [
+    "имя",
+    "событие",
+    "сумма",
+    "машина",
+    "в долг",
+    "долг",
+    "дата",
+];
+pub const PURCHASE_DRIVER_MARKS: [&str; 6] = ["имя", "событие", "фирма", "сумма", "машина", "дата"];
 /// Дней после дня рассылки «раз в месяц», в которые она догоняется (сервер был выключен).
 pub const MONTHLY_LATE_DAYS: u32 = 2;
 /// Длина текста сообщения в настройке.
@@ -418,6 +457,12 @@ impl Default for MessageSettings {
             monthly_template: String::new(),
             monthly_language: ru(),
             debt_due_text: debt_due_text(),
+            purchase_person_enabled: true,
+            purchase_firm_enabled: true,
+            purchase_driver_enabled: true,
+            purchase_text: purchase_text(),
+            purchase_debt_text: purchase_debt_text(),
+            purchase_driver_text: purchase_driver_text(),
         }
     }
 }
@@ -998,6 +1043,84 @@ impl PurchaseText {
     }
 }
 
+/// Покупка частного клиента и водителю фирмы (задача 053): части текста.
+#[derive(Debug, Clone)]
+pub struct PersonPurchaseText {
+    pub name: String,
+    pub is_return: bool,
+    pub day: DayWord,
+    pub date: NaiveDate,
+    pub amount_tyiyn: i64,
+    /// Долговая часть этого чека (у возврата — 0).
+    pub on_debt_tyiyn: i64,
+    pub car: String,
+    /// Общий долг на момент чека по всем филиалам.
+    pub debt_tyiyn: i64,
+}
+
+impl PersonPurchaseText {
+    /// «Сегодня покупка», «Вчера возврат», «22.10.2026 покупка».
+    fn event(&self) -> String {
+        let what = if self.is_return {
+            "возврат"
+        } else {
+            "покупка"
+        };
+        match &self.day {
+            DayWord::Today => format!("Сегодня {what}"),
+            DayWord::Yesterday => format!("Вчера {what}"),
+            DayWord::On(d) => format!("{} {what}", d.format("%d.%m.%Y")),
+        }
+    }
+
+    fn values(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("имя", self.name.clone()),
+            ("событие", self.event()),
+            ("сумма", som(self.amount_tyiyn.abs())),
+            (
+                "машина",
+                if self.car.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", self.car)
+                },
+            ),
+            (
+                "в долг",
+                if self.on_debt_tyiyn > 0 && !self.is_return {
+                    format!(", в долг — {}", som(self.on_debt_tyiyn))
+                } else {
+                    String::new()
+                },
+            ),
+            ("долг", debt_words(self.debt_tyiyn)),
+            ("дата", self.date.format("%d.%m.%Y").to_string()),
+        ]
+    }
+
+    /// Долг на сегодня есть — текст «с долгом», иначе — «оплачено».
+    pub fn telegram(&self, paid_text: &str, debt_text: &str) -> String {
+        let values = self.values();
+        let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let text = if self.debt_tyiyn > 0 {
+            debt_text
+        } else {
+            paid_text
+        };
+        fill(text, &pairs)
+    }
+
+    /// Водителю фирмы: сумма и машина, без долга фирмы (Б3а задачи 052).
+    pub fn driver(&self, text: &str, firm: &str) -> String {
+        let mut values = self.values();
+        values.retain(|(k, _)| *k != "долг" && *k != "в долг");
+        values.push(("фирма", firm.trim().to_string()));
+        let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        fill(text, &pairs)
+    }
+}
+
 /// Текст шаблона с подставленными переменными — для журнала: что увидел клиент. Сами шаблоны
 /// подаются в Meta этим же текстом с `{{1}}…` (экран настройки, `web/src/lib/clientMessages.ts`).
 fn preview(kind: Kind, params: &[String]) -> String {
@@ -1551,7 +1674,7 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
     let rows = sqlx::query!(
         r#"select s.id, s.branch_id, p.id as party_id, p.name, p.phone, p.bot_code, s.kind,
                   s.total_tyiyn, (s.created_at at time zone 'Asia/Bishkek')::date as "day!",
-                  c.full_name as "driver?", v.brand as "brand?", v.model as "model?", v.plate as "plate?",
+                  s.contact_id, c.full_name as "driver?", v.brand as "brand?", v.model as "model?", v.plate as "plate?",
                   (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l
                    where l.party_id = p.id and l.created_at <= s.created_at)::bigint as "debt!"
            from sales s
@@ -1559,7 +1682,9 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
            left join party_contacts c on c.id = s.contact_id
            left join party_vehicles v on v.id = s.vehicle_id
            where p.kind = 'company' and p.role = 'customer' and p.active and not p.no_purchase_messages
-             and s.created_at > $1 and s.created_at > now() - interval '2 days'
+             and s.created_at > greatest($1, (select (b.value #>> '{}')::timestamptz from bot_state b
+                 where b.key = 'client_messages_purchases_since:' || s.branch_id::text))
+             and s.created_at > now() - interval '2 days'
              and not exists (select 1 from client_message_keys k where k.key = 'purchase:' || s.id::text)
              -- «Исправить» чека (ADR-085): сторно — не настоящий возврат; верный чек — не второй
              -- закуп, если о исходном фирме уже писали (ADR-128).
@@ -1595,7 +1720,11 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
             debt: r.debt,
         };
         let settings = load_settings(conn, s.branch_id).await?;
+        if !settings.purchase_firm_enabled {
+            continue;
+        }
         let (text, chats, phone, link) = firm_message(conn, ch, &s, today).await?;
+        let firm_chats = chats.clone();
         let route = choose(ch, &settings, Kind::Purchase, chats, phone);
         let draft = Draft {
             branch_id: s.branch_id,
@@ -1608,6 +1737,151 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
             keys: vec![format!("purchase:{}", s.sale_id)],
             telegram_text: text.telegram(ch.public_url.as_ref().and(link.as_deref())),
             params: text.params(link.as_deref().unwrap_or(NO_LINK)),
+            cabinet: None,
+        };
+        if store(conn, &draft, &route).await?.is_some() {
+            made += 1;
+        }
+        // Водителю из чека (Б3а задачи 052): только если он сам в боте и это не чат фирмы или
+        // руководителя; без чата — молча (сообщение главное — фирме).
+        if settings.purchase_driver_enabled
+            && ch.telegram.is_some()
+            && let Some(c) = r.contact_id
+        {
+            let driver_chats: Vec<i64> = contact_chats(conn, c)
+                .await?
+                .into_iter()
+                .filter(|chat| !firm_chats.contains(chat))
+                .collect();
+            if !driver_chats.is_empty() {
+                let t = PersonPurchaseText {
+                    name: s.driver.trim().to_string(),
+                    is_return: s.is_return,
+                    day: DayWord::of(s.day, today),
+                    date: s.day,
+                    amount_tyiyn: s.total,
+                    on_debt_tyiyn: 0,
+                    car: s.car.clone(),
+                    debt_tyiyn: 0,
+                };
+                let draft = Draft {
+                    branch_id: s.branch_id,
+                    party_id: s.party_id,
+                    vehicle_id: None,
+                    sale_id: Some(s.sale_id),
+                    kind: Kind::Purchase,
+                    test: false,
+                    user_id: None,
+                    keys: vec![format!("purchase_driver:{}", s.sale_id)],
+                    telegram_text: t.driver(&settings.purchase_driver_text, &s.firm),
+                    params: Vec::new(),
+                    cabinet: None,
+                };
+                if store(conn, &draft, &Route::Telegram(driver_chats))
+                    .await?
+                    .is_some()
+                {
+                    made += 1;
+                }
+            }
+        }
+    }
+    Ok(made)
+}
+
+/// Чаты бота работника фирмы: его своя карточка клиента с тем же телефоном подключена к боту.
+async fn contact_chats(conn: &mut PgConnection, contact_id: Uuid) -> AppResult<Vec<i64>> {
+    let phone = sqlx::query_scalar!(
+        "select phone from party_contacts where id = $1 and active",
+        contact_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(key) = phone.as_deref().and_then(crate::domain::phone::key) else {
+        return Ok(Vec::new());
+    };
+    Ok(sqlx::query_scalar!(
+        r#"select distinct t.chat_id as "chat_id!" from telegram_customers t
+           join parties p on p.id = t.party_id
+           where p.active and p.role = 'customer' and phone_norm(p.phone) = $1"#,
+        key
+    )
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+/// Чеки частных клиентов (продажа или возврат) — сообщение о покупке сразу (задача 053): в бот,
+/// одно на чек, с долгом — если долг на сегодня есть. Сторно и верный чек «Исправить» — как у
+/// фирм. О чеках до включения не пишем (`client_messages_person_since`, миграция 0130).
+pub async fn plan_person_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult<usize> {
+    let since = sqlx::query_scalar!(
+        "select value from bot_state where key = 'client_messages_person_since'"
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .and_then(|v| v.as_str().and_then(|s| s.parse::<DateTime<Utc>>().ok()))
+    .unwrap_or_else(Utc::now);
+    let rows = sqlx::query!(
+        r#"select s.id, s.branch_id, p.id as party_id, p.name, p.first_name, s.kind,
+                  s.total_tyiyn, (s.created_at at time zone 'Asia/Bishkek')::date as "day!",
+                  v.brand as "brand?", v.model as "model?", v.plate as "plate?",
+                  (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l
+                   where l.party_id = p.id and l.created_at <= s.created_at)::bigint as "debt!",
+                  (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l
+                   where l.party_id = p.id and l.doc_id = s.id and l.kind = 'debt'
+                     and l.amount_tyiyn > 0)::bigint as "on_debt!"
+           from sales s
+           join parties p on p.id = s.party_id
+           left join party_vehicles v on v.id = s.vehicle_id
+           where p.kind = 'person' and p.role = 'customer' and p.active and not p.no_purchase_messages
+             and s.created_at > greatest($1, (select (b.value #>> '{}')::timestamptz from bot_state b
+                 where b.key = 'client_messages_purchases_since:' || s.branch_id::text))
+             and s.created_at > now() - interval '2 days'
+             and not exists (select 1 from client_message_keys k where k.key = 'purchase:' || s.id::text)
+             and not exists (select 1 from doc_corrections c where c.kind = 'sale' and c.reversal_id = s.id)
+             and not exists (select 1 from doc_corrections c
+                             join client_message_keys k on k.key = 'purchase:' || c.original_id::text
+                             where c.kind = 'sale' and c.new_id = s.id)
+           order by s.created_at
+           limit 200"#,
+        since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let today = today(conn).await?;
+    let mut made = 0;
+    for r in rows {
+        let settings = load_settings(conn, r.branch_id).await?;
+        if !settings.purchase_person_enabled {
+            continue;
+        }
+        let t = PersonPurchaseText {
+            name: greeting_name(&r.first_name, &r.name),
+            is_return: r.kind == "return",
+            day: DayWord::of(r.day, today),
+            date: r.day,
+            amount_tyiyn: r.total_tyiyn,
+            on_debt_tyiyn: r.on_debt,
+            car: car_text(
+                r.brand.as_deref().unwrap_or(""),
+                r.model.as_deref().unwrap_or(""),
+                r.plate.as_deref().unwrap_or(""),
+            ),
+            debt_tyiyn: r.debt,
+        };
+        let chats = party_chats(conn, r.party_id).await?;
+        let route = debtor_route(ch, &settings, Kind::Purchase, false, chats, None);
+        let draft = Draft {
+            branch_id: r.branch_id,
+            party_id: r.party_id,
+            vehicle_id: None,
+            sale_id: Some(r.id),
+            kind: Kind::Purchase,
+            test: false,
+            user_id: None,
+            keys: vec![format!("purchase:{}", r.id)],
+            telegram_text: t.telegram(&settings.purchase_text, &settings.purchase_debt_text),
+            params: Vec::new(),
             cabinet: None,
         };
         if store(conn, &draft, &route).await?.is_some() {
@@ -2028,6 +2302,7 @@ pub async fn pass(conn: &mut PgConnection, ch: &Channels, hour: u32, oil: bool) 
         return Ok(());
     }
     plan_purchases(conn, ch).await?;
+    plan_person_purchases(conn, ch).await?;
     crate::api::supplier_cabinet::plan_invoices(conn, ch).await?;
     plan_payments(conn, ch).await?;
     plan_monthly(conn, ch, hour).await?;
@@ -2125,6 +2400,9 @@ fn check_settings(s: &mut MessageSettings) -> AppResult<()> {
         &mut s.monthly_text,
         &mut s.monthly_firm_text,
         &mut s.debt_due_text,
+        &mut s.purchase_text,
+        &mut s.purchase_debt_text,
+        &mut s.purchase_driver_text,
     ] {
         *t = t.trim().to_string();
     }
@@ -2173,6 +2451,13 @@ fn check_settings(s: &mut MessageSettings) -> AppResult<()> {
         &s.debt_due_text,
         &DEBT_DUE_MARKS,
     )?;
+    check_text("Покупка", &s.purchase_text, &PURCHASE_MARKS)?;
+    check_text("Покупка с долгом", &s.purchase_debt_text, &PURCHASE_MARKS)?;
+    check_text(
+        "Покупка — водителю фирмы",
+        &s.purchase_driver_text,
+        &PURCHASE_DRIVER_MARKS,
+    )?;
     Ok(())
 }
 
@@ -2215,6 +2500,20 @@ async fn put_settings(
         sqlx::query!(
             r#"insert into bot_state (key, value)
                values ('client_messages_payments_since:' || $1::uuid::text,
+                       to_jsonb(to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+               on conflict (key) do update set value = excluded.value"#,
+            branch_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    // Покупки снова включили (частным или юрлицам) — о чеках, пока было выключено, не пишем.
+    if (!before.purchase_person_enabled && s.purchase_person_enabled)
+        || (!before.purchase_firm_enabled && s.purchase_firm_enabled)
+    {
+        sqlx::query!(
+            r#"insert into bot_state (key, value)
+               values ('client_messages_purchases_since:' || $1::uuid::text,
                        to_jsonb(to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
                on conflict (key) do update set value = excluded.value"#,
             branch_id
@@ -2564,7 +2863,7 @@ async fn test_send(
 
 #[derive(Deserialize)]
 struct SampleReq {
-    /// `payment`, `monthly` или `debt_due` (напоминание о сроке долга).
+    /// `payment`, `monthly`, `debt_due` (напоминание о сроке долга), `purchase`, `purchase_debt`, `purchase_driver` (задача 053).
     kind: String,
     /// Текст с подстановками, как в поле настройки (ещё не сохранённый).
     text: String,
@@ -2628,7 +2927,46 @@ pub fn sample_text(
                 ],
             ))
         }
-        _ => Err(invalid("вид образца: payment, monthly или debt_due")),
+        "purchase" | "purchase_debt" => {
+            let debt = kind == "purchase_debt";
+            check_text(
+                if debt {
+                    "Покупка с долгом"
+                } else {
+                    "Покупка"
+                },
+                text,
+                &PURCHASE_MARKS,
+            )?;
+            let t = PersonPurchaseText {
+                name: "Азиз".into(),
+                is_return: false,
+                day: DayWord::Today,
+                date: today,
+                amount_tyiyn: 150_000,
+                on_debt_tyiyn: if debt { 50_000 } else { 0 },
+                car: "Toyota Camry 01KG123ABC".into(),
+                debt_tyiyn: if debt { 124_000 } else { 0 },
+            };
+            Ok(t.telegram(text, text))
+        }
+        "purchase_driver" => {
+            check_text("Покупка — водителю фирмы", text, &PURCHASE_DRIVER_MARKS)?;
+            let t = PersonPurchaseText {
+                name: "Чынтемир".into(),
+                is_return: false,
+                day: DayWord::Today,
+                date: today,
+                amount_tyiyn: 150_000,
+                on_debt_tyiyn: 0,
+                car: "Sprinter 09KG111JJJ".into(),
+                debt_tyiyn: 0,
+            };
+            Ok(t.driver(text, "ОсОО Бишкек такси"))
+        }
+        _ => Err(invalid(
+            "вид образца: payment, monthly, debt_due, purchase, purchase_debt или purchase_driver",
+        )),
     }
 }
 

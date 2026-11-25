@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from bot_state where key = 'client_messages_person_since'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f930ad7916a0314182cba213cfc5e61fd9b2ebb96309dc4bcc7a58418125e7e1"
+}

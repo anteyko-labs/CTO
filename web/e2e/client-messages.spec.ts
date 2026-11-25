@@ -99,3 +99,31 @@ test('должникам: «Получили оплату», раз в меся�
   await page.getByTestId('debtor-messages').getByRole('button', { name: 'Сохранить' }).click()
   await expect(page.getByText('Сохранено')).toBeVisible()
 })
+
+test('покупка: частным, юрлицам и водителю — выключатели и тексты (задача 053)', async ({ page }) => {
+  await login(page)
+  await page.goto('/settings/client-messages')
+  const card = page.getByTestId('purchase-messages')
+  await expect(card).toBeVisible()
+  await expect(card.getByRole('checkbox', { name: /Частным клиентам/ })).toBeChecked()
+  await expect(card.getByRole('checkbox', { name: /Юрлицам/ })).toBeChecked()
+  await expect(card.getByRole('checkbox', { name: /Водителю/ })).toBeChecked()
+  await expect(page.getByTestId('purchase-debt-text-sample')).toContainText(
+    'Здравствуйте, Азиз! Сегодня покупка на 5 000 сом — Toyota Camry 01KG123ABC, в долг — 500 сом. Ваш долг на сегодня — 1 240 сом.',
+  )
+  await expect(page.getByTestId('purchase-driver-text-sample')).toContainText('для ОсОО Бишкек такси')
+  // Подстановка, которой нет у водителя, — подсказка и «Сохранить» недоступна.
+  await page.locator('#purchase-driver-text').fill('{имя}, долг фирмы {долг}')
+  await expect(card.getByText('непонятная подстановка {долг}')).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Сохранить' })).toBeDisabled()
+  await page.locator('#purchase-driver-text').fill('Здравствуйте, {имя}! {событие} для {фирма} на {сумма}{машина}.')
+  await card.getByRole('checkbox', { name: /Водителю/ }).uncheck()
+  await card.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(page.getByText('Сохранено')).toBeVisible()
+  await page.reload()
+  await expect(page.getByTestId('purchase-messages').getByRole('checkbox', { name: /Водителю/ })).not.toBeChecked()
+  // Вернуть как было.
+  await page.getByTestId('purchase-messages').getByRole('checkbox', { name: /Водителю/ }).check()
+  await page.getByTestId('purchase-messages').getByRole('button', { name: 'Сохранить' }).click()
+  await expect(page.getByText('Сохранено')).toBeVisible()
+})

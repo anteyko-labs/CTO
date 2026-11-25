@@ -1475,3 +1475,263 @@ fn with_debt_signature(uri: &str, mut b: Value) -> Value {
     }
     b
 }
+
+// ---------- Задача 053: покупка частного клиента, водителю фирмы ----------
+
+impl World {
+    /// Чек частного клиента: `paid` наличными, остальное в долг (штуки по 1 000 сом).
+    async fn person_sale(&self, party: Uuid, car: Option<Uuid>, qty: i64, paid: i64) -> Value {
+        let amount = qty * 100_000;
+        let mut payments = vec![];
+        if paid > 0 {
+            payments.push(json!({ "method": "cash", "amount_tyiyn": paid }));
+        }
+        if amount > paid {
+            payments.push(json!({ "method": "debt", "amount_tyiyn": amount - paid }));
+        }
+        ok(
+            &self.app,
+            "POST",
+            "/api/v1/sales",
+            &self.admin,
+            json!({
+                "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": self.cashier,
+                "party_id": party, "vehicle_id": car,
+                "lines": [{ "kind": "piece", "product_id": self.product, "qty": qty, "unit_price_tyiyn": 100_000 }],
+                "payments": payments
+            }),
+        )
+        .await
+    }
+
+    /// Частный клиент с полными данными для долга (задача 048).
+    async fn debtor_person(&self, first: &str, last: &str, phone: &str) -> Uuid {
+        let p = ok(
+            &self.app,
+            "POST",
+            "/api/v1/parties",
+            &self.owner,
+            json!({ "role": "customer", "kind": "person", "first_name": first, "last_name": last,
+                    "phone": phone, "inn": "21234567890123", "address": "Бишкек, Ахунбаева 1" }),
+        )
+        .await;
+        p["id"].as_str().unwrap().parse().unwrap()
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn person_purchase_message_paid_debt_and_return(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.debtor_settings(json!({ "monthly_enabled": false })).await;
+    let azis = w.debtor_person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(901, azis, "0555 11 22 33").await;
+    let car = w.vehicle(azis, "01KG123ABC", "Toyota", "Camry", "km").await;
+
+    // Оплачено полностью — без долга.
+    w.person_sale(azis, Some(car), 1, 100_000).await;
+    w.pass(10).await;
+    assert_eq!(
+        w.tg.texts(901),
+        vec![
+            "Здравствуйте, Азиз! Сегодня покупка на 1 000 сом — Toyota Camry 01KG123ABC. Спасибо, что вы с нами!"
+        ]
+    );
+    // Тот же чек второй раз не уходит.
+    w.pass(11).await;
+    assert_eq!(w.tg.texts(901).len(), 1);
+
+    // Часть в долг — сумма долга чека и общий долг, одним сообщением.
+    let sale = w.person_sale(azis, None, 3, 100_000).await;
+    w.pass(10).await;
+    let tg = w.tg.texts(901);
+    assert_eq!(tg.len(), 2, "{tg:?}");
+    assert_eq!(
+        tg[1],
+        "Здравствуйте, Азиз! Сегодня покупка на 3 000 сом, в долг — 2 000 сом. Ваш долг на сегодня — 2 000 сом. Подробнее — кнопка «💳 Мой долг»."
+    );
+
+    // Долг уже был — и оплаченная покупка напоминает о нём.
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.pass(10).await;
+    let tg = w.tg.texts(901);
+    assert_eq!(
+        tg[2],
+        "Здравствуйте, Азиз! Сегодня покупка на 1 000 сом. Ваш долг на сегодня — 2 000 сом. Подробнее — кнопка «💳 Мой долг»."
+    );
+
+    // Возврат части долгового чека.
+    let sid = sale["id"].as_str().unwrap();
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/sales/{sid}/return"),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "comment": "не подошло",
+                "lines": [{ "line_no": 1, "qty": 1 }],
+                "payments": [{ "method": "debt", "amount_tyiyn": 100_000 }] }),
+    )
+    .await;
+    w.pass(10).await;
+    let tg = w.tg.texts(901);
+    assert_eq!(tg.len(), 4, "{tg:?}");
+    assert!(
+        tg[3].starts_with("Здравствуйте, Азиз! Сегодня возврат на 1 000 сом"),
+        "{tg:?}"
+    );
+
+    // Ночью — не сразу, а утром.
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.pass(21).await;
+    assert_eq!(w.tg.texts(901).len(), 4);
+    w.pass(9).await;
+    assert_eq!(w.tg.texts(901).len(), 5);
+    // Журнал — вид «покупка», у чека номер.
+    let list = w.messages().await;
+    assert!(
+        list.iter()
+            .any(|m| m["kind"] == "purchase" && m["sale_number"] == sale["number"])
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn person_without_chat_flag_and_switches(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.debtor_settings(json!({ "monthly_enabled": false })).await;
+    // Без чата — запись «не отправлено» с причиной.
+    let bakyt = w.debtor_person("Бакыт", "Асанов", "0700 99 88 77").await;
+    w.person_sale(bakyt, None, 1, 100_000).await;
+    w.pass(10).await;
+    let rows = w.rows(CHANNELS, bakyt).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].1.as_str()),
+        ("none", "not_sent")
+    );
+    assert!(rows[0].3.contains("не подключён к боту"), "{rows:?}");
+
+    // Флажок «Не присылать сообщения о закупах» — и у частного.
+    let azis = w.debtor_person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(902, azis, "0555 11 22 33").await;
+    ok(
+        &w.app,
+        "PATCH",
+        &format!("/api/v1/parties/{azis}"),
+        &w.admin,
+        json!({ "no_purchase_messages": true }),
+    )
+    .await;
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.pass(10).await;
+    assert!(w.tg.texts(902).is_empty());
+    ok(
+        &w.app,
+        "PATCH",
+        &format!("/api/v1/parties/{azis}"),
+        &w.admin,
+        json!({ "no_purchase_messages": false }),
+    )
+    .await;
+
+    // Выключатель «частным» не трогает юрлиц; включили снова — о чеках за время выключения не пишем.
+    w.debtor_settings(json!({ "monthly_enabled": false, "purchase_person_enabled": false }))
+        .await;
+    let (firm, driver, car) = w.firm("ОсОО Такси", "0555 44 55 66").await;
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.firm_sale(firm, driver, car, 1).await;
+    w.pass(10).await;
+    assert!(w.tg.texts(902).is_empty());
+    let firm_rows = w.rows(CHANNELS, firm).await;
+    assert_eq!(firm_rows.len(), 1, "{firm_rows:?}");
+    w.debtor_settings(json!({ "monthly_enabled": false, "purchase_person_enabled": true }))
+        .await;
+    w.pass(10).await;
+    assert!(
+        w.tg.texts(902).is_empty(),
+        "чек за время выключения не пишется"
+    );
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.pass(10).await;
+    assert_eq!(w.tg.texts(902).len(), 1);
+    // Изменение настройки — в журнале действий.
+    assert!(!w.audit("client_message.settings").await.is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn person_purchases_before_install_are_not_sent(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.debtor_settings(json!({ "monthly_enabled": false })).await;
+    let azis = w.debtor_person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(903, azis, "0555 11 22 33").await;
+    w.person_sale(azis, None, 1, 100_000).await;
+    // Установка «позже» чека.
+    sqlx::query("update bot_state set value = to_jsonb(to_char((now() + interval '1 second') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')) where key = 'client_messages_person_since'")
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    w.pass(10).await;
+    assert!(w.tg.texts(903).is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn firm_driver_gets_sum_and_car_without_firm_debt(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.settings("avtodom_oil", "avtodom_purchase").await;
+    let (firm, _, car) = w.firm("ОсОО Бишкек такси", "0555 44 55 66").await;
+    // Водитель с телефоном, его своя карточка в боте.
+    let c = ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/parties/{firm}/contacts"),
+        &w.owner,
+        json!({ "full_name": "Нурлан", "phone": "0777 10 20 30" }),
+    )
+    .await;
+    let driver: Uuid = c["id"].as_str().unwrap().parse().unwrap();
+    let own = w.person("Нурлан", "Водитель", "0777 10 20 30").await;
+    w.link_chat(904, own, "0777 10 20 30").await;
+    w.firm_sale(firm, driver, car, 2).await;
+    w.pass(10).await;
+    assert_eq!(
+        w.tg.texts(904),
+        vec![
+            "Здравствуйте, Нурлан! Сегодня покупка для ОсОО Бишкек такси на 2 000 сом — Sprinter 09KG111JJJ."
+        ]
+    );
+    // Фирме — как прежде, в WhatsApp, с долгом.
+    assert_eq!(w.wa.bodies().len(), 1);
+    w.pass(11).await;
+    assert_eq!(w.tg.texts(904).len(), 1);
+    // Выключатель «водителю».
+    w.debtor_settings(
+        json!({ "monthly_enabled": false, "purchase_template": "avtodom_purchase",
+                              "purchase_driver_enabled": false }),
+    )
+    .await;
+    w.firm_sale(firm, driver, car, 1).await;
+    w.pass(10).await;
+    assert_eq!(w.tg.texts(904).len(), 1);
+    assert_eq!(w.wa.bodies().len(), 2);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn purchase_texts_checked_and_sampled(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    let (s, _) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/client-messages",
+        Some(&w.owner),
+        Some(json!({ "km_per_day": 50, "purchase_text": "Привет {телефон}" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let st = get(&w.app, "/api/v1/settings/client-messages", &w.owner).await;
+    assert_eq!(st["purchase_person_enabled"], true);
+    assert_eq!(st["purchase_driver_enabled"], true);
+    assert!(
+        st["purchase_debt_text"]
+            .as_str()
+            .unwrap()
+            .contains("{в долг}")
+    );
+}

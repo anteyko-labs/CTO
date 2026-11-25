@@ -27,6 +27,13 @@ export interface MessageSettings {
   monthly_language: string
   /** Напоминание о сроке долга в бот (П9). */
   debt_due_text: string
+  /** Покупка (задача 053): выключатели частным, юрлицам и водителю фирмы, тексты для бота. */
+  purchase_person_enabled: boolean
+  purchase_firm_enabled: boolean
+  purchase_driver_enabled: boolean
+  purchase_text: string
+  purchase_debt_text: string
+  purchase_driver_text: string
 }
 
 export interface MessageSettingsOut extends MessageSettings {
@@ -44,6 +51,8 @@ export const PAYMENT_MARKS = ['имя', 'сумма', 'долг', 'дата'] as
 export const MONTHLY_MARKS = ['имя', 'долг', 'дата'] as const
 export const MONTHLY_FIRM_MARKS = ['имя', 'долг', 'дата', 'ссылка'] as const
 export const DEBT_DUE_MARKS = ['имя', 'долг', 'когда', 'дата'] as const
+export const PURCHASE_MARKS = ['имя', 'событие', 'сумма', 'машина', 'в долг', 'долг', 'дата'] as const
+export const PURCHASE_DRIVER_MARKS = ['имя', 'событие', 'фирма', 'сумма', 'машина', 'дата'] as const
 
 /** Подстановки текста, которых нет в списке: «телефон» из «{телефон}». */
 export function unknownMarks(text: string, allowed: readonly string[]): string[] {
@@ -78,6 +87,10 @@ export const SAMPLE_VALUES: Record<string, string> = {
   дата: '01.11.2026',
   когда: 'через 3 дня',
   ссылка: 'https://…/cabinet',
+  событие: 'Сегодня покупка',
+  машина: ' — Toyota Camry 01KG123ABC',
+  'в долг': ', в долг — 500 сом',
+  фирма: 'ОсОО Бишкек такси',
 }
 
 export interface ClientMessage {
@@ -100,7 +113,7 @@ export interface ClientMessage {
 
 export const KIND_LABELS: Record<MessageKind, string> = {
   oil: 'Замена масла',
-  purchase: 'Закуп юрлица',
+  purchase: 'Покупка',
   payment: 'Получили оплату',
   monthly: 'Долг раз в месяц',
 }

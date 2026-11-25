@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   DEBT_DUE_MARKS,
   PAYMENT_MARKS,
+  PURCHASE_DRIVER_MARKS,
+  PURCHASE_MARKS,
   SAMPLE_VALUES,
   languageProblem,
   paramLines,
@@ -44,5 +46,16 @@ describe('Сообщения клиентам (SPEC-32)', () => {
     expect(sampleText('Здравствуйте, {имя}! Получили оплату {сумма}. {x}', SAMPLE_VALUES)).toBe(
       'Здравствуйте, Азиз! Получили оплату 5 000 сом. {x}',
     )
+  })
+
+  it('покупка частному и водителю: подстановки и образец (задача 053)', () => {
+    const debt = 'Здравствуйте, {имя}! {событие} на {сумма}{машина}{в долг}. Ваш долг на сегодня — {долг}.'
+    expect(textProblem(debt, PURCHASE_MARKS)).toBeNull()
+    expect(sampleText(debt, SAMPLE_VALUES)).toBe(
+      'Здравствуйте, Азиз! Сегодня покупка на 5 000 сом — Toyota Camry 01KG123ABC, в долг — 500 сом. Ваш долг на сегодня — 1 240 сом.',
+    )
+    expect(textProblem('{имя}, {фирма}', PURCHASE_MARKS)).toContain('{фирма}')
+    expect(textProblem('{имя}: {событие} для {фирма}', PURCHASE_DRIVER_MARKS)).toBeNull()
+    expect(textProblem('{долг}', PURCHASE_DRIVER_MARKS)).toContain('{долг}')
   })
 })
