@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_state (key, value) values ('whatsapp_qr', $1)\n           on conflict (key) do update set value = excluded.value",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9a0f13a5002edc0b435fce2ceaf85766dd0851e5fceedc293dab68245998f5ca"
+}

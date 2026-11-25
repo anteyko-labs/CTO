@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from whatsapp_inbox where phone = $1 and direction = 'human'\n                         and created_at > now() - make_interval(hours => $2)) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "385f96e947d2b716bfc381b5ea3de4eb49d64513b4df12763565ff02d2266caf"
+}

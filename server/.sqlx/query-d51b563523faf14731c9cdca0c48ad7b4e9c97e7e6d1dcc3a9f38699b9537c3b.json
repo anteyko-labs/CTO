@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.brand, v.model, v.plate,\n                  c.change_date as \"last_date?\", c.mileage_value as \"last_value?\", c.mileage_unit as \"last_unit?\",\n                  n.next_value as \"next_value?\", n.next_unit as \"next_unit?\", n.next_date as \"next_date?\"\n           from party_vehicles v\n           left join lateral (select c.id, c.change_date, c.mileage_value, c.mileage_unit from oil_changes c\n                              where c.vehicle_id = v.id\n                              order by c.change_date desc, c.created_at desc limit 1) c on true\n           left join lateral (select i.next_value, i.next_unit, i.next_date from oil_change_items i\n                              where i.oil_change_id = c.id and i.slot = 'oil'\n                                and (i.next_value is not null or i.next_date is not null)\n                              limit 1) n on true\n           where v.party_id = $1 and v.active and v.status = 'active'\n           order by v.created_at\n           limit 10",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_date?",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_value?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_unit?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "next_value?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "next_unit?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "next_date?",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "d51b563523faf14731c9cdca0c48ad7b4e9c97e7e6d1dcc3a9f38699b9537c3b"
+}

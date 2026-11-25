@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use avtodom_server::api::client_messages::{self, Channels, WhatsApp};
 use avtodom_server::api::telegram::{self, Api};
+use avtodom_server::api::whatsapp_qr::WaGate;
 use avtodom_server::config::SecretKey;
 use avtodom_server::{app, auth::hash_password, bootstrap, build_state};
 
@@ -109,6 +110,85 @@ async fn wa_send(
             "messages": [{ "id": format!("wamid.{n}") }]
         })),
     )
+}
+
+/// Подставной шлюз WhatsApp по QR-коду (задача 052): что отправлено, что спрошено.
+#[derive(Clone, Default)]
+struct FakeGate {
+    sent: Arc<Mutex<Vec<(String, String)>>>,
+    connects: Arc<Mutex<Vec<Value>>>,
+}
+
+const GATE_KEY: &str = "gate-test-key-0123456789";
+/// Этого номера «нет в WhatsApp».
+const NO_WA: &str = "+996700000000";
+
+impl FakeGate {
+    fn to(&self, phone: &str) -> Vec<String> {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == phone)
+            .map(|(_, t)| t.clone())
+            .collect()
+    }
+    fn count(&self) -> usize {
+        self.sent.lock().unwrap().len()
+    }
+}
+
+fn gate_auth(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        == Some(&format!("Bearer {GATE_KEY}"))
+}
+
+async fn gate_send(
+    State(f): State<FakeGate>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> (StatusCode, axum::Json<Value>) {
+    assert!(gate_auth(&headers));
+    let to = body["to"].as_str().unwrap().to_string();
+    if to == NO_WA {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            axum::Json(json!({ "error": "номера нет в WhatsApp", "permanent": true })),
+        );
+    }
+    f.sent
+        .lock()
+        .unwrap()
+        .push((to, body["text"].as_str().unwrap().to_string()));
+    (
+        StatusCode::OK,
+        axum::Json(json!({ "ok": true, "id": "3EB0" })),
+    )
+}
+
+async fn gate_connect(
+    State(f): State<FakeGate>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> axum::Json<Value> {
+    assert!(gate_auth(&headers));
+    f.connects.lock().unwrap().push(body.clone());
+    if body["phone"].is_string() {
+        axum::Json(json!({ "state": "code", "code": "ABCD1234" }))
+    } else {
+        axum::Json(json!({ "state": "qr", "qr": "2@test-qr" }))
+    }
+}
+
+async fn gate_status(headers: HeaderMap) -> axum::Json<Value> {
+    assert!(gate_auth(&headers));
+    axum::Json(json!({ "state": "connected", "phone": "+996555000111" }))
+}
+
+async fn gate_logout() -> axum::Json<Value> {
+    axum::Json(json!({ "state": "off" }))
 }
 
 async fn serve(router: Router) -> String {
@@ -223,6 +303,7 @@ struct World {
     ch: Channels,
     tg: FakeTg,
     wa: FakeWa,
+    gate: FakeGate,
 }
 
 impl World {
@@ -274,6 +355,17 @@ impl World {
         state.telegram_api = Some(api);
         state.whatsapp = Some(whatsapp);
         state.public_url = public_url.map(str::to_string);
+        let gate = FakeGate::default();
+        let gate_url = serve(
+            Router::new()
+                .route("/send", axum::routing::post(gate_send))
+                .route("/connect", axum::routing::post(gate_connect))
+                .route("/status", axum::routing::get(gate_status))
+                .route("/logout", axum::routing::post(gate_logout))
+                .with_state(gate.clone()),
+        )
+        .await;
+        state.wa_gate = Some(WaGate::new(gate_url, SecretKey(GATE_KEY.into())).with_pause(0, 0));
         let ch = Channels::from_state(&state);
         let app = app(state, None);
         let owner = login(&app, "owner", "owner-pass-1").await;
@@ -344,6 +436,7 @@ impl World {
             ch,
             tg,
             wa,
+            gate,
         }
     }
 
@@ -1733,5 +1826,298 @@ async fn purchase_texts_checked_and_sampled(pool: PgPool) {
             .as_str()
             .unwrap()
             .contains("{в долг}")
+    );
+}
+
+// ---------- Задача 052: WhatsApp по QR-коду ----------
+
+impl World {
+    /// Событие шлюза (с ключом шлюза или чужим).
+    async fn gate_event(&self, key: &str, body: Value) -> StatusCode {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/whatsapp/gate-event")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-gate-key", key)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        self.app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    async fn wa_connected(&self) {
+        assert_eq!(
+            self.gate_event(
+                GATE_KEY,
+                json!({ "type": "state", "state": "connected", "phone": "+996555000111" })
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    async fn wa_in(&self, from: &str, text: &str) {
+        assert_eq!(
+            self.gate_event(
+                GATE_KEY,
+                json!({ "type": "message", "from": from, "text": text })
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn whatsapp_connect_status_and_events(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    // Экран — только владелец.
+    let (s, _) = call(&w.app, "GET", "/api/v1/whatsapp", Some(&w.admin), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let st = get(&w.app, "/api/v1/whatsapp", &w.owner).await;
+    assert_eq!(st["configured"], true);
+    assert_eq!(st["gate"]["state"], "connected");
+    assert_eq!(st["daily_limit"], 200);
+    // QR-код и код из 8 знаков по номеру.
+    let qr = ok(
+        &w.app,
+        "POST",
+        "/api/v1/whatsapp/connect",
+        &w.owner,
+        json!({}),
+    )
+    .await;
+    assert_eq!(qr["qr"], "2@test-qr");
+    let code = ok(
+        &w.app,
+        "POST",
+        "/api/v1/whatsapp/connect",
+        &w.owner,
+        json!({ "phone": "0555 12 34 56" }),
+    )
+    .await;
+    assert_eq!(code["code"], "ABCD1234");
+    assert_eq!(w.gate.connects.lock().unwrap()[1]["phone"], "+996555123456");
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        "/api/v1/whatsapp/connect",
+        Some(&w.admin),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(w.audit("whatsapp.connect").await.len(), 2);
+    // Событие без ключа шлюза — 401.
+    assert_eq!(
+        w.gate_event("wrong", json!({ "type": "state", "state": "connected" }))
+            .await,
+        StatusCode::UNAUTHORIZED
+    );
+    // Подключился — отключился: уведомления владельцу.
+    w.wa_connected().await;
+    assert_eq!(w.audit("whatsapp.connected").await.len(), 1);
+    assert_eq!(
+        w.gate_event(GATE_KEY, json!({ "type": "state", "state": "logged_out" }))
+            .await,
+        StatusCode::OK
+    );
+    assert_eq!(w.audit("whatsapp.disconnected").await.len(), 1);
+    // «Отключить» — в журнал.
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/whatsapp/logout",
+        &w.owner,
+        json!({}),
+    )
+    .await;
+    assert_eq!(w.audit("whatsapp.disconnect").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn whatsapp_gets_same_text_as_telegram_and_both_channels(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.debtor_settings(json!({ "monthly_enabled": false })).await;
+    let azis = w.debtor_person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(951, azis, "0555 11 22 33").await;
+    // Номер не подключён — как раньше, только бот.
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.pass(10).await;
+    assert_eq!(w.tg.texts(951).len(), 1);
+    assert_eq!(w.gate.count(), 0);
+    // Подключён — и в бот, и в WhatsApp тем же текстом (ответ 3а); долг — «напишите «1»».
+    w.wa_connected().await;
+    w.person_sale(azis, None, 2, 100_000).await;
+    w.pass(10).await;
+    let tg = w.tg.texts(951);
+    assert_eq!(tg.len(), 2);
+    let wa = w.gate.to("+996555112233");
+    assert_eq!(wa.len(), 1, "{wa:?}");
+    assert_eq!(wa[0], tg[1].replace("кнопка «💳 Мой долг»", "напишите «1»"));
+    assert!(wa[0].contains("в долг — 1 000 сом"), "{wa:?}");
+    // Без бота, с телефоном — только WhatsApp (ответ 5а), без записи «не отправлено».
+    let bakyt = w.debtor_person("Бакыт", "Асанов", "0777 12 12 12").await;
+    w.person_sale(bakyt, None, 1, 100_000).await;
+    w.pass(10).await;
+    assert_eq!(w.gate.to("+996777121212").len(), 1);
+    let rows = w.rows(CHANNELS, bakyt).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].1.as_str()),
+        ("whatsapp_qr", "sent")
+    );
+    // Номера нет в WhatsApp — «ошибка» с причиной.
+    let nowa = w.debtor_person("Нурлан", "Без", "0700 00 00 00").await;
+    w.person_sale(nowa, None, 1, 100_000).await;
+    w.pass(10).await;
+    let rows = w.rows(CHANNELS, nowa).await;
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].1.as_str()),
+        ("whatsapp_qr", "error"),
+        "{rows:?}"
+    );
+    assert!(rows[0].3.contains("нет в WhatsApp"));
+    // Выключатель филиала — WhatsApp не пишет.
+    w.debtor_settings(json!({ "monthly_enabled": false, "wa_qr_enabled": false }))
+        .await;
+    w.person_sale(bakyt, None, 1, 100_000).await;
+    w.pass(10).await;
+    assert_eq!(w.gate.to("+996777121212").len(), 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn whatsapp_daily_limit_and_purchase_first(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.debtor_settings(json!({ "monthly_enabled": false, "wa_daily_limit": 1 }))
+        .await;
+    w.wa_connected().await;
+    let azis = w.debtor_person("Азиз", "Касымов", "0555 11 22 33").await;
+    // Сначала «получили оплату», потом покупка — уходит покупка (предел 1 в день).
+    w.debt(azis, 500_000).await;
+    w.repay(azis, 100_000).await;
+    w.person_sale(azis, None, 1, 100_000).await;
+    w.pass(10).await;
+    let wa = w.gate.to("+996555112233");
+    assert_eq!(wa.len(), 1, "{wa:?}");
+    assert!(wa[0].contains("покупка"), "{wa:?}");
+    w.pass(11).await;
+    assert_eq!(w.gate.count(), 1, "остальное — завтра");
+    let st = get(&w.app, "/api/v1/whatsapp", &w.owner).await;
+    assert_eq!(
+        (st["sent_today"].clone(), st["pending"].clone()),
+        (json!(1), json!(1))
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn whatsapp_menu_for_known_unknown_and_handoff(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.debtor_settings(
+        json!({ "monthly_enabled": false, "shop_info": "Avtodom, Ахунбаева 1, 9:00–20:00" }),
+    )
+    .await;
+    w.wa_connected().await;
+    let azis = w.debtor_person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.debt(azis, 240_000).await;
+    // Привет — меню с именем.
+    w.wa_in("+996555112233", "Здравствуйте").await;
+    let wa = w.gate.to("+996555112233");
+    assert!(
+        wa[0].starts_with("Здравствуйте, Азиз! Это Avtodom."),
+        "{wa:?}"
+    );
+    assert!(wa[0].contains("1 — мой долг"));
+    // «1» — его долг.
+    w.wa_in("+996555112233", "1").await;
+    let wa = w.gate.to("+996555112233");
+    assert!(wa[1].contains("2 400"), "{wa:?}");
+    // «2» — машины.
+    w.wa_in("+996555112233", "2").await;
+    assert!(w.gate.to("+996555112233")[2].contains("Машин в вашей книжке пока нет"));
+    // Чужой номер — адрес и часы, без чужих данных.
+    w.wa_in("+996777999888", "1").await;
+    let other = w.gate.to("+996777999888");
+    assert!(other[0].contains("Ахунбаева 1"), "{other:?}");
+    assert!(other[0].contains("назовите этот номер администратору"));
+    assert!(!other[0].contains("2 400"));
+    // «4» — администратору, с тем, что клиент писал до этого.
+    w.wa_in("+996555112233", "когда привезут масло 5w30?").await;
+    w.wa_in("+996555112233", "4").await;
+    let h = w.audit("whatsapp.handoff").await;
+    assert_eq!(h.len(), 1);
+    assert_eq!(h[0]["phone"], "+996555112233");
+    assert!(h[0]["text"].as_str().unwrap().contains("5w30"), "{h:?}");
+    assert!(
+        w.gate
+            .to("+996555112233")
+            .last()
+            .unwrap()
+            .contains("Передал администратору")
+    );
+    // Ответил человек с телефона — бот молчит.
+    let before = w.gate.count();
+    assert_eq!(
+        w.gate_event(GATE_KEY, json!({ "type": "message", "from": "+996555112233", "text": "Привезём завтра", "from_me": true }))
+            .await,
+        StatusCode::OK
+    );
+    w.wa_in("+996555112233", "спасибо").await;
+    assert_eq!(w.gate.count(), before);
+    // Выключатель меню.
+    w.debtor_settings(json!({ "monthly_enabled": false, "wa_menu_enabled": false }))
+        .await;
+    w.wa_in("+996777999888", "1").await;
+    assert_eq!(w.gate.count(), before);
+    // Переписка — у владельца.
+    let inbox = get(&w.app, "/api/v1/whatsapp/inbox", &w.owner).await;
+    assert!(
+        inbox
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["direction"] == "human")
+    );
+    let (s, _) = call(
+        &w.app,
+        "GET",
+        "/api/v1/whatsapp/inbox",
+        Some(&w.admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn whatsapp_driver_gets_sum_without_firm_debt(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.settings("avtodom_oil", "avtodom_purchase").await;
+    w.wa_connected().await;
+    let (firm, _, car) = w.firm("ОсОО Бишкек такси", "0555 44 55 66").await;
+    let c = ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/parties/{firm}/contacts"),
+        &w.owner,
+        json!({ "full_name": "Нурлан", "phone": "0777 10 20 30" }),
+    )
+    .await;
+    let driver: Uuid = c["id"].as_str().unwrap().parse().unwrap();
+    w.firm_sale(firm, driver, car, 2).await;
+    w.pass(10).await;
+    // Фирме — WhatsApp по QR вместо шаблона Meta, с долгом.
+    let firm_wa = w.gate.to("+996555445566");
+    assert_eq!(firm_wa.len(), 1);
+    assert!(
+        firm_wa[0].contains("Общий долг на сегодня — 2 000 сом"),
+        "{firm_wa:?}"
+    );
+    assert!(w.wa.bodies().is_empty());
+    // Водителю — сумма и машина, без долга фирмы.
+    assert_eq!(
+        w.gate.to("+996777102030"),
+        vec![
+            "Здравствуйте, Нурлан! Сегодня покупка для ОсОО Бишкек такси на 2 000 сом — Sprinter 09KG111JJJ."
+        ]
     );
 }

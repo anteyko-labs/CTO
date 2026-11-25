@@ -76,6 +76,7 @@ pub mod supplier_line_map;
 pub mod supplier_returns;
 pub mod telegram;
 pub mod umag_intake;
+pub mod whatsapp_qr;
 
 use axum::Router;
 
@@ -103,6 +104,7 @@ pub fn routes() -> Router<AppState> {
         .merge(catalog::routes())
         .merge(product_units::routes())
         .merge(client_messages::routes())
+        .merge(whatsapp_qr::routes())
         .merge(corrections::routes())
         .merge(cross_pick::routes())
         .merge(defects::routes())

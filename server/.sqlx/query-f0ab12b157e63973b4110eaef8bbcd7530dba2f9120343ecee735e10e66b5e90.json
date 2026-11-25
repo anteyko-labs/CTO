@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.branch_id, p.id as party_id, p.name, p.first_name, p.phone, s.kind,\n                  s.total_tyiyn, (s.created_at at time zone 'Asia/Bishkek')::date as \"day!\",\n                  v.brand as \"brand?\", v.model as \"model?\", v.plate as \"plate?\",\n                  (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l\n                   where l.party_id = p.id and l.created_at <= s.created_at)::bigint as \"debt!\",\n                  (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l\n                   where l.party_id = p.id and l.doc_id = s.id and l.kind = 'debt'\n                     and l.amount_tyiyn > 0)::bigint as \"on_debt!\"\n           from sales s\n           join parties p on p.id = s.party_id\n           left join party_vehicles v on v.id = s.vehicle_id\n           where p.kind = 'person' and p.role = 'customer' and p.active and not p.no_purchase_messages\n             and s.created_at > greatest($1, (select (b.value #>> '{}')::timestamptz from bot_state b\n                 where b.key = 'client_messages_purchases_since:' || s.branch_id::text))\n             and s.created_at > now() - interval '2 days'\n             and not exists (select 1 from client_message_keys k where k.key = 'purchase:' || s.id::text)\n             and not exists (select 1 from doc_corrections c where c.kind = 'sale' and c.reversal_id = s.id)\n             and not exists (select 1 from doc_corrections c\n                             join client_message_keys k on k.key = 'purchase:' || c.original_id::text\n                             where c.kind = 'sale' and c.new_id = s.id)\n           order by s.created_at\n           limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 9,
+        "name": "brand?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "model?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "plate?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "debt!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "on_debt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "f0ab12b157e63973b4110eaef8bbcd7530dba2f9120343ecee735e10e66b5e90"
+}

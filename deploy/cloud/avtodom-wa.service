@@ -1,0 +1,29 @@
+# Шлюз WhatsApp по QR-коду (задача 052, ADR-217). Ставит install-whatsapp-gate.sh в
+# /etc/systemd/system/avtodom-wa.service. Слушает только 127.0.0.1:8091; сессия номера —
+# /var/lib/avtodom/whatsapp (QR заново после перезапуска не нужен). Журнал: journalctl -u avtodom-wa.
+[Unit]
+Description=Avtodom WhatsApp gate
+After=network-online.target avtodom.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avtodom
+Group=avtodom
+EnvironmentFile=/etc/avtodom/env
+Environment=GATE_BIND=127.0.0.1:8091
+Environment=GATE_AUTH_DIR=/var/lib/avtodom/whatsapp
+Environment=AVTODOM_URL=http://127.0.0.1:8080
+Environment=TZ=Asia/Bishkek
+WorkingDirectory=/opt/avtodom/wa
+ExecStart=/opt/node/bin/node /opt/avtodom/wa/gate.mjs
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/avtodom
+
+[Install]
+WantedBy=multi-user.target

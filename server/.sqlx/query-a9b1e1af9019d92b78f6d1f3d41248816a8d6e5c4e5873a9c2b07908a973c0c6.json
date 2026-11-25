@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.created_at, w.phone, w.party_id, p.name as \"party_name?\", w.direction, w.text\n           from whatsapp_inbox w left join parties p on p.id = w.party_id\n           order by w.created_at desc limit $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "party_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "direction",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "text",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a9b1e1af9019d92b78f6d1f3d41248816a8d6e5c4e5873a9c2b07908a973c0c6"
+}

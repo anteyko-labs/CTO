@@ -307,6 +307,18 @@ pub struct MessageSettings {
     pub purchase_debt_text: String,
     #[serde(default = "purchase_driver_text")]
     pub purchase_driver_text: String,
+    /// WhatsApp по QR-коду (задача 052): писать туда, меню на входящие, предел в день, сколько
+    /// часов молчать после ответа человека с телефона, текст «О магазине» для чужих номеров.
+    #[serde(default = "yes")]
+    pub wa_qr_enabled: bool,
+    #[serde(default = "yes")]
+    pub wa_menu_enabled: bool,
+    #[serde(default = "wa_daily_limit")]
+    pub wa_daily_limit: i32,
+    #[serde(default = "wa_human_pause_hours")]
+    pub wa_human_pause_hours: i32,
+    #[serde(default = "shop_info")]
+    pub shop_info: String,
 }
 
 fn yes() -> bool {
@@ -345,6 +357,18 @@ fn purchase_debt_text() -> String {
 fn purchase_driver_text() -> String {
     PURCHASE_DRIVER_TEXT.into()
 }
+fn wa_daily_limit() -> i32 {
+    200
+}
+fn wa_human_pause_hours() -> i32 {
+    2
+}
+fn shop_info() -> String {
+    SHOP_INFO.into()
+}
+/// «О магазине» по умолчанию — владелец вписывает адрес и часы (задача 052).
+pub const SHOP_INFO: &str =
+    "Avtodom — замена масла и автотовары. Адрес и часы работы уточните по телефону магазина.";
 
 /// Тексты по умолчанию — как в задаче 002 (П7, П7б, П9). Подстановки — в фигурных скобках.
 pub const PAYMENT_TEXT: &str =
@@ -463,6 +487,11 @@ impl Default for MessageSettings {
             purchase_text: purchase_text(),
             purchase_debt_text: purchase_debt_text(),
             purchase_driver_text: purchase_driver_text(),
+            wa_qr_enabled: true,
+            wa_menu_enabled: true,
+            wa_daily_limit: wa_daily_limit(),
+            wa_human_pause_hours: wa_human_pause_hours(),
+            shop_info: shop_info(),
         }
     }
 }
@@ -1209,6 +1238,8 @@ pub struct Channels {
     pub telegram: Option<telegram::Api>,
     pub whatsapp: Option<WhatsApp>,
     pub public_url: Option<String>,
+    /// Шлюз WhatsApp по QR-коду (задача 052): `WA_GATE_URL` и `WA_GATE_KEY`.
+    pub wa_gate: Option<crate::api::whatsapp_qr::WaGate>,
 }
 
 impl Channels {
@@ -1217,6 +1248,7 @@ impl Channels {
             telegram: state.telegram_api.clone(),
             whatsapp: state.whatsapp.clone(),
             public_url: state.public_url.clone(),
+            wa_gate: state.wa_gate.clone(),
         }
     }
 }
@@ -1330,6 +1362,9 @@ struct Draft {
     params: Vec<String>,
     /// Юрлицу — ещё строка в ленте «Сообщения» кабинета (П7, П7б): этот текст, сразу «отправлено».
     cabinet: Option<String>,
+    /// Телефон для WhatsApp по QR-коду (задача 052): при подключённом номере сообщение уходит ещё
+    /// и туда тем же текстом; `None` — только прежние каналы.
+    wa_phone: Option<String>,
 }
 
 /// Записать сообщение (по строке на получателя) и ключи повода одной транзакцией. Повод уже
@@ -1379,6 +1414,23 @@ async fn store(conn: &mut PgConnection, d: &Draft, route: &Route) -> AppResult<O
             why.clone(),
         )],
     };
+    // WhatsApp по QR-коду подключён (задача 052): тот же текст ещё и туда; он заменяет шаблон Meta
+    // и запись «не отправлено».
+    let mut rows = rows;
+    if let Some(phone) = &d.wa_phone
+        && qr_on(&mut tx, d.branch_id).await?
+    {
+        rows.retain(|r| r.0 == "telegram");
+        rows.push((
+            "whatsapp_qr".to_string(),
+            phone.clone(),
+            wa_text(&d.telegram_text),
+            String::new(),
+            json!([]),
+            "pending",
+            String::new(),
+        ));
+    }
     let mut ids = Vec::with_capacity(rows.len());
     for (channel, recipient, text, template, params, status, extra) in rows {
         let id = ops::new_id();
@@ -1449,6 +1501,22 @@ async fn store(conn: &mut PgConnection, d: &Draft, route: &Route) -> AppResult<O
     }
     tx.commit().await?;
     Ok(Some(ids))
+}
+
+/// Номер WhatsApp по QR-коду подключён и в филиале не выключен (задача 052).
+pub async fn qr_on(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<bool> {
+    let connected = sqlx::query_scalar!(
+        r#"select (value->>'state') = 'connected' as "c!" from bot_state where key = 'whatsapp_qr'"#
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
+    Ok(connected && load_settings(conn, branch_id).await?.wa_qr_enabled)
+}
+
+/// Текст для WhatsApp: кнопки бота там нет — «Мой долг» по цифре меню.
+pub fn wa_text(text: &str) -> String {
+    text.replace("кнопка «💳 Мой долг»", "напишите «1»")
 }
 
 // ---------- Составление: замена масла ----------
@@ -1570,6 +1638,7 @@ async fn oil_for_vehicle(
         telegram_text: text.telegram(),
         params: text.params(link.as_deref().unwrap_or(NO_LINK)),
         cabinet: None,
+        wa_phone: wa_phone(&o.phone),
     };
     Ok(store(conn, &draft, &route).await?.is_some())
 }
@@ -1725,7 +1794,7 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
         }
         let (text, chats, phone, link) = firm_message(conn, ch, &s, today).await?;
         let firm_chats = chats.clone();
-        let route = choose(ch, &settings, Kind::Purchase, chats, phone);
+        let route = choose(ch, &settings, Kind::Purchase, chats, phone.clone());
         let draft = Draft {
             branch_id: s.branch_id,
             party_id: s.party_id,
@@ -1738,6 +1807,7 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
             telegram_text: text.telegram(ch.public_url.as_ref().and(link.as_deref())),
             params: text.params(link.as_deref().unwrap_or(NO_LINK)),
             cabinet: None,
+            wa_phone: phone.clone(),
         };
         if store(conn, &draft, &route).await?.is_some() {
             made += 1;
@@ -1745,15 +1815,24 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
         // Водителю из чека (Б3а задачи 052): только если он сам в боте и это не чат фирмы или
         // руководителя; без чата — молча (сообщение главное — фирме).
         if settings.purchase_driver_enabled
-            && ch.telegram.is_some()
             && let Some(c) = r.contact_id
         {
-            let driver_chats: Vec<i64> = contact_chats(conn, c)
-                .await?
-                .into_iter()
-                .filter(|chat| !firm_chats.contains(chat))
-                .collect();
-            if !driver_chats.is_empty() {
+            let (driver_phone, driver_chats) = contact_chats(conn, c).await?;
+            let driver_chats: Vec<i64> = if ch.telegram.is_some() {
+                driver_chats
+                    .into_iter()
+                    .filter(|chat| !firm_chats.contains(chat))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            // WhatsApp водителю — если номер подключён и это не телефон фирмы.
+            let driver_wa = driver_phone
+                .as_deref()
+                .and_then(wa_phone)
+                .filter(|p| phone.as_deref() != Some(p.as_str()));
+            let wa = driver_wa.is_some() && qr_on(conn, s.branch_id).await?;
+            if !driver_chats.is_empty() || wa {
                 let t = PersonPurchaseText {
                     name: s.driver.trim().to_string(),
                     is_return: s.is_return,
@@ -1763,6 +1842,11 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
                     on_debt_tyiyn: 0,
                     car: s.car.clone(),
                     debt_tyiyn: 0,
+                };
+                let route = if driver_chats.is_empty() {
+                    Route::None(String::new())
+                } else {
+                    Route::Telegram(driver_chats)
                 };
                 let draft = Draft {
                     branch_id: s.branch_id,
@@ -1776,11 +1860,9 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
                     telegram_text: t.driver(&settings.purchase_driver_text, &s.firm),
                     params: Vec::new(),
                     cabinet: None,
+                    wa_phone: if wa { driver_wa } else { None },
                 };
-                if store(conn, &draft, &Route::Telegram(driver_chats))
-                    .await?
-                    .is_some()
-                {
+                if store(conn, &draft, &route).await?.is_some() {
                     made += 1;
                 }
             }
@@ -1789,8 +1871,12 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
     Ok(made)
 }
 
-/// Чаты бота работника фирмы: его своя карточка клиента с тем же телефоном подключена к боту.
-async fn contact_chats(conn: &mut PgConnection, contact_id: Uuid) -> AppResult<Vec<i64>> {
+/// Телефон работника фирмы и чаты бота: его своя карточка клиента с тем же телефоном подключена
+/// к боту.
+async fn contact_chats(
+    conn: &mut PgConnection,
+    contact_id: Uuid,
+) -> AppResult<(Option<String>, Vec<i64>)> {
     let phone = sqlx::query_scalar!(
         "select phone from party_contacts where id = $1 and active",
         contact_id
@@ -1798,16 +1884,17 @@ async fn contact_chats(conn: &mut PgConnection, contact_id: Uuid) -> AppResult<V
     .fetch_optional(&mut *conn)
     .await?;
     let Some(key) = phone.as_deref().and_then(crate::domain::phone::key) else {
-        return Ok(Vec::new());
+        return Ok((phone, Vec::new()));
     };
-    Ok(sqlx::query_scalar!(
+    let chats = sqlx::query_scalar!(
         r#"select distinct t.chat_id as "chat_id!" from telegram_customers t
            join parties p on p.id = t.party_id
            where p.active and p.role = 'customer' and phone_norm(p.phone) = $1"#,
         key
     )
     .fetch_all(&mut *conn)
-    .await?)
+    .await?;
+    Ok((phone, chats))
 }
 
 /// Чеки частных клиентов (продажа или возврат) — сообщение о покупке сразу (задача 053): в бот,
@@ -1822,7 +1909,7 @@ pub async fn plan_person_purchases(conn: &mut PgConnection, ch: &Channels) -> Ap
     .and_then(|v| v.as_str().and_then(|s| s.parse::<DateTime<Utc>>().ok()))
     .unwrap_or_else(Utc::now);
     let rows = sqlx::query!(
-        r#"select s.id, s.branch_id, p.id as party_id, p.name, p.first_name, s.kind,
+        r#"select s.id, s.branch_id, p.id as party_id, p.name, p.first_name, p.phone, s.kind,
                   s.total_tyiyn, (s.created_at at time zone 'Asia/Bishkek')::date as "day!",
                   v.brand as "brand?", v.model as "model?", v.plate as "plate?",
                   (select coalesce(sum(l.amount_tyiyn), 0) from party_ledger l
@@ -1883,6 +1970,7 @@ pub async fn plan_person_purchases(conn: &mut PgConnection, ch: &Channels) -> Ap
             telegram_text: t.telegram(&settings.purchase_text, &settings.purchase_debt_text),
             params: Vec::new(),
             cabinet: None,
+            wa_phone: wa_phone(&r.phone),
         };
         if store(conn, &draft, &route).await?.is_some() {
             made += 1;
@@ -2049,6 +2137,7 @@ pub async fn plan_payments(conn: &mut PgConnection, ch: &Channels) -> AppResult<
             cabinet: firm.then(|| telegram_text.clone()),
             telegram_text,
             params: text.params(),
+            wa_phone: wa_phone(&r.phone),
         };
         if store(conn, &draft, &route).await?.is_some() {
             made += 1;
@@ -2147,6 +2236,7 @@ pub async fn plan_monthly_on(
                 telegram_text,
                 params,
                 cabinet,
+                wa_phone: wa_phone(&r.phone),
             };
             if store(conn, &draft, &route).await?.is_some() {
                 made += 1;
@@ -2204,13 +2294,24 @@ async fn deliver(ch: &Channels, m: &Pending) -> Outcome {
             wa.send_template(&m.recipient, &m.template, &m.language, &params)
                 .await
         }
+        "whatsapp_qr" => {
+            let Some(gate) = &ch.wa_gate else {
+                return Outcome::Rejected("WhatsApp по QR-коду выключен на сервере".into());
+            };
+            gate.send(&m.recipient, &m.text).await
+        }
         _ => Outcome::Rejected("нет канала".into()),
     }
 }
 
 /// Записать итог отправки. `Retry` — следующая попытка позже (пауза растёт вдвое до получаса),
 /// через RETRY_HOURS от создания — «ошибка».
-async fn record(conn: &mut PgConnection, id: Uuid, attempts: i32, out: &Outcome) -> AppResult<()> {
+pub(crate) async fn record(
+    conn: &mut PgConnection,
+    id: Uuid,
+    attempts: i32,
+    out: &Outcome,
+) -> AppResult<()> {
     match out {
         Outcome::Sent(ext) => {
             sqlx::query!(
@@ -2262,6 +2363,7 @@ pub async fn send_pass(conn: &mut PgConnection, ch: &Channels) -> AppResult<usiz
     let rows = sqlx::query!(
         r#"select id, channel, recipient, text, template, language, params, attempts
            from client_messages where status = 'pending' and next_try_at <= now()
+             and channel <> 'whatsapp_qr'
            order by created_at limit $1"#,
         SEND_BATCH
     )
@@ -2292,6 +2394,7 @@ pub async fn send_pass(conn: &mut PgConnection, ch: &Channels) -> AppResult<usiz
         }
         record(conn, m.id, m.attempts, &out).await?;
     }
+    sent += crate::api::whatsapp_qr::send_pass(conn, ch).await?;
     Ok(sent)
 }
 
@@ -2325,7 +2428,7 @@ async fn bishkek_hour(conn: &mut PgConnection) -> AppResult<u32> {
 /// Фоновая отправка — если есть хоть один канал. Закупы — каждые 30 секунд, замена — раз в час.
 pub fn spawn(pool: PgPool, state: &AppState) {
     let ch = Channels::from_state(state);
-    if ch.telegram.is_none() && ch.whatsapp.is_none() {
+    if ch.telegram.is_none() && ch.whatsapp.is_none() && ch.wa_gate.is_none() {
         return;
     }
     tokio::spawn(run(pool, ch));
@@ -2403,6 +2506,7 @@ fn check_settings(s: &mut MessageSettings) -> AppResult<()> {
         &mut s.purchase_text,
         &mut s.purchase_debt_text,
         &mut s.purchase_driver_text,
+        &mut s.shop_info,
     ] {
         *t = t.trim().to_string();
     }
@@ -2451,6 +2555,13 @@ fn check_settings(s: &mut MessageSettings) -> AppResult<()> {
         &s.debt_due_text,
         &DEBT_DUE_MARKS,
     )?;
+    if !(1..=1000).contains(&s.wa_daily_limit) {
+        return Err(invalid("предел WhatsApp в день — от 1 до 1000 сообщений"));
+    }
+    if !(0..=48).contains(&s.wa_human_pause_hours) {
+        return Err(invalid("пауза после ответа человека — от 0 до 48 часов"));
+    }
+    check_text("О магазине", &s.shop_info, &[])?;
     check_text("Покупка", &s.purchase_text, &PURCHASE_MARKS)?;
     check_text("Покупка с долгом", &s.purchase_debt_text, &PURCHASE_MARKS)?;
     check_text(
@@ -2799,6 +2910,7 @@ async fn test_send(
         telegram_text,
         params,
         cabinet: None,
+        wa_phone: wa_phone(&p.phone),
     };
     let ids = store(&mut conn, &draft, &route).await?.unwrap_or_default();
     // Пробное уходит сразу, без окна отправки.

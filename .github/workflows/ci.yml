@@ -88,6 +88,10 @@ jobs:
       - run: npx oxlint src
       - run: npm test
       - run: npm run build
+      # Шлюз WhatsApp по QR-коду (задача 052): правила событий без сети.
+      - name: Шлюз WhatsApp
+        working-directory: deploy/whatsapp-gate
+        run: npm ci --no-audit --no-fund && npm test
 
   e2e:
     runs-on: ubuntu-latest
@@ -128,6 +132,9 @@ jobs:
           # Optima Business (SPEC-31): подставной банк поднимает e2e/optima-qr.spec.ts на этом порту.
           OPTIMA_API_KEY: e2e-optima-key
           OPTIMA_API_URL: http://127.0.0.1:8097
+          # WhatsApp по QR-коду (задача 052): подставной шлюз поднимает e2e/whatsapp-qr.spec.ts.
+          WA_GATE_URL: http://127.0.0.1:8098
+          WA_GATE_KEY: e2e-gate-key-0123456789
         run: |
           nohup ./target/debug/avtodom-server > server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/ > /dev/null && exit 0; sleep 1; done

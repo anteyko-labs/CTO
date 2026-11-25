@@ -36,6 +36,7 @@ pub async fn build_state(pool: PgPool, cookie_secure: bool) -> Result<AppState, 
         optima_branches: Default::default(),
         telegram_api: None,
         whatsapp: None,
+        wa_gate: None,
         public_url: None,
     })
 }

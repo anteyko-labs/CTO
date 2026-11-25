@@ -2,7 +2,7 @@
 // настройки шаблонов. Те же правила, что на сервере (`server/src/api/client_messages.rs`).
 
 export type MessageKind = 'oil' | 'purchase' | 'payment' | 'monthly'
-export type MessageChannel = 'telegram' | 'whatsapp' | 'none' | 'cabinet'
+export type MessageChannel = 'telegram' | 'whatsapp' | 'whatsapp_qr' | 'none' | 'cabinet'
 export type MessageStatus = 'pending' | 'sent' | 'error' | 'not_sent'
 
 export interface MessageSettings {
@@ -34,6 +34,12 @@ export interface MessageSettings {
   purchase_text: string
   purchase_debt_text: string
   purchase_driver_text: string
+  /** WhatsApp по QR-коду (задача 052). */
+  wa_qr_enabled: boolean
+  wa_menu_enabled: boolean
+  wa_daily_limit: number
+  wa_human_pause_hours: number
+  shop_info: string
 }
 
 export interface MessageSettingsOut extends MessageSettings {
@@ -120,7 +126,8 @@ export const KIND_LABELS: Record<MessageKind, string> = {
 
 export const CHANNEL_LABELS: Record<MessageChannel, string> = {
   telegram: 'Телеграм',
-  whatsapp: 'WhatsApp',
+  whatsapp: 'WhatsApp (Meta)',
+  whatsapp_qr: 'WhatsApp',
   none: '—',
   cabinet: 'Кабинет',
 }

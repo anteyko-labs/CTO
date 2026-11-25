@@ -1,0 +1,17 @@
+{
+  "name": "avtodom-whatsapp-gate",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Шлюз WhatsApp по QR-коду для сообщений клиентам (задача 052, ADR-217)",
+  "type": "module",
+  "main": "gate.mjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node gate.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "6.7.24",
+    "pino": "9.14.0"
+  }
+}

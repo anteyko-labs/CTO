@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
+import { WhatsAppConnect, WhatsAppInbox } from '../components/WhatsAppConnect'
 import { ExportButton } from '../components/ExportButton'
 import { cappedWarning, fetchAllPages, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Notice, PageHeader, Table, toast } from '../components/ui'
@@ -57,9 +58,11 @@ export default function ClientMessages() {
           </Link>
         }
       />
+      <WhatsAppConnect />
       <SettingsForm s={st.data} />
       <TestSend onSent={() => setTick((t) => t + 1)} />
       <Journal key={tick} />
+      <WhatsAppInbox key={`wa-${tick}`} />
     </div>
   )
 }
@@ -192,6 +195,11 @@ function editable(s: MessageSettingsOut): MessageSettings {
     purchase_text: s.purchase_text,
     purchase_debt_text: s.purchase_debt_text,
     purchase_driver_text: s.purchase_driver_text,
+    wa_qr_enabled: s.wa_qr_enabled,
+    wa_menu_enabled: s.wa_menu_enabled,
+    wa_daily_limit: s.wa_daily_limit,
+    wa_human_pause_hours: s.wa_human_pause_hours,
+    shop_info: s.shop_info,
   }
 }
 
@@ -204,10 +212,15 @@ function SettingsForm({ s }: { s: MessageSettingsOut }) {
   const kmOk = Number.isInteger(kmValue) && kmValue >= 1 && kmValue <= 1000
   const dayOk = Number.isInteger(f.monthly_day) && f.monthly_day >= 1 && f.monthly_day <= 28
   const hourOk = Number.isInteger(f.monthly_hour) && f.monthly_hour >= 9 && f.monthly_hour <= 19
+  const limitOk = Number.isInteger(f.wa_daily_limit) && f.wa_daily_limit >= 1 && f.wa_daily_limit <= 1000
+  const pauseOk = Number.isInteger(f.wa_human_pause_hours) && f.wa_human_pause_hours >= 0 && f.wa_human_pause_hours <= 48
   const bad =
     !kmOk ||
     !dayOk ||
     !hourOk ||
+    !limitOk ||
+    !pauseOk ||
+    textProblem(f.shop_info, []) !== null ||
     [f.oil_template, f.purchase_template, f.payment_template, f.monthly_template].some((n) => templateNameProblem(n) !== null) ||
     [f.oil_language, f.purchase_language, f.payment_language, f.monthly_language].some((l) => languageProblem(l) !== null) ||
     textProblem(f.payment_text, PAYMENT_MARKS) !== null ||
@@ -297,6 +310,29 @@ function SettingsForm({ s }: { s: MessageSettingsOut }) {
           error={kmOk ? null : 'от 1 до 1000'}
         >
           <input id="km-per-day" className="w-28" inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value)} />
+        </Field>
+        {saveButton}
+      </Card>
+      <Card className="flex flex-col gap-4" data-testid="wa-settings">
+        <CardTitle>WhatsApp по QR-коду — настройки</CardTitle>
+        <Checkbox label="Писать клиентам в WhatsApp (вместе с ботом в Телеграме)" checked={f.wa_qr_enabled} onChange={set('wa_qr_enabled')} />
+        <Checkbox label="Отвечать на входящие меню цифрами (1 — долг, 2 — машины, 3 — баллы, 4 — администратор)" checked={f.wa_menu_enabled} onChange={set('wa_menu_enabled')} />
+        <div className="flex flex-wrap gap-3">
+          <Field label="Сообщений в день, не больше" error={limitOk ? null : 'от 1 до 1000'}>
+            <input id="wa-daily-limit" className="w-24" inputMode="numeric" value={String(f.wa_daily_limit)} onChange={(e) => set('wa_daily_limit')(Number(e.target.value))} />
+          </Field>
+          <Field label="Молчать после ответа с телефона, часов" error={pauseOk ? null : 'от 0 до 48'}>
+            <input
+              id="wa-human-pause"
+              className="w-24"
+              inputMode="numeric"
+              value={String(f.wa_human_pause_hours)}
+              onChange={(e) => set('wa_human_pause_hours')(Number(e.target.value))}
+            />
+          </Field>
+        </div>
+        <Field label="О магазине — ответ незнакомому номеру (адрес, часы, телефон)" error={textProblem(f.shop_info, [])}>
+          <textarea id="wa-shop-info" rows={3} value={f.shop_info} onChange={(e) => set('shop_info')(e.target.value)} />
         </Field>
         {saveButton}
       </Card>

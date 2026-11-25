@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from client_messages\n           where channel = 'whatsapp_qr' and status = 'sent' and not test\n             and (sent_at at time zone 'Asia/Bishkek')::date = (now() at time zone 'Asia/Bishkek')::date",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2b6a0701f6d02158a4ab88088c5f605d77ee419c815d5862e432915d30caad91"
+}

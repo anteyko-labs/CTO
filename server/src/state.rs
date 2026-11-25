@@ -27,6 +27,8 @@ pub struct AppState {
     pub telegram_api: Option<crate::api::telegram::Api>,
     /// WhatsApp Business Platform (SPEC-32): `WHATSAPP_TOKEN` и `WHATSAPP_PHONE_ID`; `None` — выключен.
     pub whatsapp: Option<crate::api::client_messages::WhatsApp>,
+    /// Шлюз WhatsApp по QR-коду (задача 052): `WA_GATE_URL` и `WA_GATE_KEY`; `None` — выключен.
+    pub wa_gate: Option<crate::api::whatsapp_qr::WaGate>,
     /// Внешний адрес программы `PUBLIC_URL` — для ссылки на кабинет юрлица в сообщениях.
     pub public_url: Option<String>,
 }

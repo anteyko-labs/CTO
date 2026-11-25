@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 91] = [
+pub(crate) const WATCHED: [&str; 94] = [
     // Объединение карточек клиентов или поставщиков с долгом (задача 043).
     "party.merge",
     // Машина фирмы ждёт подтверждения или решена; пересчёт долга клиента (задача 037).
@@ -67,6 +67,9 @@ pub(crate) const WATCHED: [&str; 91] = [
     "payout.reverse",
     "payroll.accrual_reverse",
     "payroll.debt_backfill",
+    "whatsapp.connected",
+    "whatsapp.disconnected",
+    "whatsapp.handoff",
     "payroll.rule",
     "payroll.rule_close",
     "settings.loyalty",
@@ -1240,6 +1243,26 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "payout.reverse" => (
             "Сторно выплаты сотруднику".into(),
             format!("{}{}", money(num("amount_tyiyn")), comment(data)),
+        ),
+        // WhatsApp по QR-коду (задача 052).
+        "whatsapp.connected" => (
+            format!("WhatsApp подключён: {}", text("phone")),
+            "сообщения клиентам уходят и в WhatsApp".into(),
+        ),
+        "whatsapp.disconnected" => (
+            "WhatsApp отключился".into(),
+            "сообщения в WhatsApp не уходят — подключите номер заново в «Сообщения клиентам»".into(),
+        ),
+        "whatsapp.handoff" => (
+            format!(
+                "WhatsApp: клиент зовёт администратора — {}",
+                Some(text("name"))
+                    .filter(|n| !n.is_empty())
+                    .map_or_else(|| text("phone"), |n| format!("{n}, {}", text("phone")))
+            ),
+            Some(text("text"))
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "ответьте ему в WhatsApp с телефона магазина".into()),
         ),
         // Процент по ждущим долговым чекам — разом (задача 054).
         "payroll.debt_backfill" => (

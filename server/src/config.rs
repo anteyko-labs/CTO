@@ -33,6 +33,10 @@ pub struct Config {
     pub whatsapp_phone_id: Option<String>,
     /// Адрес Graph API; пусто — `api::client_messages::DEFAULT_WHATSAPP_URL`.
     pub whatsapp_url: Option<String>,
+    /// Шлюз WhatsApp по QR-коду (задача 052, ADR-217): адрес (обычно http://127.0.0.1:8091) и
+    /// общий ключ; без обоих выключен.
+    pub wa_gate_url: Option<String>,
+    pub wa_gate_key: Option<SecretKey>,
     /// Внешний адрес программы (`https://…`) — ссылка на кабинет юрлица в сообщениях.
     pub public_url: Option<String>,
 }
@@ -130,6 +134,8 @@ impl Config {
             whatsapp_token: non_empty("WHATSAPP_TOKEN").map(SecretKey),
             whatsapp_phone_id: non_empty("WHATSAPP_PHONE_ID"),
             whatsapp_url: non_empty("WHATSAPP_API_URL"),
+            wa_gate_url: non_empty("WA_GATE_URL"),
+            wa_gate_key: non_empty("WA_GATE_KEY").map(SecretKey),
             public_url: non_empty("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
         })
     }

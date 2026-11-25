@@ -91,6 +91,10 @@ async fn run() -> Result<(), String> {
             config.whatsapp_url.clone(),
         ));
     }
+    // WhatsApp по QR-коду (задача 052): шлюз deploy/whatsapp-gate на этом же сервере.
+    if let (Some(url), Some(key)) = (config.wa_gate_url.clone(), config.wa_gate_key.clone()) {
+        state.wa_gate = Some(avtodom_server::api::whatsapp_qr::WaGate::new(url, key));
+    }
     state.public_url = config.public_url.clone();
     // Старые строки попыток входа — раз в час (ADR-128).
     avtodom_server::api::auth::spawn_cleanup(pool.clone());

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, case when kind = 'company' or first_name = '' then name else first_name end as \"name!\"\n           from parties where active and role = 'customer' and phone_norm(phone) = $1\n           order by created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "17e95d6e1f64f516252226d86f32b5f31afd0ac79bf8be3d9b65a162fda4b78e"
+}

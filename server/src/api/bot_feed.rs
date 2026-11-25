@@ -47,7 +47,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 103] = [
+const EVENTS: [(&str, &str, &str); 106] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -229,6 +229,13 @@ const EVENTS: [(&str, &str, &str); 103] = [
     ("payroll.salary", "payroll", "Начислен оклад"),
     ("payroll.salary_due", "payroll", "Сегодня расчёт оклада"),
     ("payroll.accrual", "payroll", "Премия или удержание"),
+    ("whatsapp.connected", "other", "WhatsApp подключён"),
+    ("whatsapp.disconnected", "other", "WhatsApp отключился"),
+    (
+        "whatsapp.handoff",
+        "sales",
+        "Клиент в WhatsApp зовёт администратора",
+    ),
     (
         "payroll.debt_backfill",
         "payroll",
