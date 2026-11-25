@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"v!\" from party_ledger\n           where party_id = any($1) and business_date < $2 and ($3::uuid is null or branch_id = $3)\n             and not ($4 and doc_type = 'merge')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Date",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3879223342dda9dc72142255a5c71609195310ee0c07aead9872e1c6d892c2a6"
+}

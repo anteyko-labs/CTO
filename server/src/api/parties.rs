@@ -1611,7 +1611,17 @@ async fn reconciliation(
     // (задача 003 Н8, ADR-151).
     crate::auth::require_permission(&mut conn, &user, "reconciliation").await?;
     Ok(Json(
-        reconciliation_data(&mut conn, user.branch_id, id, q.from, q.to, None).await?,
+        // Акт клиента в программе — по филиалу, где открыли: долги филиалов раздельные, у
+        // филиалов свой продавец в шапке (задача 049).
+        reconciliation_data(
+            &mut conn,
+            user.branch_id,
+            id,
+            q.from,
+            q.to,
+            Some(user.branch_id),
+        )
+        .await?,
     ))
 }
 
@@ -1625,12 +1635,29 @@ pub(crate) async fn reconciliation_data(
     customer_branch: Option<Uuid>,
 ) -> AppResult<ReconOut> {
     let p = sqlx::query!(
-        "select name, kind, role, inn, phone from parties where id = $1",
+        "select name, kind, role, inn, phone, merged_into from parties where id = $1",
         id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Влитые карточки (задача 043): их документы — в акте основной с пометкой, а пары записей
+    // объединения (−N у дубля, +N у основной) гасят друг друга и в акт не идут (задача 049).
+    // Акт самого дубля — как был.
+    let group: Vec<Uuid> = if p.merged_into.is_none() {
+        sqlx::query_scalar!(
+            r#"with recursive g(id) as (
+                   select $1::uuid
+                   union select x.id from parties x join g on x.merged_into = g.id)
+               select id as "id!" from g"#,
+            id
+        )
+        .fetch_all(&mut *conn)
+        .await?
+    } else {
+        vec![id]
+    };
+    let skip_merge = group.len() > 1;
     // Клиент общий: его акт — по всем филиалам, с названием филиала у строки. Поставщик общий,
     // а долг ему — у каждого филиала свой: акт — только филиала запроса (SPEC-33 §2).
     // Кабинет юрлица выбирает филиал (задача 036) — акт клиента только этого филиала.
@@ -1643,9 +1670,11 @@ pub(crate) async fn reconciliation_data(
     let bounds = sqlx::query!(
         r#"select coalesce(min(business_date), (now() at time zone 'Asia/Bishkek')::date) as "first!",
                   (now() at time zone 'Asia/Bishkek')::date as "today!"
-           from party_ledger where party_id = $1 and ($2::uuid is null or branch_id = $2)"#,
-        id,
-        only
+           from party_ledger where party_id = any($1) and ($2::uuid is null or branch_id = $2)
+             and not ($3 and doc_type = 'merge')"#,
+        &group,
+        only,
+        skip_merge
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -1656,10 +1685,12 @@ pub(crate) async fn reconciliation_data(
     }
     let opening = sqlx::query_scalar!(
         r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from party_ledger
-           where party_id = $1 and business_date < $2 and ($3::uuid is null or branch_id = $3)"#,
-        id,
+           where party_id = any($1) and business_date < $2 and ($3::uuid is null or branch_id = $3)
+             and not ($4 and doc_type = 'merge')"#,
+        &group,
         from,
-        only
+        only,
+        skip_merge
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -1671,19 +1702,22 @@ pub(crate) async fn reconciliation_data(
                   (select a.kind from cash_movements m join cash_accounts a on a.id = m.account_id
                     where m.doc_type = 'repayment' and m.doc_id = l.doc_id
                       and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as "paid_via?",
-                  b.name as branch_name,
+                  b.name as branch_name, l.party_id, pp.name as party_name,
                   (select o.doc_type from party_ledger o where o.id = l.reversal_of) as "reversed_doc?"
            from party_ledger l
            join branches b on b.id = l.branch_id
+           join parties pp on pp.id = l.party_id
            left join sales s on s.id = l.doc_id and l.doc_type in ('sale', 'sale_return')
            left join receipts r on r.id = l.doc_id and l.doc_type in ('receipt', 'receipt_reversal')
-           where l.party_id = $1 and l.business_date between $2 and $3
+           where l.party_id = any($1) and l.business_date between $2 and $3
              and ($4::uuid is null or l.branch_id = $4)
+             and not ($5 and l.doc_type = 'merge')
            order by l.business_date, l.created_at"#,
-        id,
+        &group,
         from,
         to,
-        only
+        only,
+        skip_merge
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -1729,6 +1763,11 @@ pub(crate) async fn reconciliation_data(
         };
         let document = if several {
             format!("{document} — {}", r.branch_name)
+        } else {
+            document
+        };
+        let document = if r.party_id != id {
+            format!("{document} (из карточки «{}»)", r.party_name)
         } else {
             document
         };
