@@ -85,6 +85,10 @@ pub struct PartyOut {
     /// Долги клиента раздельно по филиалам (задача 036): `balance_tyiyn` — долг этого филиала,
     /// долги других (`branch_balances` с `here: false`) экран показывает в скобках.
     pub debts_separate: bool,
+    /// Из `balance_tyiyn` — долг за личные машины работников (задача 051, ADR-215): чеки фирмы
+    /// на машинах с `paid_by_party_id` = фирма; остальное — «машины фирмы и прочее». 0 — как раньше.
+    #[serde(default)]
+    pub personal_debt_tyiyn: i64,
 }
 
 #[derive(Serialize)]
@@ -209,7 +213,11 @@ pub(crate) async fn search_parties(
                    from party_balances pb join branches br on br.id = pb.branch_id
                    where pb.party_id = parties.id and pb.balance_tyiyn <> 0
                      and (parties.role = 'customer' or $10)) as "branch_balances!",
-                  (parties.role = 'customer' and $11 and not $10) as "debts_separate!"
+                  (parties.role = 'customer' and $11 and not $10) as "debts_separate!",
+                  case when parties.role = 'customer' and parties.kind = 'company' and b.bal > 0 then
+                    debt_personal_tyiyn(parties.id, b.bal,
+                      case when not $11 or $10 then null else $1 end, null)
+                  else 0 end as "personal_debt_tyiyn!"
            from parties
            cross join lateral (
              select coalesce((select pb.balance_tyiyn from party_balances pb
@@ -426,7 +434,10 @@ pub(crate) async fn load_party_as(
                    from party_balances pb join branches br on br.id = pb.branch_id
                    where pb.party_id = parties.id and pb.balance_tyiyn <> 0
                      and parties.role = 'customer') as "branch_balances!",
-                  (parties.role = 'customer' and $3) as "debts_separate!"
+                  (parties.role = 'customer' and $3) as "debts_separate!",
+                  case when parties.role = 'customer' and parties.kind = 'company' and b.bal > 0 then
+                    debt_personal_tyiyn(parties.id, b.bal, case when $3 then $2 else null end, null)
+                  else 0 end as "personal_debt_tyiyn!"
            from parties
            cross join lateral (
              select coalesce((select pb.balance_tyiyn from party_balances pb
@@ -1578,6 +1589,9 @@ pub(crate) struct ReconRow {
     /// В пользу контрагента: клиент оплатил / поставщик привёз.
     pub(crate) credit_tyiyn: i64,
     pub(crate) comment: String,
+    /// Чек на личной машине работника, оплачиваемой фирмой (задача 051): «Имя, номер».
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) personal: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1596,6 +1610,9 @@ pub(crate) struct ReconOut {
     pub(crate) debit_total_tyiyn: i64,
     pub(crate) credit_total_tyiyn: i64,
     pub(crate) closing_tyiyn: i64,
+    /// Из конечного сальдо — долг за личные машины работников (задача 051); остальное — машины
+    /// фирмы и прочее. 0 — подытогов нет, акт как раньше.
+    pub(crate) closing_personal_tyiyn: i64,
 }
 
 /// Акт сверки: все движения долга контрагента за период с номерами документов.
@@ -1703,7 +1720,9 @@ pub(crate) async fn reconciliation_data(
                     where m.doc_type = 'repayment' and m.doc_id = l.doc_id
                       and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as "paid_via?",
                   b.name as branch_name, l.party_id, pp.name as party_name,
-                  (select o.doc_type from party_ledger o where o.id = l.reversal_of) as "reversed_doc?"
+                  (select o.doc_type from party_ledger o where o.id = l.reversal_of) as "reversed_doc?",
+                  (select o.name || ', ' || v.plate from party_vehicles v join parties o on o.id = v.party_id
+                    where s.vehicle_personal and v.id = s.vehicle_id) as "personal_of?"
            from party_ledger l
            join branches b on b.id = l.branch_id
            join parties pp on pp.id = l.party_id
@@ -1791,8 +1810,24 @@ pub(crate) async fn reconciliation_data(
             debit_tyiyn: d,
             credit_tyiyn: c,
             comment,
+            personal: r.personal_of,
         });
     }
+    let closing = opening.saturating_add(debit).saturating_sub(credit);
+    // Подытоги по видам долга фирмы (задача 051, ADR-215): погашения — от старых к новым.
+    let closing_personal = if p.role == "customer" && p.kind == "company" && closing > 0 {
+        sqlx::query_scalar!(
+            r#"select debt_personal_tyiyn($1, $2, $3, $4) as "v!""#,
+            id,
+            closing,
+            only,
+            to
+        )
+        .fetch_one(&mut *conn)
+        .await?
+    } else {
+        0
+    };
     Ok(ReconOut {
         party_id: id,
         name: p.name,
@@ -1806,7 +1841,8 @@ pub(crate) async fn reconciliation_data(
         rows,
         debit_total_tyiyn: debit,
         credit_total_tyiyn: credit,
-        closing_tyiyn: opening.saturating_add(debit).saturating_sub(credit),
+        closing_tyiyn: closing,
+        closing_personal_tyiyn: closing_personal,
     })
 }
 

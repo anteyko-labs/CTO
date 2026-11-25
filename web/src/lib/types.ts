@@ -759,6 +759,8 @@ export interface Party {
   branch_balances?: BranchBalance[]
   /** Долги раздельно по филиалам (задача 036): `balance_tyiyn` — долг этого филиала. */
   debts_separate?: boolean
+  /** Из долга — за личные машины работников (задача 051); 0 или нет — одной строкой. */
+  personal_debt_tyiyn?: number
 }
 
 /** Долг клиента в одном филиале (SPEC-33 §2). */

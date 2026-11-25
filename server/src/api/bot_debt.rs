@@ -84,6 +84,10 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
             "💳 Ваш долг: {}{only}",
             format_som(party.balance_tyiyn)
         ));
+        // Долг фирмы по видам (задача 051): за машины фирмы и за личные машины работников.
+        if let Some(t) = kind_lines(party.balance_tyiyn, party.personal_debt_tyiyn) {
+            lines.push(t);
+        }
         // Долг в нескольких филиалах — по филиалам.
         if list.len() > 1 {
             for b in &list {
@@ -169,6 +173,17 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
 
 /// Текст напоминания о сроке из настройки: «Здравствуйте, Азиз! Напоминаем: срок оплаты долга
 /// 2 400 с — через 3 дня, 03.11.2026. …» (задача 002, П9).
+/// Две строки долга фирмы по видам (задача 051, ADR-215); нет долга за личные машины — `None`.
+pub fn kind_lines(balance: i64, personal: i64) -> Option<String> {
+    (personal > 0).then(|| {
+        format!(
+            "  • машины фирмы и прочее: {}\n  • личные машины работников: {}",
+            format_som(balance.saturating_sub(personal)),
+            format_som(personal)
+        )
+    })
+}
+
 pub fn due_text(template: &str, name: &str, debt: i64, when: &str, due: NaiveDate) -> String {
     crate::api::client_messages::fill(
         template,

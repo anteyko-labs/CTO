@@ -81,7 +81,7 @@ export function actPeriod(kind: ActPeriod, today: string): { from: string; to: s
 
 /** Строка акта для показа и выгрузки: сальдо, документы, обороты — как в печатном акте. */
 export interface ActLine {
-  kind: 'opening' | 'row' | 'totals' | 'closing'
+  kind: 'opening' | 'row' | 'totals' | 'closing' | 'subtotal'
   date: string
   document: string
   comment: string
@@ -110,7 +110,7 @@ export function actLines(act: Reconciliation): ActLine[] {
       (r): ActLine => ({
         kind: 'row',
         date: r.date,
-        document: r.document,
+        document: actRowDocument(r),
         comment: r.comment,
         debit_tyiyn: r.debit_tyiyn,
         credit_tyiyn: r.credit_tyiyn,
@@ -120,7 +120,35 @@ export function actLines(act: Reconciliation): ActLine[] {
     ),
     { kind: 'totals', date: act.to, document: 'Обороты за период', comment: '', debit_tyiyn: act.debit_total_tyiyn, credit_tyiyn: act.credit_total_tyiyn },
     saldo('closing', act.to, act.closing_tyiyn),
+    ...actKindLines(act),
   ]
+}
+
+/** Долг фирмы по видам (задача 051, ADR-215): за машины фирмы и прочее, за личные машины
+ *  работников. Нет долга за личные машины — `null`, показ как раньше. */
+export function debtKinds(balance: number, personal: number | undefined): { company: number; personal: number } | null {
+  if (!personal || personal <= 0 || balance <= 0) return null
+  // Показан долг филиала меньше общего — личная часть не больше показанного долга.
+  const p = Math.min(personal, balance)
+  return { company: balance - p, personal: p }
+}
+
+export const KIND_COMPANY = 'машины фирмы и прочее'
+export const KIND_PERSONAL = 'личные машины работников'
+
+/** Подытоги конечного сальдо по видам долга фирмы — после сальдо на конец. */
+function actKindLines(act: Reconciliation): ActLine[] {
+  const k = debtKinds(act.closing_tyiyn, act.closing_personal_tyiyn)
+  if (!k) return []
+  return [
+    { kind: 'subtotal', date: act.to, document: `в т. ч. ${KIND_COMPANY}`, comment: '', debit_tyiyn: k.company, credit_tyiyn: 0 },
+    { kind: 'subtotal', date: act.to, document: `в т. ч. ${KIND_PERSONAL}`, comment: '', debit_tyiyn: k.personal, credit_tyiyn: 0 },
+  ]
+}
+
+/** Пометка строки акта: чек на личной машине работника. */
+export function actRowDocument(r: Pick<ReconRow, 'document' | 'personal'>): string {
+  return r.personal ? `${r.document} · личная — ${r.personal}` : r.document
 }
 
 /** Вывод акта простыми словами: кто кому должен на конец периода. */
@@ -148,6 +176,8 @@ export interface ReconRow {
   debit_tyiyn: number
   credit_tyiyn: number
   comment: string
+  /** Чек на личной машине работника (задача 051): «Имя, номер». */
+  personal?: string | null
 }
 
 export interface Reconciliation {
@@ -164,6 +194,8 @@ export interface Reconciliation {
   debit_total_tyiyn: number
   credit_total_tyiyn: number
   closing_tyiyn: number
+  /** Из конечного сальдо — за личные машины работников (задача 051). */
+  closing_personal_tyiyn?: number
 }
 
 export const BLANK = '________________'
@@ -530,7 +562,7 @@ export function printReconciliation(act: Reconciliation, seller: Seller, sellerS
   const money = (v: number) => (v ? esc(formatSomExact(v)) : '')
   const rows = act.rows
     .map(
-      (r) => `<tr><td>${dateRu(r.date)}</td><td>${esc(r.document)}${r.comment ? `<div class="muted">${esc(r.comment)}</div>` : ''}</td>
+      (r) => `<tr><td>${dateRu(r.date)}</td><td>${esc(actRowDocument(r))}${r.comment ? `<div class="muted">${esc(r.comment)}</div>` : ''}</td>
         <td class="r">${money(r.debit_tyiyn)}</td><td class="r">${money(r.credit_tyiyn)}</td>
         <td></td><td></td><td></td><td></td></tr>`,
     )
@@ -562,6 +594,9 @@ export function printReconciliation(act: Reconciliation, seller: Seller, sellerS
         <tr><td colspan="2"><b>Обороты за период</b></td><td class="r"><b>${esc(formatSomExact(act.debit_total_tyiyn))}</b></td>
           <td class="r"><b>${esc(formatSomExact(act.credit_total_tyiyn))}</b></td><td colspan="2"><b>Обороты за период</b></td><td></td><td></td></tr>
         ${saldoRow(`Сальдо на ${dateRu(act.to)}`, closing)}
+        ${actKindLines(act)
+          .map((l) => `<tr><td colspan="2">${esc(l.document)}</td><td class="r">${esc(formatSomExact(l.debit_tyiyn))}</td><td></td><td colspan="2"></td><td></td><td></td></tr>`)
+          .join('')}
       </tbody>
     </table>
     <p>По данным ${esc(us)}: ${verdict}</p>

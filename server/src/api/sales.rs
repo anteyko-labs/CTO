@@ -2068,14 +2068,17 @@ pub async fn post_sale_core(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
                               user_id, device_id, client_time, delivery_address, business_date,
-                              vehicle_kind)
+                              vehicle_kind, vehicle_personal)
            values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                    coalesce($17::date,
                    case when $15::timestamptz is not null
                          and $15::timestamptz > now() - interval '2 days'
                          and $15::timestamptz < now() + interval '5 minutes'
                         then ($15::timestamptz at time zone 'Asia/Bishkek')::date
-                        else (now() at time zone 'Asia/Bishkek')::date end), $18)"#,
+                        else (now() at time zone 'Asia/Bishkek')::date end), $18,
+                   -- Вид долга фирмы (задача 051): личная машина работника, оплачиваемая фирмой.
+                   exists (select 1 from party_vehicles v where v.id = $12
+                           and v.paid_by_party_id = $10 and v.party_id <> $10))"#,
         id,
         branch_id,
         number,
@@ -3302,10 +3305,12 @@ pub async fn return_sale_core(
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
-                              reversal_of, user_id, device_id, business_date, vehicle_kind)
+                              reversal_of, user_id, device_id, business_date, vehicle_kind,
+                              vehicle_personal)
            values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                    coalesce($16::date, (now() at time zone 'Asia/Bishkek')::date),
-                   (select vehicle_kind from sales where id = $13))"#,
+                   (select vehicle_kind from sales where id = $13),
+                   (select vehicle_personal from sales where id = $13))"#,
         rid,
         branch_id,
         number,

@@ -1,6 +1,7 @@
 // Кабинет юрлица: вход по ИНН, смена начального пароля, покупки, работники, долг, акт сверки
 // (SPEC-12, ADR-049). Только просмотр — ничего не проводится. Тот же вход у поставщика — его
 // разделы в `SupplierCabinet.tsx` (задача 028).
+import { DebtKindsLine } from '../../components/DebtKindsLine'
 import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Table, Toaster, toast } from '../../components/ui'
 import { ApiError, get, post, qs } from '../../lib/api'
@@ -29,6 +30,8 @@ interface Me {
   credit_limit_tyiyn: number | null
   /** Долг по филиалам (SPEC-33): только ненулевые. */
   branch_balances?: { branch_id: string; name: string; balance_tyiyn: number }[]
+  /** Из долга — за личные машины работников (задача 051). */
+  personal_debt_tyiyn?: number
   seller: Partial<Seller>
   /** Филиалы для отбора «Все / …» (задача 036); один филиал — пусто. */
   branches?: { id: string; name: string }[]
@@ -534,6 +537,7 @@ export default function CabinetApp() {
           <div>
             <div className="text-xs text-slate-500">{m.balance_tyiyn >= 0 ? 'Ваш долг' : 'Ваш аванс'}</div>
             <div className={`text-2xl font-bold ${m.balance_tyiyn > 0 ? 'text-amber-700' : ''}`}>{formatSom(Math.abs(m.balance_tyiyn))}</div>
+            <DebtKindsLine balance={m.balance_tyiyn} personal={m.personal_debt_tyiyn} className="mt-1 text-xs text-slate-600" />
             {(m.branch_balances?.length ?? 0) > 1 && (
               <div className="text-xs text-slate-600">
                 {m.branch_balances?.map((b) => (

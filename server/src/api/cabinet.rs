@@ -335,6 +335,8 @@ struct MeOut {
     credit_limit_tyiyn: Option<i64>,
     /// Долг по филиалам `[{branch_id, name, balance_tyiyn}]` (SPEC-33): только ненулевые.
     branch_balances: Value,
+    /// Из долга — за личные машины работников (задача 051); 0 — одной строкой, как раньше.
+    personal_debt_tyiyn: i64,
     /// Реквизиты точки — для шапки акта сверки при печати.
     seller: Value,
     /// Филиалы для отбора «Все / …» (задача 036); один филиал — пусто.
@@ -393,6 +395,7 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
         due_days: p.due_days,
         credit_limit_tyiyn: p.credit_limit_tyiyn,
         branch_balances: p.branch_balances,
+        personal_debt_tyiyn: p.personal_debt_tyiyn,
         seller,
         branches,
         act_period,

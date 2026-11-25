@@ -2,7 +2,7 @@
 // остатка и прибыль — только владельцу (I13). Условие повторяет столбцы экрана; тесты —
 // exportCols.test.ts. Простые таблицы описывают столбцы рядом с собой.
 import { colsIf, exportTitle, tableSheet, unitName, xl, type ExportCol } from './exportTable'
-import { actLines, actVerdict, type Reconciliation } from './debtDocs'
+import { actLines, actVerdict, debtKinds, type Reconciliation } from './debtDocs'
 import { formatDate, formatSom } from './format'
 import { oilAmountText } from './serviceSale'
 import { groupQty, pricePer, rowViscosity, type QtyTotal, type StockGroup } from './stockSheet'
@@ -166,13 +166,37 @@ export const DEBT_COLS: ExportCol<DebtRow>[] = [
   { label: 'По филиалам', value: (p) => ((p.branch_balances ?? []).length < 2 ? '' : (p.branch_balances ?? []).map((b) => `${b.name}: ${formatSom(b.balance_tyiyn)}`).join('; ')) },
 ]
 
+/** Долг фирмы по видам (задача 051): две колонки после «Долг» — только когда у кого-то есть
+ *  долг за личные машины работников; иначе лист как раньше. У фирмы без личных — весь долг за
+ *  машины фирмы, у физлиц и авансов — пусто. */
+function kindParts(p: DebtRow): { company: number; personal: number } | null {
+  if (p.kind !== 'company' || p.balance_tyiyn <= 0) return null
+  return debtKinds(p.balance_tyiyn, p.personal_debt_tyiyn) ?? { company: p.balance_tyiyn, personal: 0 }
+}
+
+export const DEBT_KIND_COLS: ExportCol<DebtRow>[] = [
+  { label: 'За машины фирмы', value: (p) => { const k = kindParts(p); return k ? xl.money(k.company) : null } },
+  { label: 'За личные машины', value: (p) => { const k = kindParts(p); return k?.personal ? xl.money(k.personal) : null } },
+]
+
+/** Колонки листа долгов: с видами долга фирмы, если они есть хоть у одной строки. */
+export function debtCols(rows: DebtRow[]): ExportCol<DebtRow>[] {
+  if (!rows.some((p) => debtKinds(p.balance_tyiyn, p.personal_debt_tyiyn))) return DEBT_COLS
+  return [...DEBT_COLS.slice(0, 5), ...DEBT_KIND_COLS, ...DEBT_COLS.slice(5)]
+}
+
 /** Лист долгов одной стороны с итогом, как над таблицей экрана. */
 export function debtSheet(name: string, rows: DebtRow[], filter: string[] = [], now?: Date): Sheet {
   const total = rows.reduce((a, p) => a + Math.abs(p.balance_tyiyn), 0)
   const overdue = rows.reduce((a, p) => a + p.overdue_tyiyn, 0)
-  return tableSheet(name, DEBT_COLS, rows, {
+  const cols = debtCols(rows)
+  const sum = (f: (k: { company: number; personal: number }) => number) => rows.reduce((a, p) => { const k = kindParts(p); return a + (k ? f(k) : 0) }, 0)
+  return tableSheet(name, cols, rows, {
     title: exportTitle(name, filter, now),
-    total: ['Итого', null, null, null, xl.money(total), xl.money(overdue)],
+    total:
+      cols === DEBT_COLS
+        ? ['Итого', null, null, null, xl.money(total), xl.money(overdue)]
+        : ['Итого', null, null, null, xl.money(total), xl.money(sum((k) => k.company)), xl.money(sum((k) => k.personal)), xl.money(overdue)],
   })
 }
 

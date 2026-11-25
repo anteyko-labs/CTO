@@ -21,6 +21,7 @@ import { useUser } from '../lib/auth'
 import { branchParam, useAllBranches } from '../lib/branchReport'
 import { qs } from '../lib/api'
 import { debtSheet } from '../lib/exportCols'
+import { DebtKindsLine } from '../components/DebtKindsLine'
 
 /** Долги обновляются сами, пока экран открыт (ADR-028). */
 const REFRESH_MS = 10_000
@@ -144,6 +145,7 @@ function Side({
                     </td>
                     <td className="px-2 py-2 text-right" data-label="Долг">
                       <Money value={Math.abs(p.balance_tyiyn)} className={`font-semibold ${owedToUs ? 'text-amber-700' : ''}`} />
+                      <DebtKindsLine balance={p.balance_tyiyn} personal={p.personal_debt_tyiyn} />
                       <BranchDebt row={totals?.get(p.id)} here={p.balance_tyiyn} />
                     </td>
                     <td className="px-2 py-2 text-right" data-label="Просрочка">

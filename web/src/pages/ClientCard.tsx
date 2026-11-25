@@ -1,4 +1,5 @@
 // Карточка клиента: работники, машины, покупки, долг и погашения (SPEC-10).
+import { DebtKindsLine } from '../components/DebtKindsLine'
 import { otherBranchDebtText } from '../lib/branchDebt'
 import { useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -602,6 +603,8 @@ export default function ClientCard() {
             {formatSom(Math.abs(party.balance_tyiyn))}
           </div>
           <div className="text-xs text-slate-500">{balanceText(party.balance_tyiyn)}</div>
+          {/* Долг фирмы по видам (задача 051). */}
+          <DebtKindsLine balance={party.balance_tyiyn} personal={party.personal_debt_tyiyn} className="mt-1 text-xs text-slate-600" />
           {/* Долги раздельно (задача 036): долг в других филиалах — в скобках. */}
           {otherBranchDebtText(party) && (
             <div className="mt-1 text-xs text-slate-500" data-testid="client-other-branch-debt">

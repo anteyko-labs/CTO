@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actDocLink, actLines, actPeriod, actVerdict, BLANK, debtDocHtml, debtHistory, numberInWords, renderTemplate, signatureSlot, somInWords, withSignatureSlots, type Reconciliation, type ReconRow } from './debtDocs'
+import { actDocLink, actLines, actPeriod, actVerdict, BLANK, debtKinds, debtDocHtml, debtHistory, numberInWords, renderTemplate, signatureSlot, somInWords, withSignatureSlots, type Reconciliation, type ReconRow } from './debtDocs'
 import type { Sale } from './types'
 
 describe('сумма прописью', () => {
@@ -165,5 +165,26 @@ describe('подписи в документе о долге (задача 008)'
   it('не картинка PNG — линия, а не вставка', () => {
     expect(signatureSlot('javascript:alert(1)')).toBe('________________')
     expect(signatureSlot('data:image/png;base64,AAA" onerror="x')).toBe('________________')
+  })
+})
+
+describe('долг фирмы по видам (задача 051)', () => {
+  const row = (personal: string | null): ReconRow => ({ date: '2026-10-02', document: 'Отгрузка товара, чек № 1', doc_type: 'sale', doc_id: 's', debit_tyiyn: 100_000, credit_tyiyn: 0, comment: '', personal })
+  it('пометка у чека на личной машине и подытоги после сальдо', () => {
+    const a = { ...act([row('Бакыт, 01KG200BBB'), row(null)]), kind: 'company' as const, debit_total_tyiyn: 200_000, closing_tyiyn: 200_000, closing_personal_tyiyn: 100_000 }
+    const lines = actLines(a)
+    expect(lines.map((l) => l.kind)).toEqual(['opening', 'row', 'row', 'totals', 'closing', 'subtotal', 'subtotal'])
+    expect(lines[1].document).toBe('Отгрузка товара, чек № 1 · личная — Бакыт, 01KG200BBB')
+    expect(lines[2].document).toBe('Отгрузка товара, чек № 1')
+    expect(lines[5]).toMatchObject({ document: 'в т. ч. машины фирмы и прочее', debit_tyiyn: 100_000 })
+    expect(lines[6]).toMatchObject({ document: 'в т. ч. личные машины работников', debit_tyiyn: 100_000 })
+  })
+  it('без долга за личные машины — как раньше', () => {
+    const a = { ...act([row(null)]), closing_tyiyn: 100_000, closing_personal_tyiyn: 0 }
+    expect(actLines(a).map((l) => l.kind)).toEqual(['opening', 'row', 'totals', 'closing'])
+    expect(debtKinds(100_000, 0)).toBeNull()
+    expect(debtKinds(300_000, 100_000)).toEqual({ company: 200_000, personal: 100_000 })
+    // Показан долг филиала меньше личной части — не уходим в минус.
+    expect(debtKinds(50_000, 100_000)).toEqual({ company: 0, personal: 50_000 })
   })
 })

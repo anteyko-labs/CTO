@@ -154,6 +154,14 @@ describe('Долги', () => {
     expect(cells(s.rows[1])[5]).toBeNull()
     expect(s.rows[2]).toEqual({ cells: ['Итого', null, null, null, { money: 1_500_100 }, { money: 500_000 }], bold: true })
   })
+  it('долг фирмы по видам — две колонки после «Долг» (задача 051)', () => {
+    const s = debtSheet('Должны нам', [{ ...p, personal_debt_tyiyn: 400_000 }, { ...p, id: 'f', balance_tyiyn: 100_000, overdue_tyiyn: 0 }, { ...p, id: 'h', kind: 'person', balance_tyiyn: 50, overdue_tyiyn: 0 }])
+    expect(s.columns.map((c) => c.label).slice(4, 7)).toEqual(['Долг', 'За машины фирмы', 'За личные машины'])
+    expect(cells(s.rows[0]).slice(4, 7)).toEqual([{ money: 1_500_000 }, { money: 1_100_000 }, { money: 400_000 }])
+    expect(cells(s.rows[1]).slice(4, 7)).toEqual([{ money: 100_000 }, { money: 100_000 }, null])
+    expect(cells(s.rows[2]).slice(4, 7)).toEqual([{ money: 50 }, null, null])
+    expect(s.rows[3]).toEqual({ cells: ['Итого', null, null, null, { money: 1_600_050 }, { money: 1_200_000 }, { money: 400_000 }, { money: 500_000 }], bold: true })
+  })
 })
 
 describe('Акт сверки', () => {
