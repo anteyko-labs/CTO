@@ -331,7 +331,7 @@ ssh root@IP '/opt/avtodom/scripts/deploy.sh --bundle /root/avtodom-bundle.tar.gz
 Шлюз `deploy/whatsapp-gate` (Node, библиотека Baileys точной версии из `package-lock.json`) — номер магазина как связанное устройство WhatsApp. Ставится один раз после выкатки ревизии с задачей 052:
 
 ```bash
-ssh -i ~/.ssh/avtodom_vps root@IP 'bash /home/avtodom-build/src/deploy/cloud/install-whatsapp-gate.sh'
+ssh -i ~/.ssh/avtodom_vps root@IP 'bash /var/lib/avtodom-build/src/deploy/cloud/install-whatsapp-gate.sh'
 ```
 
 Скрипт кладёт шлюз в `/opt/avtodom/wa`, ставит службу `avtodom-wa` (только 127.0.0.1:8091, сессия — `/var/lib/avtodom/whatsapp`), дописывает в `/etc/avtodom/env` `WA_GATE_URL` и случайный `WA_GATE_KEY` (копия env — рядом) и перезапускает `avtodom`. После обновления кода шлюза — запустить ещё раз. Дальше — в программе: «Настройки → Сообщения клиентам → WhatsApp по QR-коду → Подключить», на телефоне «Связанные устройства → Привязать устройство» (или «Код вместо QR»). Журнал — `journalctl -u avtodom-wa`. Выключить: `systemctl disable --now avtodom-wa` — сообщения снова идут только в Телеграм.

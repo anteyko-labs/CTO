@@ -1231,7 +1231,7 @@
   {"alters":[],"creates":["bot_sign_tries","bot_sign_wait"],"file":"server/migrations/0126_bot_signs.sql","lines":15,"name":"bot_signs","num":"0126"},
   {"alters":["revisions"],"creates":[],"file":"server/migrations/0127_opening_revision.sql","lines":18,"name":"opening_revision","num":"0127"},
   {"alters":["sale_approvals"],"creates":[],"file":"server/migrations/0128_cashier_responsibility.sql","lines":7,"name":"cashier_responsibility","num":"0128"},
-  {"alters":["sales"],"creates":[],"file":"server/migrations/0129_sale_vehicle_personal.sql","lines":50,"name":"sale_vehicle_personal","num":"0129"},
+  {"alters":["sales"],"creates":[],"file":"server/migrations/0129_sale_vehicle_personal.sql","lines":53,"name":"sale_vehicle_personal","num":"0129"},
   {"alters":[],"creates":[],"file":"server/migrations/0130_person_purchase_messages.sql","lines":5,"name":"person_purchase_messages","num":"0130"},
   {"alters":["client_messages"],"creates":["whatsapp_inbox"],"file":"server/migrations/0131_whatsapp_qr.sql","lines":32,"name":"whatsapp_qr","num":"0131"}
  ],

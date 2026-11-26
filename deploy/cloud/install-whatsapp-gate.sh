@@ -1,12 +1,12 @@
 #!/bin/bash
 # Шлюз WhatsApp по QR-коду (задача 052, ADR-217) на облачном сервере. Запускать от root:
 #   bash /root/avtodom-cloud/install-whatsapp-gate.sh [папка-с-кодом]
-# Папка — копия репозитория (по умолчанию сборочная /home/avtodom-build/src после deploy.sh).
+# Папка — копия репозитория (по умолчанию сборочная /var/lib/avtodom-build/src после deploy.sh).
 # Ставит шлюз в /opt/avtodom/wa (npm ci, точные версии из package-lock.json), службу avtodom-wa,
 # добавляет в /etc/avtodom/env WA_GATE_URL и случайный WA_GATE_KEY (если их нет) и перезапускает
 # avtodom, чтобы сервер увидел шлюз. Повторный запуск обновляет код шлюза; сессия номера остаётся.
 set -euo pipefail
-SRC=${1:-/home/avtodom-build/src}
+SRC=${1:-/var/lib/avtodom-build/src}
 GATE=$SRC/deploy/whatsapp-gate
 ENVF=/etc/avtodom/env
 die() { echo "ОШИБКА: $*" >&2; exit 1; }
