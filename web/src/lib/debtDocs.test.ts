@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actDocLink, actLines, actPeriod, actVerdict, BLANK, debtKinds, debtDocHtml, debtHistory, numberInWords, renderTemplate, signatureSlot, somInWords, withSignatureSlots, type Reconciliation, type ReconRow } from './debtDocs'
+import { actDocLink, actKindTitle, actLines, actPeriod, actVerdict, BLANK, debtKinds, debtDocHtml, debtHistory, numberInWords, renderTemplate, signatureSlot, somInWords, withSignatureSlots, type Reconciliation, type ReconRow } from './debtDocs'
 import type { Sale } from './types'
 
 describe('сумма прописью', () => {
@@ -186,5 +186,16 @@ describe('долг фирмы по видам (задача 051)', () => {
     expect(debtKinds(300_000, 100_000)).toEqual({ company: 200_000, personal: 100_000 })
     // Показан долг филиала меньше личной части — не уходим в минус.
     expect(debtKinds(50_000, 100_000)).toEqual({ company: 0, personal: 50_000 })
+  })
+})
+
+describe('отдельные акты фирмы (задача 055)', () => {
+  const row: ReconRow = { date: '2026-10-02', document: 'Отгрузка товара, чек № 1', doc_type: 'sale', doc_id: 's', debit_tyiyn: 100_000, credit_tyiyn: 0, comment: '', personal: 'Бакыт, 01KG200BBB' }
+  it('заголовок и вывод говорят, по каким машинам', () => {
+    const a = { ...act([row]), name: 'ОсОО Виды', debit_total_tyiyn: 100_000, closing_tyiyn: 100_000, act_kind: 'personal' as const }
+    expect(actKindTitle(a)).toBe('по личным машинам работников')
+    expect(actVerdict(a, 'Автодом')).toContain('должен Автодом по личным машинам работников 1')
+    expect(actKindTitle({ act_kind: 'company' })).toBe('по машинам фирмы и прочему')
+    expect(actKindTitle({})).toBe('')
   })
 })

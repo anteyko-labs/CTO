@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select debt_personal_tyiyn($1, u.b, $2, u.d) as \"v!\"\n           from unnest($3::date[], $4::int8[]) with ordinality as u(d, b, n) order by u.n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "DateArray",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "eb597814e104ad1f9403498e7cf1e06ca93c1bcceda965e45d1d34e0fd212ae8"
+}

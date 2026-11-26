@@ -1575,6 +1575,9 @@ pub async fn customer_balance(
 struct ReconQuery {
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    /// Отдельный акт фирмы (задача 055): `company` — машины фирмы и прочее, `personal` — личные
+    /// машины работников; нет — общий акт.
+    kind: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1592,6 +1595,10 @@ pub(crate) struct ReconRow {
     /// Чек на личной машине работника, оплачиваемой фирмой (задача 051): «Имя, номер».
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) personal: Option<String>,
+    /// Вид строки для раздельных актов (задача 055): `personal`, `company` или `pool` — оплаты и
+    /// прочее, что гасит самый старый долг и делится между видами.
+    #[serde(skip)]
+    pub(crate) tag: String,
 }
 
 #[derive(Serialize)]
@@ -1613,6 +1620,11 @@ pub(crate) struct ReconOut {
     /// Из конечного сальдо — долг за личные машины работников (задача 051); остальное — машины
     /// фирмы и прочее. 0 — подытогов нет, акт как раньше.
     pub(crate) closing_personal_tyiyn: i64,
+    /// У фирмы есть чеки на личных машинах работников — можно взять два отдельных акта.
+    pub(crate) has_personal: bool,
+    /// Отдельный акт (задача 055): `company` или `personal`; нет — общий.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) act_kind: Option<String>,
 }
 
 /// Акт сверки: все движения долга контрагента за период с номерами документов.
@@ -1627,19 +1639,183 @@ async fn reconciliation(
     // Акт сверки администратору — по праву; кабинет юрлица и бот владельца его не спрашивают
     // (задача 003 Н8, ADR-151).
     crate::auth::require_permission(&mut conn, &user, "reconciliation").await?;
+    // Акт клиента в программе — по филиалу, где открыли: долги филиалов раздельные, у
+    // филиалов свой продавец в шапке (задача 049).
+    let act = reconciliation_data(
+        &mut conn,
+        user.branch_id,
+        id,
+        q.from,
+        q.to,
+        Some(user.branch_id),
+    )
+    .await?;
     Ok(Json(
-        // Акт клиента в программе — по филиалу, где открыли: долги филиалов раздельные, у
-        // филиалов свой продавец в шапке (задача 049).
-        reconciliation_data(
-            &mut conn,
-            user.branch_id,
-            id,
-            q.from,
-            q.to,
-            Some(user.branch_id),
-        )
-        .await?,
+        reconciliation_kind(&mut conn, act, Some(user.branch_id), q.kind.as_deref()).await?,
     ))
+}
+
+/// Отдельный акт фирмы по виду долга (задача 055, ADR-218): только чеки своего вида, а оплаты и
+/// прочее, что гасит самый старый долг (ADR-073), — той частью, что ушла на этот вид. Части
+/// считает тот же `debt_personal_tyiyn`, что подытоги карточки (задача 051): остаток личных на
+/// конец каждого дня с движениями. Два акта вместе — ровно общий акт. Не фирма или вид не задан —
+/// акт как есть.
+pub(crate) async fn reconciliation_kind(
+    conn: &mut PgConnection,
+    act: ReconOut,
+    only: Option<Uuid>,
+    kind: Option<&str>,
+) -> AppResult<ReconOut> {
+    let personal = match kind {
+        None | Some("") | Some("all") => return Ok(act),
+        Some("personal") => true,
+        Some("company") => false,
+        Some(_) => return Err(invalid("вид акта: company или personal")),
+    };
+    if !(act.role == "customer" && act.kind == "company") {
+        return Err(invalid("отдельные акты — только у фирмы-клиента"));
+    }
+    // Конец каждого дня с движениями: баланс и день — для остатка личных на этот день.
+    let mut days: Vec<NaiveDate> = vec![act.from.pred_opt().unwrap_or(act.from)];
+    let mut bals: Vec<i64> = vec![act.opening_tyiyn];
+    let mut bal = act.opening_tyiyn;
+    for r in &act.rows {
+        bal = bal
+            .saturating_add(r.debit_tyiyn)
+            .saturating_sub(r.credit_tyiyn);
+        if let (Some(d), Some(b)) = (days.last(), bals.last_mut())
+            && *d == r.date
+        {
+            *b = bal;
+        } else {
+            days.push(r.date);
+            bals.push(bal);
+        }
+    }
+    days.push(act.to);
+    bals.push(act.closing_tyiyn);
+    let ends = sqlx::query_scalar!(
+        r#"select debt_personal_tyiyn($1, u.b, $2, u.d) as "v!"
+           from unnest($3::date[], $4::int8[]) with ordinality as u(d, b, n) order by u.n"#,
+        act.party_id,
+        only,
+        &days,
+        &bals
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let opening_p = ends.first().copied().unwrap_or(0);
+    let closing_p = ends.last().copied().unwrap_or(0);
+    // Остаток личных на конец дня строки: индекс дня в `days` (1.., последний — `to`).
+    let end_of = |d: NaiveDate| -> i64 {
+        days.iter()
+            .skip(1)
+            .position(|x| *x == d)
+            .and_then(|i| ends.get(i + 1).copied())
+            .unwrap_or(closing_p)
+    };
+    let signed = |r: &ReconRow| r.debit_tyiyn.saturating_sub(r.credit_tyiyn);
+    let mut out_rows: Vec<ReconRow> = Vec::new();
+    let mut prev = opening_p;
+    let rows = act.rows;
+    let mut i = 0;
+    while i < rows.len() {
+        let day = rows[i].date;
+        let mut j = i;
+        while j < rows.len() && rows[j].date == day {
+            j += 1;
+        }
+        let direct: i64 = rows[i..j]
+            .iter()
+            .filter(|r| r.tag == "personal")
+            .map(signed)
+            .sum();
+        // Сколько за день ушло на личные из оплат и прочего общего.
+        let mut rest = end_of(day) - prev - direct;
+        prev = end_of(day);
+        let mut last_date = day;
+        for r in rows[i..j].iter() {
+            let a = signed(r);
+            let part = match r.tag.as_str() {
+                "personal" => a,
+                "company" => 0,
+                _ if rest != 0 && a.signum() == rest.signum() => {
+                    let p = rest.signum() * a.abs().min(rest.abs());
+                    rest -= p;
+                    p
+                }
+                _ => 0,
+            };
+            let mine = if personal { part } else { a - part };
+            last_date = r.date;
+            if mine == 0 && a != 0 {
+                continue;
+            }
+            let comment = if r.tag == "pool" && mine != a {
+                let note = format!(
+                    "из {} — на {}",
+                    crate::domain::money::format_som(a.abs()),
+                    if personal {
+                        "личные машины"
+                    } else {
+                        "машины фирмы"
+                    }
+                );
+                if r.comment.is_empty() {
+                    note
+                } else {
+                    format!("{} · {note}", r.comment)
+                }
+            } else {
+                r.comment.clone()
+            };
+            out_rows.push(ReconRow {
+                date: r.date,
+                document: r.document.clone(),
+                doc_type: r.doc_type.clone(),
+                doc_id: r.doc_id,
+                debit_tyiyn: mine.max(0),
+                credit_tyiyn: (-mine).max(0),
+                comment,
+                personal: r.personal.clone(),
+                tag: r.tag.clone(),
+            });
+        }
+        // Редко: погашение с самого старого перенесло долг между видами без оплаты в этот день
+        // (возврат по уже оплаченному чеку и т. п.) — отдельной строкой, чтобы сальдо сошлось.
+        if rest != 0 {
+            let mine = if personal { rest } else { -rest };
+            out_rows.push(ReconRow {
+                date: last_date,
+                document: "Перенос между видами долга (погашение с самого старого)".into(),
+                doc_type: "kind_shift".into(),
+                doc_id: None,
+                debit_tyiyn: mine.max(0),
+                credit_tyiyn: (-mine).max(0),
+                comment: String::new(),
+                personal: None,
+                tag: "pool".into(),
+            });
+        }
+        i = j;
+    }
+    let opening = if personal {
+        opening_p
+    } else {
+        act.opening_tyiyn - opening_p
+    };
+    let debit: i64 = out_rows.iter().map(|r| r.debit_tyiyn).sum();
+    let credit: i64 = out_rows.iter().map(|r| r.credit_tyiyn).sum();
+    Ok(ReconOut {
+        opening_tyiyn: opening,
+        rows: out_rows,
+        debit_total_tyiyn: debit,
+        credit_total_tyiyn: credit,
+        closing_tyiyn: opening + debit - credit,
+        closing_personal_tyiyn: 0,
+        act_kind: Some(if personal { "personal" } else { "company" }.into()),
+        ..act
+    })
 }
 
 /// Данные акта сверки: тот же акт видят владелец и юрлицо в своём кабинете (SPEC-10, SPEC-12).
@@ -1722,7 +1898,20 @@ pub(crate) async fn reconciliation_data(
                   b.name as branch_name, l.party_id, pp.name as party_name,
                   (select o.doc_type from party_ledger o where o.id = l.reversal_of) as "reversed_doc?",
                   (select o.name || ', ' || v.plate from party_vehicles v join parties o on o.id = v.party_id
-                    where s.vehicle_personal and v.id = s.vehicle_id) as "personal_of?"
+                    where s.vehicle_personal and v.id = s.vehicle_id) as "personal_of?",
+                  case
+                    when l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0 then
+                      case when l.doc_type = 'sale' and coalesce(s.vehicle_personal, false)
+                           then 'personal' else 'company' end
+                    when l.doc_type = 'sale_return' then
+                      case when coalesce((select o.vehicle_personal from sales o where o.id = s.reversal_of), false)
+                           then 'personal' else 'company' end
+                    when l.reversal_of is not null then
+                      (select case when o.doc_type = 'sale' and coalesce(os.vehicle_personal, false)
+                                   then 'personal' else 'company' end
+                         from party_ledger o left join sales os on os.id = o.doc_id
+                        where o.id = l.reversal_of and o.kind in ('debt', 'adjust') and o.amount_tyiyn > 0)
+                  end as "tag?"
            from party_ledger l
            join branches b on b.id = l.branch_id
            join parties pp on pp.id = l.party_id
@@ -1811,9 +2000,22 @@ pub(crate) async fn reconciliation_data(
             credit_tyiyn: c,
             comment,
             personal: r.personal_of,
+            tag: r.tag.unwrap_or_else(|| "pool".into()),
         });
     }
     let closing = opening.saturating_add(debit).saturating_sub(credit);
+    // Два отдельных акта (задача 055) — фирме-клиенту с чеками на личных машинах работников.
+    let has_personal = p.role == "customer"
+        && p.kind == "company"
+        && sqlx::query_scalar!(
+            r#"select exists(select 1 from party_ledger l join sales s on s.id = l.doc_id
+                 where l.party_id = any($1) and l.doc_type = 'sale' and s.vehicle_personal
+                   and ($2::uuid is null or l.branch_id = $2)) as "v!""#,
+            &group,
+            only
+        )
+        .fetch_one(&mut *conn)
+        .await?;
     // Подытоги по видам долга фирмы (задача 051, ADR-215): погашения — от старых к новым.
     let closing_personal = if p.role == "customer" && p.kind == "company" && closing > 0 {
         sqlx::query_scalar!(
@@ -1843,6 +2045,8 @@ pub(crate) async fn reconciliation_data(
         credit_total_tyiyn: credit,
         closing_tyiyn: closing,
         closing_personal_tyiyn: closing_personal,
+        has_personal,
+        act_kind: None,
     })
 }
 

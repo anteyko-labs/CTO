@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::api::parties::{load_party_as, reconciliation_data};
+use crate::api::parties::{load_party_as, reconciliation_data, reconciliation_kind};
 use crate::auth::{
     self, Ctx, Owner, hash_password, new_token, token_hash, verify_login_password, verify_password,
 };
@@ -565,6 +565,8 @@ struct ReconQuery {
     /// Поставщику: акт филиала (долг поставщику у каждого филиала свой, SPEC-33 §2); нет — филиал,
     /// где его завели.
     branch_id: Option<Uuid>,
+    /// Отдельный акт фирмы (задача 055): `company` или `personal`.
+    kind: Option<String>,
 }
 
 async fn reconciliation(
@@ -590,6 +592,7 @@ async fn reconciliation(
         None => (client.branch_id, None),
     };
     let act = reconciliation_data(&mut conn, branch, client.party_id, q.from, q.to, only).await?;
+    let act = reconciliation_kind(&mut conn, act, only, q.kind.as_deref()).await?;
     Ok(Json(json!(act)))
 }
 

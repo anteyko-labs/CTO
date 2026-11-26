@@ -1,0 +1,122 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.business_date, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.comment,\n                  l.supplier_doc as \"ledger_doc\",\n                  s.number as \"sale_number?\", r.number as \"receipt_number?\",\n                  r.supplier_doc as \"supplier_doc?\",\n                  (select a.kind from cash_movements m join cash_accounts a on a.id = m.account_id\n                    where m.doc_type = 'repayment' and m.doc_id = l.doc_id\n                      and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as \"paid_via?\",\n                  b.name as branch_name, l.party_id, pp.name as party_name,\n                  (select o.doc_type from party_ledger o where o.id = l.reversal_of) as \"reversed_doc?\",\n                  (select o.name || ', ' || v.plate from party_vehicles v join parties o on o.id = v.party_id\n                    where s.vehicle_personal and v.id = s.vehicle_id) as \"personal_of?\",\n                  case\n                    when l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0 then\n                      case when l.doc_type = 'sale' and coalesce(s.vehicle_personal, false)\n                           then 'personal' else 'company' end\n                    when l.doc_type = 'sale_return' then\n                      case when coalesce((select o.vehicle_personal from sales o where o.id = s.reversal_of), false)\n                           then 'personal' else 'company' end\n                    when l.reversal_of is not null then\n                      (select case when o.doc_type = 'sale' and coalesce(os.vehicle_personal, false)\n                                   then 'personal' else 'company' end\n                         from party_ledger o left join sales os on os.id = o.doc_id\n                        where o.id = l.reversal_of and o.kind in ('debt', 'adjust') and o.amount_tyiyn > 0)\n                  end as \"tag?\"\n           from party_ledger l\n           join branches b on b.id = l.branch_id\n           join parties pp on pp.id = l.party_id\n           left join sales s on s.id = l.doc_id and l.doc_type in ('sale', 'sale_return')\n           left join receipts r on r.id = l.doc_id and l.doc_type in ('receipt', 'receipt_reversal')\n           where l.party_id = any($1) and l.business_date between $2 and $3\n             and ($4::uuid is null or l.branch_id = $4)\n             and not ($5 and l.doc_type = 'merge')\n           order by l.business_date, l.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "ledger_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "receipt_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "supplier_doc?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "paid_via?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "branch_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "party_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "reversed_doc?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "personal_of?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "tag?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Date",
+        "Date",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7f87a6cdc3a4a3dd97ea8fbc722d13bbf6ffc1009bcc0fa57eec1480c86ec081"
+}

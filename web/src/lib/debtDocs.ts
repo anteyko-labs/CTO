@@ -1,317 +1,462 @@
 // Документы о долге и акт сверки (SPEC-10): тексты по умолчанию, подстановки, сумма прописью, печать A4.
 // Тексты правит владелец в настройках; пустое значение подстановки печатается линией для записи от руки.
-import { printDoc } from './docPrint'
-import { formatDateTime, formatSomExact } from './format'
-import { salePriceSuffix, saleQtyText } from './units'
-import type { Sale } from './types'
+import { printDoc } from "./docPrint";
+import { formatDateTime, formatSomExact } from "./format";
+import { salePriceSuffix, saleQtyText } from "./units";
+import type { Sale } from "./types";
 
 export interface Seller {
-  name: string
-  inn: string
-  address: string
-  phone: string
-  director: string
-  bank: string
-  city: string
+  name: string;
+  inn: string;
+  address: string;
+  phone: string;
+  director: string;
+  bank: string;
+  city: string;
 }
 
 export interface DebtDocSettings {
-  seller: Seller
-  person: string | null
-  company: string | null
+  seller: Seller;
+  person: string | null;
+  company: string | null;
   /** Период акта сверки по умолчанию (задача 003 Н9); нет — «Всё время», как раньше. */
-  act_period?: ActPeriod | null
+  act_period?: ActPeriod | null;
   /** Подпись руководителя задана в настройках (задача 008). */
-  has_owner_signature?: boolean
+  has_owner_signature?: boolean;
   /** Другие документы точки (задача 017); `null` — ещё не сохраняли, берутся шаблоны по умолчанию. */
-  extra?: { title: string; text: string }[] | null
+  extra?: { title: string; text: string }[] | null;
 }
 
 /** Картинка с сервера как `data:` — встаёт в документ, который печатается из фрейма. Нет — `null`. */
 export async function pngDataUrl(path: string): Promise<string | null> {
   try {
-    const res = await fetch(`/api/v1${path}`, { credentials: 'same-origin' })
-    if (!res.ok) return null
-    const blob = await res.blob()
+    const res = await fetch(`/api/v1${path}`, { credentials: "same-origin" });
+    if (!res.ok) return null;
+    const blob = await res.blob();
     return await new Promise<string | null>((resolve) => {
-      const r = new FileReader()
-      r.onload = () => resolve(typeof r.result === 'string' ? r.result : null)
-      r.onerror = () => resolve(null)
-      r.readAsDataURL(blob.type === 'image/png' ? blob : new Blob([blob], { type: 'image/png' }))
-    })
+      const r = new FileReader();
+      r.onload = () => resolve(typeof r.result === "string" ? r.result : null);
+      r.onerror = () => resolve(null);
+      r.readAsDataURL(
+        blob.type === "image/png"
+          ? blob
+          : new Blob([blob], { type: "image/png" }),
+      );
+    });
   } catch {
-    return null
+    return null;
   }
 }
 
 /** Подписи документа о долге: клиента по чеку и руководителя из настроек. */
-export async function debtSignatures(sale: { id: string; has_debt_signature?: boolean }, settings: DebtDocSettings) {
+export async function debtSignatures(
+  sale: { id: string; has_debt_signature?: boolean },
+  settings: DebtDocSettings,
+) {
   const [buyerSignature, sellerSignature] = await Promise.all([
-    sale.id && sale.has_debt_signature ? pngDataUrl(`/sales/${sale.id}/signature`) : Promise.resolve(null),
-    settings.has_owner_signature ? pngDataUrl('/settings/debt-docs/signature') : Promise.resolve(null),
-  ])
-  return { buyerSignature, sellerSignature }
+    sale.id && sale.has_debt_signature
+      ? pngDataUrl(`/sales/${sale.id}/signature`)
+      : Promise.resolve(null),
+    settings.has_owner_signature
+      ? pngDataUrl("/settings/debt-docs/signature")
+      : Promise.resolve(null),
+  ]);
+  return { buyerSignature, sellerSignature };
 }
 
 /** Быстрые периоды акта сверки на экране (задача 003 Н9). */
-export type ActPeriod = 'all' | 'month' | 'last_month' | 'year'
+export type ActPeriod = "all" | "month" | "last_month" | "year";
 
 export const ACT_PERIODS: readonly { key: ActPeriod; label: string }[] = [
-  { key: 'month', label: 'Этот месяц' },
-  { key: 'last_month', label: 'Прошлый месяц' },
-  { key: 'year', label: 'С начала года' },
-  { key: 'all', label: 'Всё время' },
-]
+  { key: "month", label: "Этот месяц" },
+  { key: "last_month", label: "Прошлый месяц" },
+  { key: "year", label: "С начала года" },
+  { key: "all", label: "Всё время" },
+];
 
 /** Даты «С» и «По» периода акта по сегодняшнему дню (`YYYY-MM-DD`, Бишкек); «С» пусто — с первой операции. */
-export function actPeriod(kind: ActPeriod, today: string): { from: string; to: string } {
-  const [y, m] = today.slice(0, 10).split('-').map(Number)
-  const iso = (t: Date) => t.toISOString().slice(0, 10)
+export function actPeriod(
+  kind: ActPeriod,
+  today: string,
+): { from: string; to: string } {
+  const [y, m] = today.slice(0, 10).split("-").map(Number);
+  const iso = (t: Date) => t.toISOString().slice(0, 10);
   switch (kind) {
-    case 'month':
-      return { from: iso(new Date(Date.UTC(y, m - 1, 1))), to: today }
-    case 'last_month':
-      return { from: iso(new Date(Date.UTC(y, m - 2, 1))), to: iso(new Date(Date.UTC(y, m - 1, 0))) }
-    case 'year':
-      return { from: iso(new Date(Date.UTC(y, 0, 1))), to: today }
+    case "month":
+      return { from: iso(new Date(Date.UTC(y, m - 1, 1))), to: today };
+    case "last_month":
+      return {
+        from: iso(new Date(Date.UTC(y, m - 2, 1))),
+        to: iso(new Date(Date.UTC(y, m - 1, 0))),
+      };
+    case "year":
+      return { from: iso(new Date(Date.UTC(y, 0, 1))), to: today };
     default:
-      return { from: '', to: today }
+      return { from: "", to: today };
   }
 }
 
 /** Строка акта для показа и выгрузки: сальдо, документы, обороты — как в печатном акте. */
 export interface ActLine {
-  kind: 'opening' | 'row' | 'totals' | 'closing' | 'subtotal'
-  date: string
-  document: string
-  comment: string
+  kind: "opening" | "row" | "totals" | "closing" | "subtotal";
+  date: string;
+  document: string;
+  comment: string;
   /** В пользу точки (отгрузка покупателю, оплата поставщику), тыйыны. */
-  debit_tyiyn: number
+  debit_tyiyn: number;
   /** В пользу контрагента, тыйыны. */
-  credit_tyiyn: number
-  doc_type?: string
-  doc_id?: string | null
+  credit_tyiyn: number;
+  doc_type?: string;
+  doc_id?: string | null;
 }
 
 /** Акт строками в порядке печати: сальдо на начало (долг — в дебете, аванс — в кредите), строки,
  *  обороты, сальдо на конец. Целые тыйыны — выгрузка пишет их числами (I1). */
 export function actLines(act: Reconciliation): ActLine[] {
-  const saldo = (kind: 'opening' | 'closing', date: string, v: number): ActLine => ({
+  const saldo = (
+    kind: "opening" | "closing",
+    date: string,
+    v: number,
+  ): ActLine => ({
     kind,
     date,
     document: `Сальдо на ${dateRu(date)}`,
-    comment: '',
+    comment: "",
     debit_tyiyn: v > 0 ? v : 0,
     credit_tyiyn: v < 0 ? -v : 0,
-  })
+  });
   return [
-    saldo('opening', act.from, act.opening_tyiyn),
-    ...act.rows.map(
-      (r): ActLine => ({
-        kind: 'row',
-        date: r.date,
-        document: actRowDocument(r),
-        comment: r.comment,
-        debit_tyiyn: r.debit_tyiyn,
-        credit_tyiyn: r.credit_tyiyn,
-        doc_type: r.doc_type,
-        doc_id: r.doc_id,
-      }),
-    ),
-    { kind: 'totals', date: act.to, document: 'Обороты за период', comment: '', debit_tyiyn: act.debit_total_tyiyn, credit_tyiyn: act.credit_total_tyiyn },
-    saldo('closing', act.to, act.closing_tyiyn),
+    saldo("opening", act.from, act.opening_tyiyn),
+    ...act.rows.map((r): ActLine => ({
+      kind: "row",
+      date: r.date,
+      document: actRowDocument(r),
+      comment: r.comment,
+      debit_tyiyn: r.debit_tyiyn,
+      credit_tyiyn: r.credit_tyiyn,
+      doc_type: r.doc_type,
+      doc_id: r.doc_id,
+    })),
+    {
+      kind: "totals",
+      date: act.to,
+      document: "Обороты за период",
+      comment: "",
+      debit_tyiyn: act.debit_total_tyiyn,
+      credit_tyiyn: act.credit_total_tyiyn,
+    },
+    saldo("closing", act.to, act.closing_tyiyn),
     ...actKindLines(act),
-  ]
+  ];
 }
 
 /** Долг фирмы по видам (задача 051, ADR-215): за машины фирмы и прочее, за личные машины
  *  работников. Нет долга за личные машины — `null`, показ как раньше. */
-export function debtKinds(balance: number, personal: number | undefined): { company: number; personal: number } | null {
-  if (!personal || personal <= 0 || balance <= 0) return null
+export function debtKinds(
+  balance: number,
+  personal: number | undefined,
+): { company: number; personal: number } | null {
+  if (!personal || personal <= 0 || balance <= 0) return null;
   // Показан долг филиала меньше общего — личная часть не больше показанного долга.
-  const p = Math.min(personal, balance)
-  return { company: balance - p, personal: p }
+  const p = Math.min(personal, balance);
+  return { company: balance - p, personal: p };
 }
 
-export const KIND_COMPANY = 'машины фирмы и прочее'
-export const KIND_PERSONAL = 'личные машины работников'
+export const KIND_COMPANY = "машины фирмы и прочее";
+export const KIND_PERSONAL = "личные машины работников";
 
 /** Подытоги конечного сальдо по видам долга фирмы — после сальдо на конец. */
 function actKindLines(act: Reconciliation): ActLine[] {
-  const k = debtKinds(act.closing_tyiyn, act.closing_personal_tyiyn)
-  if (!k) return []
+  const k = debtKinds(act.closing_tyiyn, act.closing_personal_tyiyn);
+  if (!k) return [];
   return [
-    { kind: 'subtotal', date: act.to, document: `в т. ч. ${KIND_COMPANY}`, comment: '', debit_tyiyn: k.company, credit_tyiyn: 0 },
-    { kind: 'subtotal', date: act.to, document: `в т. ч. ${KIND_PERSONAL}`, comment: '', debit_tyiyn: k.personal, credit_tyiyn: 0 },
-  ]
+    {
+      kind: "subtotal",
+      date: act.to,
+      document: `в т. ч. ${KIND_COMPANY}`,
+      comment: "",
+      debit_tyiyn: k.company,
+      credit_tyiyn: 0,
+    },
+    {
+      kind: "subtotal",
+      date: act.to,
+      document: `в т. ч. ${KIND_PERSONAL}`,
+      comment: "",
+      debit_tyiyn: k.personal,
+      credit_tyiyn: 0,
+    },
+  ];
 }
 
 /** Пометка строки акта: чек на личной машине работника. */
-export function actRowDocument(r: Pick<ReconRow, 'document' | 'personal'>): string {
-  return r.personal ? `${r.document} · личная — ${r.personal}` : r.document
+export function actRowDocument(
+  r: Pick<ReconRow, "document" | "personal">,
+): string {
+  return r.personal ? `${r.document} · личная — ${r.personal}` : r.document;
 }
 
 /** Вывод акта простыми словами: кто кому должен на конец периода. */
 export function actVerdict(act: Reconciliation, us: string): string {
-  const c = act.closing_tyiyn
-  if (c === 0) return `На ${dateRu(act.to)} долга между сторонами нет.`
+  const c = act.closing_tyiyn;
+  const k = actKindTitle(act);
+  const by = k ? ` ${k}` : "";
+  if (c === 0) return `На ${dateRu(act.to)} долга между сторонами${by} нет.`;
   return c > 0
-    ? `На ${dateRu(act.to)} ${act.name} должен ${us || 'точке'} ${formatSomExact(c)}.`
-    : `На ${dateRu(act.to)} ${us || 'точка'} должна ${act.name} ${formatSomExact(-c)}.`
+    ? `На ${dateRu(act.to)} ${act.name} должен ${us || "точке"}${by} ${formatSomExact(c)}.`
+    : `На ${dateRu(act.to)} ${us || "точка"} должна ${act.name}${by} ${formatSomExact(-c)}.`;
 }
 
 /** Ссылка на документ строки акта: чек или приход; остальное — без ссылки. */
-export function actDocLink(line: Pick<ActLine, 'doc_type' | 'doc_id'>): string | null {
-  if (!line.doc_id) return null
-  if (line.doc_type === 'sale' || line.doc_type === 'sale_return') return `/sales/${line.doc_id}`
-  if (line.doc_type === 'receipt' || line.doc_type === 'receipt_reversal') return `/receipts/${line.doc_id}`
-  return null
+export function actDocLink(
+  line: Pick<ActLine, "doc_type" | "doc_id">,
+): string | null {
+  if (!line.doc_id) return null;
+  if (line.doc_type === "sale" || line.doc_type === "sale_return")
+    return `/sales/${line.doc_id}`;
+  if (line.doc_type === "receipt" || line.doc_type === "receipt_reversal")
+    return `/receipts/${line.doc_id}`;
+  return null;
 }
 
 export interface ReconRow {
-  date: string
-  document: string
-  doc_type: string
-  doc_id: string | null
-  debit_tyiyn: number
-  credit_tyiyn: number
-  comment: string
+  date: string;
+  document: string;
+  doc_type: string;
+  doc_id: string | null;
+  debit_tyiyn: number;
+  credit_tyiyn: number;
+  comment: string;
   /** Чек на личной машине работника (задача 051): «Имя, номер». */
-  personal?: string | null
+  personal?: string | null;
 }
 
 export interface Reconciliation {
-  party_id: string
-  name: string
-  kind: 'person' | 'company'
-  role: 'customer' | 'supplier'
-  inn: string
-  phone: string
-  from: string
-  to: string
-  opening_tyiyn: number
-  rows: ReconRow[]
-  debit_total_tyiyn: number
-  credit_total_tyiyn: number
-  closing_tyiyn: number
+  party_id: string;
+  name: string;
+  kind: "person" | "company";
+  role: "customer" | "supplier";
+  inn: string;
+  phone: string;
+  from: string;
+  to: string;
+  opening_tyiyn: number;
+  rows: ReconRow[];
+  debit_total_tyiyn: number;
+  credit_total_tyiyn: number;
+  closing_tyiyn: number;
   /** Из конечного сальдо — за личные машины работников (задача 051). */
-  closing_personal_tyiyn?: number
+  closing_personal_tyiyn?: number;
+  /** У фирмы есть чеки на личных машинах — можно взять два отдельных акта (задача 055). */
+  has_personal?: boolean;
+  /** Отдельный акт (задача 055): по машинам фирмы или по личным машинам работников. */
+  act_kind?: ActKind;
 }
 
-export const BLANK = '________________'
+/** Отдельные акты фирмы (задача 055, ADR-218). */
+export type ActKind = "company" | "personal";
+
+export const ACT_KINDS: { key: ActKind | null; label: string }[] = [
+  { key: null, label: "Общий" },
+  { key: "company", label: "Машины фирмы" },
+  { key: "personal", label: "Личные машины" },
+];
+
+/** Подзаголовок отдельного акта; общий — пусто. */
+export function actKindTitle(act: Pick<Reconciliation, "act_kind">): string {
+  if (act.act_kind === "company") return `по ${KIND_COMPANY_GEN}`;
+  if (act.act_kind === "personal") return `по ${KIND_PERSONAL_GEN}`;
+  return "";
+}
+
+const KIND_COMPANY_GEN = "машинам фирмы и прочему";
+const KIND_PERSONAL_GEN = "личным машинам работников";
+
+export const BLANK = "________________";
 
 // ---------- Сумма прописью ----------
 
-const ONES_M = ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']
-const ONES_F = ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']
-const TEENS = ['десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать']
-const TENS = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто']
-const HUNDREDS = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот']
+const ONES_M = [
+  "",
+  "один",
+  "два",
+  "три",
+  "четыре",
+  "пять",
+  "шесть",
+  "семь",
+  "восемь",
+  "девять",
+];
+const ONES_F = [
+  "",
+  "одна",
+  "две",
+  "три",
+  "четыре",
+  "пять",
+  "шесть",
+  "семь",
+  "восемь",
+  "девять",
+];
+const TEENS = [
+  "десять",
+  "одиннадцать",
+  "двенадцать",
+  "тринадцать",
+  "четырнадцать",
+  "пятнадцать",
+  "шестнадцать",
+  "семнадцать",
+  "восемнадцать",
+  "девятнадцать",
+];
+const TENS = [
+  "",
+  "",
+  "двадцать",
+  "тридцать",
+  "сорок",
+  "пятьдесят",
+  "шестьдесят",
+  "семьдесят",
+  "восемьдесят",
+  "девяносто",
+];
+const HUNDREDS = [
+  "",
+  "сто",
+  "двести",
+  "триста",
+  "четыреста",
+  "пятьсот",
+  "шестьсот",
+  "семьсот",
+  "восемьсот",
+  "девятьсот",
+];
 
 /** Форма слова по числу: 1 тысяча, 2 тысячи, 5 тысяч. */
 function plural(n: number, forms: [string, string, string]): string {
-  const n100 = n % 100
-  const n10 = n % 10
-  if (n100 >= 11 && n100 <= 19) return forms[2]
-  if (n10 === 1) return forms[0]
-  if (n10 >= 2 && n10 <= 4) return forms[1]
-  return forms[2]
+  const n100 = n % 100;
+  const n10 = n % 10;
+  if (n100 >= 11 && n100 <= 19) return forms[2];
+  if (n10 === 1) return forms[0];
+  if (n10 >= 2 && n10 <= 4) return forms[1];
+  return forms[2];
 }
 
 function triad(n: number, feminine: boolean): string[] {
-  const words: string[] = []
-  const h = Math.trunc(n / 100)
-  const rest = n % 100
-  if (h) words.push(HUNDREDS[h])
-  if (rest >= 10 && rest <= 19) words.push(TEENS[rest - 10])
+  const words: string[] = [];
+  const h = Math.trunc(n / 100);
+  const rest = n % 100;
+  if (h) words.push(HUNDREDS[h]);
+  if (rest >= 10 && rest <= 19) words.push(TEENS[rest - 10]);
   else {
-    const t = Math.trunc(rest / 10)
-    const o = rest % 10
-    if (t) words.push(TENS[t])
-    if (o) words.push((feminine ? ONES_F : ONES_M)[o])
+    const t = Math.trunc(rest / 10);
+    const o = rest % 10;
+    if (t) words.push(TENS[t]);
+    if (o) words.push((feminine ? ONES_F : ONES_M)[o]);
   }
-  return words
+  return words;
 }
 
 /** Целое число прописью, мужской род: «одна тысяча двести один». */
 export function numberInWords(n: number): string {
-  if (!Number.isSafeInteger(n) || n < 0) return String(n)
-  if (n === 0) return 'ноль'
+  if (!Number.isSafeInteger(n) || n < 0) return String(n);
+  if (n === 0) return "ноль";
   const scales: { forms: [string, string, string]; feminine: boolean }[] = [
-    { forms: ['', '', ''], feminine: false },
-    { forms: ['тысяча', 'тысячи', 'тысяч'], feminine: true },
-    { forms: ['миллион', 'миллиона', 'миллионов'], feminine: false },
-    { forms: ['миллиард', 'миллиарда', 'миллиардов'], feminine: false },
-  ]
-  const parts: string[] = []
-  let rest = n
+    { forms: ["", "", ""], feminine: false },
+    { forms: ["тысяча", "тысячи", "тысяч"], feminine: true },
+    { forms: ["миллион", "миллиона", "миллионов"], feminine: false },
+    { forms: ["миллиард", "миллиарда", "миллиардов"], feminine: false },
+  ];
+  const parts: string[] = [];
+  let rest = n;
   for (let i = 0; rest > 0 && i < scales.length; i++) {
-    const t = rest % 1000
-    rest = Math.trunc(rest / 1000)
-    if (!t) continue
-    const words = triad(t, scales[i].feminine)
-    if (i > 0) words.push(plural(t, scales[i].forms))
-    parts.unshift(words.join(' '))
+    const t = rest % 1000;
+    rest = Math.trunc(rest / 1000);
+    if (!t) continue;
+    const words = triad(t, scales[i].feminine);
+    if (i > 0) words.push(plural(t, scales[i].forms));
+    parts.unshift(words.join(" "));
   }
-  return parts.join(' ')
+  return parts.join(" ");
 }
 
 /** Сомы прописью, тыйыны цифрами: «одна тысяча двести сом 50 тыйын». */
 export function somInWords(tyiyn: number): string {
-  const abs = Math.abs(tyiyn)
-  const som = Math.trunc(abs / 100)
-  const t = abs % 100
-  const words = `${tyiyn < 0 ? 'минус ' : ''}${numberInWords(som)} сом ${String(t).padStart(2, '0')} тыйын`
-  return words.charAt(0).toUpperCase() + words.slice(1)
+  const abs = Math.abs(tyiyn);
+  const som = Math.trunc(abs / 100);
+  const t = abs % 100;
+  const words = `${tyiyn < 0 ? "минус " : ""}${numberInWords(som)} сом ${String(t).padStart(2, "0")} тыйын`;
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 // ---------- Подстановки ----------
 
 export const esc = (s: string) =>
-  s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
+  s.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ] ?? c,
+  );
 
 /**
  * Подставляет значения в шаблон. Текст экранируется, переносы строк сохраняются;
  * значения из `html` вставляются как есть (таблица товаров). Нет данных — линия.
  */
-export function renderTemplate(template: string, vars: Record<string, string>, html: Record<string, string> = {}): string {
+export function renderTemplate(
+  template: string,
+  vars: Record<string, string>,
+  html: Record<string, string> = {},
+): string {
   return esc(template).replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, key: string) => {
-    if (key in html) return html[key]
-    const v = vars[key]
-    return esc(v && v.trim() ? v : BLANK)
-  })
+    if (key in html) return html[key];
+    const v = vars[key];
+    return esc(v && v.trim() ? v : BLANK);
+  });
 }
 
 /** Список подстановок для подсказки в настройках. */
 export const PLACEHOLDERS: [string, string][] = [
-  ['дата', 'дата чека'],
-  ['город', 'город точки'],
-  ['продавец', 'название точки (ИП / ОсОО)'],
-  ['инн_продавца', 'ИНН точки'],
-  ['адрес_продавца', 'адрес точки'],
-  ['телефон_продавца', 'телефон точки'],
-  ['руководитель', 'кто подписывает от точки'],
-  ['клиент', 'ФИО или название покупателя'],
-  ['инн', 'ПИН физлица или ИНН фирмы'],
-  ['телефон', 'телефон покупателя'],
-  ['работник', 'кто приехал от фирмы'],
-  ['машина', 'госномер'],
-  ['чек', 'номер чека'],
-  ['товары', 'таблица: наименование, количество, цена, сумма'],
-  ['итого', 'сумма всего чека'],
-  ['подпись_покупателя', 'подпись клиента с планшета; нет — линия для ручки'],
-  ['подпись_продавца', 'подпись руководителя из настроек; нет — линия для ручки'],
-  ['итого_словами', 'сумма чека прописью'],
-  ['из_них', '«, из них оплачено сразу …, в долг …» — если часть оплачена'],
-  ['сумма', 'сумма в долг'],
-  ['сумма_словами', 'сумма в долг прописью'],
-  ['срок_оплаты', 'дата, до которой платить'],
-  ['история_долга', 'таблица прежних долгов и оплат с момента, когда долг был закрыт'],
-  ['долг_до', 'сколько был должен до этой покупки'],
-  ['баланс', 'весь долг с учётом этого чека'],
-  ['баланс_словами', 'весь долг прописью'],
-  ['кассир', 'кто отпустил товар'],
-]
+  ["дата", "дата чека"],
+  ["город", "город точки"],
+  ["продавец", "название точки (ИП / ОсОО)"],
+  ["инн_продавца", "ИНН точки"],
+  ["адрес_продавца", "адрес точки"],
+  ["телефон_продавца", "телефон точки"],
+  ["руководитель", "кто подписывает от точки"],
+  ["клиент", "ФИО или название покупателя"],
+  ["инн", "ПИН физлица или ИНН фирмы"],
+  ["телефон", "телефон покупателя"],
+  ["работник", "кто приехал от фирмы"],
+  ["машина", "госномер"],
+  ["чек", "номер чека"],
+  ["товары", "таблица: наименование, количество, цена, сумма"],
+  ["итого", "сумма всего чека"],
+  ["подпись_покупателя", "подпись клиента с планшета; нет — линия для ручки"],
+  [
+    "подпись_продавца",
+    "подпись руководителя из настроек; нет — линия для ручки",
+  ],
+  ["итого_словами", "сумма чека прописью"],
+  ["из_них", "«, из них оплачено сразу …, в долг …» — если часть оплачена"],
+  ["сумма", "сумма в долг"],
+  ["сумма_словами", "сумма в долг прописью"],
+  ["срок_оплаты", "дата, до которой платить"],
+  [
+    "история_долга",
+    "таблица прежних долгов и оплат с момента, когда долг был закрыт",
+  ],
+  ["долг_до", "сколько был должен до этой покупки"],
+  ["баланс", "весь долг с учётом этого чека"],
+  ["баланс_словами", "весь долг прописью"],
+  ["кассир", "кто отпустил товар"],
+];
 
 // ---------- Тексты по умолчанию (SPEC-10) ----------
 
@@ -347,7 +492,7 @@ export const DEFAULT_PERSON = `РАСПИСКА
 
 Покупатель:  {{подпись_покупателя}} / {{клиент}} /
 
-Продавец:    {{подпись_продавца}} / {{руководитель}} /`
+Продавец:    {{подпись_продавца}} / {{руководитель}} /`;
 
 export const DEFAULT_COMPANY = `НАКЛАДНАЯ № {{чек}} от {{дата}}
 на отпуск товара с отсрочкой оплаты
@@ -372,7 +517,7 @@ export const DEFAULT_COMPANY = `НАКЛАДНАЯ № {{чек}} от {{дат�
 
 Поставщик: {{подпись_продавца}} / {{руководитель}} /               М.П.
 
-Получил:   {{подпись_покупателя}} / {{работник}} /                  М.П.`
+Получил:   {{подпись_покупателя}} / {{работник}} /                  М.П.`;
 
 // ---------- Печать ----------
 
@@ -395,130 +540,180 @@ const A4_STYLE = `
   /* Подпись с планшета — над строкой, не раздвигая текст (задача 008). */
   .sig { display: inline-block; width: 42mm; height: 5mm; border-bottom: 1px solid #000; position: relative; vertical-align: bottom; }
   .sig img { position: absolute; left: 0; bottom: -2mm; width: 42mm; height: 17mm; object-fit: contain; }
-`
+`;
 
 export function printHtml(title: string, body: string): void {
   void printDoc(
     title,
     `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${A4_STYLE}</style></head><body>${body}</body></html>`,
-  )
+  );
 }
 
-function qtyText(l: Sale['lines'][number]): string {
-  return saleQtyText(l.kind, l.qty, l.container_ml)
+function qtyText(l: Sale["lines"][number]): string {
+  return saleQtyText(l.kind, l.qty, l.container_ml);
 }
 
 function itemsTable(sale: Sale): string {
   const rows = sale.lines
     .map(
-      (l, i) => `<tr><td class="c">${i + 1}</td><td>${esc(l.name)}${l.gift ? ' (подарок)' : ''}</td>
+      (
+        l,
+        i,
+      ) => `<tr><td class="c">${i + 1}</td><td>${esc(l.name)}${l.gift ? " (подарок)" : ""}</td>
         <td class="r">${esc(qtyText(l))}</td><td class="r">${esc(formatSomExact(l.unit_price_tyiyn))}${salePriceSuffix(l.kind)}</td>
         <td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`,
     )
-    .join('')
+    .join("");
   return `<table><thead><tr><th>№</th><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr></thead>
-    <tbody>${rows}<tr><td colspan="4" class="r"><b>Итого</b></td><td class="r"><b>${esc(formatSomExact(sale.total_tyiyn))}</b></td></tr></tbody></table>`
+    <tbody>${rows}<tr><td colspan="4" class="r"><b>Итого</b></td><td class="r"><b>${esc(formatSomExact(sale.total_tyiyn))}</b></td></tr></tbody></table>`;
 }
 
 const dateRu = (iso: string) => {
-  const [y, m, d] = iso.slice(0, 10).split('-')
-  return `${d}.${m}.${y}`
-}
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}.${m}.${y}`;
+};
 
 /** Дата чека плюс срок оплаты в днях — без часового пояса устройства. */
 function addDays(iso: string, days: number): string {
-  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
-  const t = new Date(Date.UTC(y, m - 1, d + days))
-  return t.toISOString().slice(0, 10)
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return t.toISOString().slice(0, 10);
 }
 
 export interface DebtDocInput {
-  sale: Sale
-  party: { name: string; kind: 'person' | 'company'; inn: string; phone: string; due_days: number | null }
-  settings: DebtDocSettings
+  sale: Sale;
+  party: {
+    name: string;
+    kind: "person" | "company";
+    inn: string;
+    phone: string;
+    due_days: number | null;
+  };
+  settings: DebtDocSettings;
   /** Вся история долга клиента (акт сверки с первой операции). */
-  history?: Reconciliation | null
+  history?: Reconciliation | null;
   /** Подпись клиента с планшета (задача 008) — картинка `data:image/png;base64,…`. */
-  buyerSignature?: string | null
+  buyerSignature?: string | null;
   /** Подпись руководителя точки из «Настройки → Документы». */
-  sellerSignature?: string | null
+  sellerSignature?: string | null;
 }
 
 /** Линия подписи без картинки — для ручки. */
-const SIGN_LINE = '________________'
+const SIGN_LINE = "________________";
 
 /** Место подписи: картинка над линией или пустая линия для ручки. */
 export function signatureSlot(png: string | null | undefined): string {
-  if (!png || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png)) return SIGN_LINE
-  return `<span class="sig"><img src="${png}" alt="подпись"></span>`
+  if (!png || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png))
+    return SIGN_LINE;
+  return `<span class="sig"><img src="${png}" alt="подпись"></span>`;
 }
 
 /** Шаблоны, сохранённые до подстановок подписи (задача 008): линия в строке покупателя/получателя
  *  и продавца/отпустившего становится местом подписи. */
 export function withSignatureSlots(template: string): string {
   return template
-    .replace(/^((?:Покупатель|Получил):\s*)_{6,}/m, '$1{{подпись_покупателя}}')
-    .replace(/^((?:Продавец|Отпустил):\s*)_{6,}/m, '$1{{подпись_продавца}}')
+    .replace(/^((?:Покупатель|Получил):\s*)_{6,}/m, "$1{{подпись_покупателя}}")
+    .replace(/^((?:Продавец|Отпустил):\s*)_{6,}/m, "$1{{подпись_продавца}}");
 }
 
 export interface DebtHistory {
   /** Записи с момента, когда долг последний раз был закрыт, до этого чека. */
-  rows: ReconRow[]
-  before: number
-  after: number
+  rows: ReconRow[];
+  before: number;
+  after: number;
 }
 
 /**
  * Прежний долг к этому чеку: идём по истории, находим чек и берём записи после того,
  * как долг последний раз был закрыт (баланс ≤ 0). Без чека в истории — null.
  */
-export function debtHistory(history: Reconciliation, saleId: string): DebtHistory | null {
-  let running = history.opening_tyiyn
-  let start = 0
+export function debtHistory(
+  history: Reconciliation,
+  saleId: string,
+): DebtHistory | null {
+  let running = history.opening_tyiyn;
+  let start = 0;
   for (let i = 0; i < history.rows.length; i++) {
-    const r = history.rows[i]
-    if (r.doc_type === 'sale' && r.doc_id === saleId) {
-      const before = running
-      return { rows: history.rows.slice(start, i), before, after: before + r.debit_tyiyn - r.credit_tyiyn }
+    const r = history.rows[i];
+    if (r.doc_type === "sale" && r.doc_id === saleId) {
+      const before = running;
+      return {
+        rows: history.rows.slice(start, i),
+        before,
+        after: before + r.debit_tyiyn - r.credit_tyiyn,
+      };
     }
-    running += r.debit_tyiyn - r.credit_tyiyn
-    if (running <= 0) start = i + 1
+    running += r.debit_tyiyn - r.credit_tyiyn;
+    if (running <= 0) start = i + 1;
   }
-  return null
+  return null;
 }
 
 function historyTable(h: DebtHistory | null): string {
-  if (!h || h.rows.length === 0) return '<div>Ранее задолженности не было.</div>'
-  const money = (v: number) => (v ? esc(formatSomExact(v)) : '')
+  if (!h || h.rows.length === 0)
+    return "<div>Ранее задолженности не было.</div>";
+  const money = (v: number) => (v ? esc(formatSomExact(v)) : "");
   const rows = h.rows
     .map(
       (r) => `<tr><td>${dateRu(r.date)}</td><td>${esc(r.document)}</td>
         <td class="r">${money(r.debit_tyiyn)}</td><td class="r">${money(r.credit_tyiyn)}</td></tr>`,
     )
-    .join('')
+    .join("");
   return `<table><thead><tr><th>Дата</th><th>Основание</th><th>Взято в долг</th><th>Оплачено</th></tr></thead>
     <tbody>${rows}<tr><td colspan="2" class="r"><b>Задолженность до этой покупки</b></td>
-    <td colspan="2" class="r"><b>${esc(formatSomExact(h.before))}</b></td></tr></tbody></table>`
+    <td colspan="2" class="r"><b>${esc(formatSomExact(h.before))}</b></td></tr></tbody></table>`;
 }
 
 /** Документ о долге по чеку: расписка физлица в двух экземплярах или накладная юрлица. */
-export function printDebtDoc({ sale, party, settings, history, buyerSignature, sellerSignature }: DebtDocInput): void {
-  printHtml(...debtDocHtml({ sale, party, settings, history, buyerSignature, sellerSignature }))
+export function printDebtDoc({
+  sale,
+  party,
+  settings,
+  history,
+  buyerSignature,
+  sellerSignature,
+}: DebtDocInput): void {
+  printHtml(
+    ...debtDocHtml({
+      sale,
+      party,
+      settings,
+      history,
+      buyerSignature,
+      sellerSignature,
+    }),
+  );
 }
 
 /** Заголовок и тело документа о долге (для печати и проверки). */
-export function debtDocHtml({ sale, party, settings, history, buyerSignature, sellerSignature }: DebtDocInput): [string, string] {
-  const debt = sale.payments.filter((p) => p.method === 'debt').reduce((a, p) => a + p.amount_tyiyn, 0)
+export function debtDocHtml({
+  sale,
+  party,
+  settings,
+  history,
+  buyerSignature,
+  sellerSignature,
+}: DebtDocInput): [string, string] {
+  const debt = sale.payments
+    .filter((p) => p.method === "debt")
+    .reduce((a, p) => a + p.amount_tyiyn, 0);
   // Баланс — на момент этого чека по истории, а не сегодняшний: документ печатают и позже.
-  const h = history ? debtHistory(history, sale.id) : null
-  const after = h ? h.after : sale.party_balance_tyiyn
-  const before = h ? h.before : after === null ? null : after - debt
-  const company = party.kind === 'company'
-  const template = withSignatureSlots((company ? settings.company : settings.person) || (company ? DEFAULT_COMPANY : DEFAULT_PERSON))
+  const h = history ? debtHistory(history, sale.id) : null;
+  const after = h ? h.after : sale.party_balance_tyiyn;
+  const before = h ? h.before : after === null ? null : after - debt;
+  const company = party.kind === "company";
+  const template = withSignatureSlots(
+    (company ? settings.company : settings.person) ||
+      (company ? DEFAULT_COMPANY : DEFAULT_PERSON),
+  );
   // Учётный день чека — как в акте сверки и просрочке (чек без сети после полуночи, исправленный
   // чек). Старый ответ без него — день записи по Бишкеку.
-  const saleDate = sale.business_date ?? new Date(sale.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
-  const s = settings.seller
+  const saleDate =
+    sale.business_date ??
+    new Date(sale.created_at).toLocaleDateString("sv-SE", {
+      timeZone: "Asia/Bishkek",
+    });
+  const s = settings.seller;
   const vars: Record<string, string> = {
     дата: dateRu(saleDate),
     город: s.city,
@@ -530,57 +725,74 @@ export function debtDocHtml({ sale, party, settings, history, buyerSignature, se
     клиент: party.name,
     инн: party.inn,
     телефон: party.phone,
-    работник: sale.contact_name ?? '',
-    машина: sale.vehicle_plate ?? '',
+    работник: sale.contact_name ?? "",
+    машина: sale.vehicle_plate ?? "",
     чек: String(sale.number),
     сумма: formatSomExact(debt),
     сумма_словами: somInWords(debt),
     // Чек целиком и часть, оплаченная сразу (проверка 20.10.2026): «на общую сумму» — весь товар.
     итого: formatSomExact(sale.total_tyiyn),
     итого_словами: somInWords(sale.total_tyiyn),
-    из_них: sale.total_tyiyn > debt ? `, из них оплачено сразу ${formatSomExact(sale.total_tyiyn - debt)}, в долг ${formatSomExact(debt)}` : '',
-    срок_оплаты: party.due_days ? dateRu(addDays(saleDate, party.due_days)) : '',
-    баланс: after === null ? '' : formatSomExact(after),
-    баланс_словами: after === null ? '' : somInWords(after),
-    долг_до: before === null ? '' : formatSomExact(Math.max(before, 0)),
+    из_них:
+      sale.total_tyiyn > debt
+        ? `, из них оплачено сразу ${formatSomExact(sale.total_tyiyn - debt)}, в долг ${formatSomExact(debt)}`
+        : "",
+    срок_оплаты: party.due_days
+      ? dateRu(addDays(saleDate, party.due_days))
+      : "",
+    баланс: after === null ? "" : formatSomExact(after),
+    баланс_словами: after === null ? "" : somInWords(after),
+    долг_до: before === null ? "" : formatSomExact(Math.max(before, 0)),
     кассир: sale.cashier_name,
-  }
+  };
   const body = `<div class="doc">${renderTemplate(template, vars, {
     товары: itemsTable(sale),
     история_долга: historyTable(h),
     подпись_покупателя: signatureSlot(buyerSignature),
     подпись_продавца: signatureSlot(sellerSignature),
-  })}</div>`
-  const copies = company ? 1 : 2
-  return [`${company ? 'Накладная' : 'Расписка'} № ${sale.number}`, Array.from({ length: copies }, () => `<div class="copy">${body}</div>`).join('')]
+  })}</div>`;
+  const copies = company ? 1 : 2;
+  return [
+    `${company ? "Накладная" : "Расписка"} № ${sale.number}`,
+    Array.from(
+      { length: copies },
+      () => `<div class="copy">${body}</div>`,
+    ).join(""),
+  ];
 }
 
 /** Акт сверки взаимных расчётов: данные точки полностью, графы контрагента — для его отметок. */
-export function printReconciliation(act: Reconciliation, seller: Seller, sellerSignature?: string | null): void {
-  const us = seller.name || BLANK
-  const them = act.name
-  const money = (v: number) => (v ? esc(formatSomExact(v)) : '')
+export function printReconciliation(
+  act: Reconciliation,
+  seller: Seller,
+  sellerSignature?: string | null,
+): void {
+  const us = seller.name || BLANK;
+  const them = act.name;
+  const money = (v: number) => (v ? esc(formatSomExact(v)) : "");
   const rows = act.rows
     .map(
-      (r) => `<tr><td>${dateRu(r.date)}</td><td>${esc(actRowDocument(r))}${r.comment ? `<div class="muted">${esc(r.comment)}</div>` : ''}</td>
+      (
+        r,
+      ) => `<tr><td>${dateRu(r.date)}</td><td>${esc(actRowDocument(r))}${r.comment ? `<div class="muted">${esc(r.comment)}</div>` : ""}</td>
         <td class="r">${money(r.debit_tyiyn)}</td><td class="r">${money(r.credit_tyiyn)}</td>
         <td></td><td></td><td></td><td></td></tr>`,
     )
-    .join('')
-  const opening = act.opening_tyiyn
-  const closing = act.closing_tyiyn
+    .join("");
+  const opening = act.opening_tyiyn;
+  const closing = act.closing_tyiyn;
   const saldoRow = (label: string, v: number) =>
-    `<tr><td colspan="2"><b>${label}</b></td><td class="r"><b>${v > 0 ? esc(formatSomExact(v)) : ''}</b></td>
-      <td class="r"><b>${v < 0 ? esc(formatSomExact(-v)) : ''}</b></td><td colspan="2"><b>${label}</b></td><td></td><td></td></tr>`
+    `<tr><td colspan="2"><b>${label}</b></td><td class="r"><b>${v > 0 ? esc(formatSomExact(v)) : ""}</b></td>
+      <td class="r"><b>${v < 0 ? esc(formatSomExact(-v)) : ""}</b></td><td colspan="2"><b>${label}</b></td><td></td><td></td></tr>`;
   const verdict =
     closing === 0
-      ? `Задолженность между сторонами на ${dateRu(act.to)} отсутствует.`
+      ? `Задолженность между сторонами${actKindTitle(act) ? ` ${esc(actKindTitle(act))}` : ""} на ${dateRu(act.to)} отсутствует.`
       : closing > 0
-        ? `На ${dateRu(act.to)} задолженность ${esc(them)} перед ${esc(us)} составляет ${esc(formatSomExact(closing))} (${esc(somInWords(closing))}).`
-        : `На ${dateRu(act.to)} задолженность ${esc(us)} перед ${esc(them)} составляет ${esc(formatSomExact(-closing))} (${esc(somInWords(-closing))}).`
+        ? `На ${dateRu(act.to)} задолженность ${esc(them)} перед ${esc(us)}${actKindTitle(act) ? ` ${esc(actKindTitle(act))}` : ""} составляет ${esc(formatSomExact(closing))} (${esc(somInWords(closing))}).`
+        : `На ${dateRu(act.to)} задолженность ${esc(us)} перед ${esc(them)}${actKindTitle(act) ? ` ${esc(actKindTitle(act))}` : ""} составляет ${esc(formatSomExact(-closing))} (${esc(somInWords(-closing))}).`;
   const body = `
-    <h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ<br>за период с ${dateRu(act.from)} по ${dateRu(act.to)}</h1>
-    <p>между ${esc(us)}${seller.inn ? `, ИНН ${esc(seller.inn)}` : ''} и ${esc(them)}${act.inn ? `, ИНН ${esc(act.inn)}` : ''}</p>
+    <h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ${actKindTitle(act) ? `<br>${esc(actKindTitle(act))}` : ""}<br>за период с ${dateRu(act.from)} по ${dateRu(act.to)}</h1>
+    <p>между ${esc(us)}${seller.inn ? `, ИНН ${esc(seller.inn)}` : ""} и ${esc(them)}${act.inn ? `, ИНН ${esc(act.inn)}` : ""}</p>
     <p>Мы, нижеподписавшиеся, ${esc(seller.director || BLANK)} от ${esc(us)}, с одной стороны, и ${BLANK} от ${esc(them)}, с другой стороны,
       составили настоящий акт о том, что состояние взаимных расчётов по данным учёта следующее:</p>
     <table>
@@ -595,16 +807,22 @@ export function printReconciliation(act: Reconciliation, seller: Seller, sellerS
           <td class="r"><b>${esc(formatSomExact(act.credit_total_tyiyn))}</b></td><td colspan="2"><b>Обороты за период</b></td><td></td><td></td></tr>
         ${saldoRow(`Сальдо на ${dateRu(act.to)}`, closing)}
         ${actKindLines(act)
-          .map((l) => `<tr><td colspan="2">${esc(l.document)}</td><td class="r">${esc(formatSomExact(l.debit_tyiyn))}</td><td></td><td colspan="2"></td><td></td><td></td></tr>`)
-          .join('')}
+          .map(
+            (l) =>
+              `<tr><td colspan="2">${esc(l.document)}</td><td class="r">${esc(formatSomExact(l.debit_tyiyn))}</td><td></td><td colspan="2"></td><td></td><td></td></tr>`,
+          )
+          .join("")}
       </tbody>
     </table>
     <p>По данным ${esc(us)}: ${verdict}</p>
     <p>По данным ${esc(them)}: ______________________________________________________________</p>
     <div class="sign">
-      <div>От ${esc(us)}<br><br>${signatureSlot(sellerSignature)} / ${esc(seller.director || '________________')} /<br><br>М.П.</div>
+      <div>От ${esc(us)}<br><br>${signatureSlot(sellerSignature)} / ${esc(seller.director || "________________")} /<br><br>М.П.</div>
       <div>От ${esc(them)}<br><br>________________ / ________________ /<br><br>М.П.</div>
     </div>
-    <p class="muted">Сформировано ${esc(formatDateTime(new Date().toISOString()))}. Дебет — в пользу ${esc(us)} (отгрузка покупателю, оплата поставщику), кредит — в пользу ${esc(them)}.</p>`
-  printHtml(`Акт сверки — ${them}`, body)
+    <p class="muted">Сформировано ${esc(formatDateTime(new Date().toISOString()))}. Дебет — в пользу ${esc(us)} (отгрузка покупателю, оплата поставщику), кредит — в пользу ${esc(them)}.</p>`;
+  printHtml(
+    `Акт сверки — ${them}${actKindTitle(act) ? ` (${actKindTitle(act)})` : ""}`,
+    body,
+  );
 }

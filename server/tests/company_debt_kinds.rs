@@ -381,3 +381,163 @@ async fn cabinet_and_bot_two_lines(pool: PgPool) {
     assert!(text.contains("машины фирмы и прочее: 2"), "{text}");
     assert!(text.contains("личные машины работников: 1"), "{text}");
 }
+
+// Задача 055, ADR-218: два отдельных акта фирмы — машины фирмы и личные машины работников.
+
+async fn act(w: &W, firm: &str, kind: &str) -> Value {
+    w.get(&format!(
+        "/api/v1/parties/{firm}/reconciliation?kind={kind}"
+    ))
+    .await
+}
+
+fn sums(a: &Value) -> (i64, i64, i64, i64) {
+    (
+        a["opening_tyiyn"].as_i64().unwrap(),
+        a["debit_total_tyiyn"].as_i64().unwrap(),
+        a["credit_total_tyiyn"].as_i64().unwrap(),
+        a["closing_tyiyn"].as_i64().unwrap(),
+    )
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn separate_acts_by_kind(pool: PgPool) {
+    let w = W::new(pool).await;
+    let (firm, _, _) = setup(&w).await;
+    // 600 с гасят самый старый — личный — частично.
+    w.repay(&firm, 60_000).await;
+    let all = w
+        .get(&format!("/api/v1/parties/{firm}/reconciliation"))
+        .await;
+    assert_eq!(all["has_personal"], true);
+    let p = act(&w, &firm, "personal").await;
+    let c = act(&w, &firm, "company").await;
+    assert_eq!(p["act_kind"], "personal");
+    assert_eq!(c["act_kind"], "company");
+    // Личный: чек 1000 с и 600 с оплаты; остаток 400 с — как в карточке.
+    assert_eq!(sums(&p), (0, 100_000, 60_000, 40_000));
+    assert_eq!(p["rows"].as_array().unwrap().len(), 2, "{p}");
+    assert_eq!(p["rows"][0]["personal"], "Бакыт, 01KG200BBB");
+    // Фирма: два чека, оплаты на неё не ушло.
+    assert_eq!(sums(&c), (0, 200_000, 0, 200_000));
+    assert_eq!(c["rows"].as_array().unwrap().len(), 2, "{c}");
+    // Подытогов в отдельных актах нет; вместе — общий акт.
+    assert_eq!(p["closing_personal_tyiyn"], 0);
+    assert_eq!(
+        p["closing_tyiyn"].as_i64().unwrap() + c["closing_tyiyn"].as_i64().unwrap(),
+        all["closing_tyiyn"].as_i64().unwrap()
+    );
+    // Ещё 600 с: 400 с — на личные (погашены), 200 с — на машины фирмы, с пометкой.
+    w.repay(&firm, 60_000).await;
+    let p = act(&w, &firm, "personal").await;
+    let c = act(&w, &firm, "company").await;
+    assert_eq!(sums(&p).3, 0);
+    assert_eq!(sums(&c).3, 180_000);
+    let split = c["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["credit_tyiyn"] == 20_000)
+        .expect("часть оплаты на машины фирмы");
+    assert!(
+        split["comment"].as_str().unwrap().contains("из 600"),
+        "{split}"
+    );
+    // Кабинет фирмы — те же акты.
+    let cab = w.cabinet(&firm, "05050505050505").await;
+    let (s, _, cp) = call(
+        &w.app,
+        "GET",
+        "/api/v1/client/reconciliation?kind=personal",
+        Some(&cab),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{cp}");
+    assert_eq!(sums(&cp), sums(&p));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn separate_acts_opening_split(pool: PgPool) {
+    let w = W::new(pool).await;
+    let (firm, _, _) = setup(&w).await;
+    w.repay(&firm, 60_000).await;
+    // Движения прошлых дней — в сальдо на начало, по видам.
+    for q in [
+        "alter table party_ledger disable trigger party_ledger_immutable",
+        "update party_ledger set business_date = business_date - 10",
+        "alter table party_ledger enable trigger party_ledger_immutable",
+    ] {
+        sqlx::query(q).execute(&w.pool).await.unwrap();
+    }
+    let today = w
+        .get(&format!("/api/v1/parties/{firm}/reconciliation"))
+        .await["to"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let p = w
+        .get(&format!(
+            "/api/v1/parties/{firm}/reconciliation?kind=personal&from={today}"
+        ))
+        .await;
+    let c = w
+        .get(&format!(
+            "/api/v1/parties/{firm}/reconciliation?kind=company&from={today}"
+        ))
+        .await;
+    assert_eq!(sums(&p), (40_000, 0, 0, 40_000));
+    assert_eq!(sums(&c), (200_000, 0, 0, 200_000));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn separate_acts_only_for_firm(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.mode("off", 10).await;
+    let firm = w.firm("ОсОО Своё", "0700 44-55-77", "05050505050506").await;
+    let own = w.car(&firm, "01KG100AAA", None).await;
+    w.ok("POST", "/api/v1/sales", w.sale_car(&firm, &own)).await;
+    let all = w
+        .get(&format!("/api/v1/parties/{firm}/reconciliation"))
+        .await;
+    assert_eq!(all["has_personal"], false);
+    let (s, _) = w
+        .req(
+            "GET",
+            &format!("/api/v1/parties/{firm}/reconciliation?kind=bad"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn separate_acts_return_personal(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.mode("off", 10).await;
+    let firm = w
+        .firm("ОсОО Возврат", "0700 44-55-88", "05050505050507")
+        .await;
+    let own = w.car(&firm, "01KG100AAA", None).await;
+    let personal = w.car(&firm, "01KG200BBB", Some("Бакыт")).await;
+    let s = w
+        .ok("POST", "/api/v1/sales", w.sale_car(&firm, &personal))
+        .await;
+    w.ok("POST", "/api/v1/sales", w.sale_car(&firm, &own)).await;
+    let sid = s["id"].as_str().unwrap();
+    let (st, v) = w
+        .req(
+            "POST",
+            &format!("/api/v1/sales/{sid}/return"),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                         "payments": [{ "method": "debt", "amount_tyiyn": 100_000 }] }),
+            ),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let p = act(&w, &firm, "personal").await;
+    let c = act(&w, &firm, "company").await;
+    assert_eq!(sums(&p), (0, 100_000, 100_000, 0), "{p}");
+    assert_eq!(sums(&c), (0, 100_000, 0, 100_000), "{c}");
+}
