@@ -3,11 +3,14 @@
 -- проведении: перевод машины потом из личной в фирменную вид старого чека не меняет.
 alter table sales add column vehicle_personal boolean not null default false;
 
--- Старые чеки — по текущей машине.
+-- Старые чеки — по текущей машине. Чек неизменяем (I4): новое поле заполняется один раз, при
+-- выключенной защите, как в 0006 (на рабочей базе без этого миграция падает).
+alter table sales disable trigger sales_immutable;
 update sales s set vehicle_personal = true
 from party_vehicles v
 where v.id = s.vehicle_id and s.party_id is not null
   and v.paid_by_party_id = s.party_id and v.party_id <> s.party_id;
+alter table sales enable trigger sales_immutable;
 
 -- Остаток долга за личные машины работников: долги (чеки в долг и правки в плюс, за вычетом
 -- возвратов и сторно — как у срока долга) от новых к старым, баланс гасит сначала старые
